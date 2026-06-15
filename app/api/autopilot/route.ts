@@ -15,7 +15,7 @@ async function sendEmail(subject: string, html: string): Promise<boolean> {
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       from: "onboarding@resend.dev",
-      to: ["alidaftar@gmail.com"],
+      to: [process.env.ALERT_EMAIL ?? ""],
       subject,
       html,
     }),

@@ -41,7 +41,7 @@ export interface InsiderBuy {
   filingDate: string;
 }
 
-const UA = "RobinhoodAgent/1.0 alidaftar@gmail.com";
+const UA = `RobinhoodAgent/1.0 ${process.env.ALERT_EMAIL ?? "your@email.com"}`;
 
 async function getCIKMap(signal: AbortSignal): Promise<Map<string, string>> {
   try {

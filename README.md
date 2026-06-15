@@ -122,6 +122,7 @@ CRON_SECRET=                 # Secret for protecting cron + dashboard endpoints
 RESEND_API_KEY=              # Resend API key for email reports
 FMP_API_KEY=                 # Financial Modeling Prep (market data + insider)
 APP_URL=                     # Your deployed Vercel URL (e.g. https://your-app.vercel.app)
+ALERT_EMAIL=                 # Email address for daily reports and alerts
 AGENTIC_ACCOUNT_ID=          # Robinhood account ID the agent trades
 PERSONAL_ACCOUNT_ID=         # Robinhood account ID for read-only comparison (optional)
 ```

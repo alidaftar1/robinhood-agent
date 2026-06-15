@@ -11,7 +11,7 @@ export async function sendAlert(subject: string, body: string): Promise<void> {
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         from: "Robinhood Agent <onboarding@resend.dev>",
-        to: ["alidaftar@gmail.com"],
+        to: [process.env.ALERT_EMAIL ?? ""],
         subject,
         text: body,
       }),
