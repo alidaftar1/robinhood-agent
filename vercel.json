@@ -1,0 +1,24 @@
+{
+  "crons": [
+    {
+      "path": "/api/insider",
+      "schedule": "30 13 * * 1-5"
+    },
+    {
+      "path": "/api/trade",
+      "schedule": "30 14 * * 1-5"
+    },
+    {
+      "path": "/api/earnings-exit",
+      "schedule": "0 19 * * 1-5"
+    },
+    {
+      "path": "/api/drop-check",
+      "schedule": "0 17 * * 1-5"
+    },
+    {
+      "path": "/api/autopilot",
+      "schedule": "0 15 * * 1-5"
+    }
+  ]
+}

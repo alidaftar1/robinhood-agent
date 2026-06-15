@@ -1,0 +1,8 @@
+.next/
+node_modules/
+.env*.local
+*.tsbuildinfo
+.vercel
+.env*
+.DS_Store
+robinhood-autopilot-logs/

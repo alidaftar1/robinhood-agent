@@ -1,0 +1,24 @@
+{
+  "name": "robinhood-agent",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "eval": "bun --env-file=.env.local test evals/eval.test.ts --timeout 120000",
+    "eval:braintrust": "bun --env-file=.env.local evals/braintrust.eval.ts",
+    "eval:integration": "bun test evals/integration.test.ts --timeout 15000"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.55.0",
+    "braintrust": "^3.17.0",
+    "next": "^15.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "typescript": "^5"
+  }
+}
