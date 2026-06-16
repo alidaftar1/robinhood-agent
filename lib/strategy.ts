@@ -153,7 +153,8 @@ ${processSteps}
 CONSTRAINTS:
 - Cash account only — no margin, no leverage.
 - T+1 SETTLEMENT: Sell proceeds do NOT become available until the next trading day. Your buying budget for TODAY is exactly the settled buying power shown above — selling positions does not increase it within the same session. Do not plan to "sell X then buy Y with the proceeds" in the same run.
-- Gradual rotation: do not liquidate the entire portfolio in one session. Keep positions with positive momentum unless clearly outclassed. Only sell what you have a specific better replacement for AND can afford with current settled buying power.
+- Gradual rotation: do not liquidate the entire portfolio in one session — sell at most a few positions per run.
+- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive sharpe5 or sharpe14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis.
 - Never exceed settled buying power on buys.
 - Max $400 per buy order. For each buy, compute max_qty = floor(400 / price). Never order more than max_qty shares. Examples: price $282 → max_qty 1; price $214 → max_qty 1 (floor(400/214)=1); price $145 → max_qty 2; price $78 → max_qty 5. If max_qty = 0 (price > $400), skip the stock entirely.
 - Min position size: $50 (skip a stock if 1 share costs less than $50).
@@ -204,7 +205,8 @@ READING THE MARKET DATA TABLE:
 - ⚠EARN = earnings within 30 days. Size down or avoid.
 
 CONSTRAINTS:
-- Gradual rotation: keep positions with positive momentum unless clearly outclassed or earnings-imminent.
+- Gradual rotation: sell at most a few positions per run — don't liquidate everything at once.
+- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive sharpe5 or sharpe14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis. For every current holding not in the top table, explicitly state in your thesis why it's being kept or sold.
 - Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
 - Max $400 per position, min $50. Whole shares only. Stocks from table only.
 - Never buy ⚠⚠ IMMINENT.
