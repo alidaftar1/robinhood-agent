@@ -98,7 +98,7 @@ ${positionsLines}
 `
     : "";
 
-  const process = portfolio?.buyingPower
+  const processSteps = portfolio?.buyingPower
     ? `PROCESS (follow in order):
 1. ✅ SKIP get_equity_positions and get_portfolio — your full portfolio state is in the box above.
 2. Scan the market data table. Mark any stock with price > $400 as INELIGIBLE.
@@ -148,7 +148,7 @@ READING THE MARKET DATA TABLE:
 - ⚠EARN = earnings announcement within 30 days. This is binary risk: the stock can gap ±10%+ in one day. Size down significantly or avoid. ⚠⚠ IMMINENT means ≤3 days away — **do NOT buy under any circumstances. If already holding, sell before earnings.**
 - vs52wHigh = how far below the 52-week high. A stock near its high (-5%) with strong sharpe is in a healthy uptrend. A stock far from its high (-40%) needs a specific recovery thesis.
 
-${process}
+${processSteps}
 
 CONSTRAINTS:
 - Cash account only — no margin, no leverage.

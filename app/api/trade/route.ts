@@ -346,23 +346,46 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
       }
     }
 
-    // Build portfolio snapshot from live positions + executed trades
-    const soldSymbols = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
-    const startingPositions = portfolioCtx?.positions ?? [];
-    const keptPositions = startingPositions.filter(p => !soldSymbols.has(p.symbol));
-    const boughtPositions = trades.filter(t => t.side === "buy").map(t => ({
-      symbol: t.symbol, quantity: t.quantity, avgCost: t.avgPrice,
-    }));
-    const positions: PositionSnapshot[] = [...keptPositions, ...boughtPositions].map(p => ({
-      symbol: p.symbol,
-      quantity: p.quantity,
-      avgCost: p.avgCost,
-      price: String(priceMap.get(p.symbol) ?? parseFloat(p.avgCost)),
-    }));
+    // Build portfolio snapshot — prefer a live re-fetch from Robinhood so the saved
+    // record can never silently drift from the real account (e.g. if a trade was
+    // missed by verification, or the account was touched outside this run). Only
+    // fall back to reconstructing from the decision delta if the live fetch fails.
+    const [liveBalanceAfter, livePositionsAfter] = await Promise.all([
+      fetchAgenticBuyingPower(anthropic, accessToken),
+      fetchAgenticPositions(anthropic, accessToken),
+    ]);
 
-    const startingCash = agenticBalance.buyingPower;
-    const buyCost = trades.filter(t => t.side === "buy").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
-    const cashAfter = Math.max(0, startingCash - buyCost);
+    let positions: PositionSnapshot[];
+    let cashAfter: number;
+
+    if (liveBalanceAfter !== null && livePositionsAfter !== null) {
+      positions = livePositionsAfter.map(p => ({
+        symbol: p.symbol,
+        quantity: p.quantity,
+        avgCost: p.avgCost,
+        price: String(priceMap.get(p.symbol) ?? parseFloat(p.avgCost)),
+      }));
+      cashAfter = liveBalanceAfter.buyingPower;
+      console.log("POST_TRADE_LIVE_SNAPSHOT_OK", { positions: positions.length, cash: cashAfter });
+    } else {
+      console.warn("POST_TRADE_LIVE_SNAPSHOT_MISSING — falling back to reconstructed snapshot");
+      const soldSymbols = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
+      const startingPositions = portfolioCtx?.positions ?? [];
+      const keptPositions = startingPositions.filter(p => !soldSymbols.has(p.symbol));
+      const boughtPositions = trades.filter(t => t.side === "buy").map(t => ({
+        symbol: t.symbol, quantity: t.quantity, avgCost: t.avgPrice,
+      }));
+      positions = [...keptPositions, ...boughtPositions].map(p => ({
+        symbol: p.symbol,
+        quantity: p.quantity,
+        avgCost: p.avgCost,
+        price: String(priceMap.get(p.symbol) ?? parseFloat(p.avgCost)),
+      }));
+      const startingCash = agenticBalance.buyingPower;
+      const buyCost = trades.filter(t => t.side === "buy").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+      cashAfter = Math.max(0, startingCash - buyCost);
+    }
+
     const equityAfter = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
     const portfolioAfter = {
       totalValue: (cashAfter + equityAfter).toFixed(2),
