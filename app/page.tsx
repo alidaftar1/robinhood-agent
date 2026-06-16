@@ -1,32 +1,27 @@
 import { getRuns, type TradeRun } from "@/lib/run-store";
 
-const PERSONAL_ACCOUNT = process.env.PERSONAL_ACCOUNT_ID ?? "";
-
 // ─── Return series + chart ────────────────────────────────────────────────────
 
 interface ReturnPoint {
   date: string;
   agentic: number | null;
-  personal: number | null;
   spy: number | null;
 }
 
 function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
   const chronological = [...runs].reverse();
-  let agentIdx = 100, personalIdx = 100;
+  let agentIdx = 100;
   let spyBase: number | null = null;
   const points: ReturnPoint[] = [];
 
   for (const run of chronological) {
     if (run.agenticDailyReturn != null) agentIdx *= (1 + run.agenticDailyReturn);
-    if (run.personalDailyReturn != null) personalIdx *= (1 + run.personalDailyReturn);
     const spy = run.spyPrice
       ? (() => { if (spyBase == null) { spyBase = run.spyPrice!; return 100; } return (run.spyPrice! / spyBase) * 100; })()
       : null;
     points.push({
       date: run.date,
       agentic: run.agenticDailyReturn != null ? agentIdx : null,
-      personal: run.personalDailyReturn != null ? personalIdx : null,
       spy,
     });
   }
@@ -34,13 +29,13 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
 }
 
 function ReturnChart({ points }: { points: ReturnPoint[] }) {
-  const valid = points.filter(p => p.agentic != null || p.personal != null);
+  const valid = points.filter(p => p.agentic != null);
   if (valid.length < 2) return null;
 
   const W = 760, H = 140, PL = 44, PR = 12, PT = 8, PB = 28;
   const cw = W - PL - PR, ch = H - PT - PB;
 
-  const allVals = valid.flatMap(p => [p.agentic, p.personal, p.spy].filter(v => v != null) as number[]);
+  const allVals = valid.flatMap(p => [p.agentic, p.spy].filter(v => v != null) as number[]);
   const minV = Math.min(...allVals), maxV = Math.max(...allVals);
   const pad = Math.max((maxV - minV) * 0.1, 1);
   const lo = minV - pad, hi = maxV + pad;
@@ -73,7 +68,6 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
       <line x1={PL} x2={W - PR} y1={yOf(100)} y2={yOf(100)} stroke="#333" strokeWidth="1" strokeDasharray="4 3" />
       {/* Lines */}
       {polyline(p => p.spy, "#444")}
-      {polyline(p => p.personal, "#7db4ba")}
       {polyline(p => p.agentic, "#7dba7d")}
       {/* Y-axis labels */}
       {ticks.map((t, i) => (
@@ -182,12 +176,11 @@ export default async function DashboardPage({
   // Transfer-adjusted cumulative return from stored daily returns (null until enough data)
   const returnSeries = buildReturnSeries(runs);
   const latestSeries = returnSeries[returnSeries.length - 1];
-  const personalCumReturn = latestSeries?.personal != null ? latestSeries.personal - 100 : null;
   const agenticCumReturn = latestSeries?.agentic != null ? latestSeries.agentic - 100 : null;
 
   const agentReturn = agenticCumReturn;
   const alpha = agentReturn != null && spyReturn != null ? agentReturn - spyReturn : null;
-  const hasComparison = returnSeries.some(p => p.personal != null);
+  const hasComparison = returnSeries.some(p => p.agentic != null);
 
   const runsWithReturn = runs.filter(r => r.agenticDailyReturn != null);
   const winRate = runsWithReturn.length >= 3
@@ -239,15 +232,6 @@ export default async function DashboardPage({
               <span style={s.perfSince}>{runs.length} runs tracked</span>
             </div>
           )}
-          {latest?.personal && (
-            <div style={s.perfStat}>
-              <span style={s.perfLabel}>Personal Value</span>
-              <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
-                ${parseFloat(latest.personal.totalValue).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-              <span style={s.perfSince}>••••{PERSONAL_ACCOUNT.slice(-4)}</span>
-            </div>
-          )}
           {winRate != null && (
             <div style={s.perfStat}>
               <span style={s.perfLabel}>Win Rate</span>
@@ -270,21 +254,14 @@ export default async function DashboardPage({
               Agentic {agenticCumReturn != null ? `(${fmtPct(agenticCumReturn)})` : ""}
             </div>
             <div style={s.legendItem}>
-              <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#7db4ba" strokeWidth="2" /></svg>
-              Personal {personalCumReturn != null ? `(${fmtPct(personalCumReturn)})` : ""}
-            </div>
-            <div style={s.legendItem}>
               <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#444" strokeWidth="2" /></svg>
               SPY
             </div>
           </div>
-          {runs.slice(0, 10).some(r => (r.agenticImpliedTransfer ?? 0) !== 0 || (r.personalImpliedTransfer ?? 0) !== 0) && (
+          {runs.slice(0, 10).some(r => (r.agenticImpliedTransfer ?? 0) !== 0) && (
             <div style={{ marginTop: 12, fontSize: 11, color: "#555" }}>
               {runs.slice(0, 10).filter(r => Math.abs(r.agenticImpliedTransfer ?? 0) > 10).map((r, i) => (
                 <div key={i}>⟳ {r.date}: agentic transfer detected ${(r.agenticImpliedTransfer!).toFixed(0)} (excluded from return)</div>
-              ))}
-              {runs.slice(0, 10).filter(r => Math.abs(r.personalImpliedTransfer ?? 0) > 10).map((r, i) => (
-                <div key={i}>⟳ {r.date}: personal transfer detected ${(r.personalImpliedTransfer!).toFixed(0)} (excluded from return)</div>
               ))}
             </div>
           )}
