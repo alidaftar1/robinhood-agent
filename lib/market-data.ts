@@ -181,6 +181,7 @@ async function fetchQuote(symbol: string): Promise<StockData | null> {
         result?: Array<{
           meta?: {
             regularMarketPrice?: number;
+            regularMarketPreviousClose?: number;
             chartPreviousClose?: number;
             fiftyTwoWeekHigh?: number;
             earningsTimestamp?: number;
@@ -198,7 +199,8 @@ async function fetchQuote(symbol: string): Promise<StockData | null> {
     const validCloses = closes.filter((c): c is number => c != null);
 
     const price = meta.regularMarketPrice ?? 0;
-    const prevClose = meta.chartPreviousClose ?? price;
+    // regularMarketPreviousClose = actual previous session close; chartPreviousClose = close before range start (~1mo ago)
+    const prevClose = meta.regularMarketPreviousClose ?? meta.chartPreviousClose ?? price;
     const monthAgoClose = validCloses[0] ?? price;
     const high52w = meta.fiftyTwoWeekHigh ?? price;
     const change30d = monthAgoClose ? ((price - monthAgoClose) / monthAgoClose) * 100 : 0;
