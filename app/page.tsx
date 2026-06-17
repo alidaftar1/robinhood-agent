@@ -11,17 +11,21 @@ interface ReturnPoint {
 function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
   const chronological = [...runs].reverse();
   let agentIdx = 100;
+  let hasReturn = false;
   let spyBase: number | null = null;
   const points: ReturnPoint[] = [];
 
   for (const run of chronological) {
-    if (run.agenticDailyReturn != null) agentIdx *= (1 + run.agenticDailyReturn);
+    if (run.agenticDailyReturn != null) {
+      agentIdx *= (1 + run.agenticDailyReturn);
+      hasReturn = true;
+    }
     const spy = run.spyPrice
       ? (() => { if (spyBase == null) { spyBase = run.spyPrice!; return 100; } return (run.spyPrice! / spyBase) * 100; })()
       : null;
     points.push({
       date: run.date,
-      agentic: run.agenticDailyReturn != null ? agentIdx : null,
+      agentic: hasReturn ? agentIdx : null,
       spy,
     });
   }

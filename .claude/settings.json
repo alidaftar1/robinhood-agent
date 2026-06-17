@@ -6,8 +6,7 @@
       "Edit(*)",
       "Write(*)",
       "WebFetch(*)",
-      "WebSearch(*)",
-      "mcp__claude_ai_Gmail__*"
+      "WebSearch(*)"
     ]
   }
 }

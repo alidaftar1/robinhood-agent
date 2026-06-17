@@ -70,7 +70,7 @@ curl -s -X POST https://api.resend.com/emails \
   -H "Content-Type: application/json" \
   -d '{"from":"onboarding@resend.dev","to":["YOUR_EMAIL"],"subject":"Robinhood Agent — DATE Autopilot Report","html":"<report body here>"}'
 ```
-If Resend fails (no key or API error), fall back to creating a Gmail draft.
+This run is headless (`claude --print`, no terminal, nobody present) — there is no fallback that can wait for human interaction. If Resend fails (no key, bad response, network error), do NOT fall back to a Gmail draft or any tool that requires an interactive approval prompt — that prompt can never be answered in this context and the run will silently stall. Instead: print the full report to stdout (it's captured in the launchd log file) and end the run. A missing email with a log entry is recoverable; a silently stuck run is not.
 
 ## Pre-Authorized Actions (no approval needed)
 
@@ -79,9 +79,11 @@ If Resend fails (no key or API error), fall back to creating a Gmail draft.
 - Deploy to production (`vercel --prod`)
 - Fix bugs — any file, any layer
 - Curl the dashboard API
-- Send summary email via Gmail
+- Send summary email via Resend
 
 ## Requires Approval — ALWAYS ask the owner first
+
+This autopilot run is headless (`claude --print`, no terminal attached) — there is no one present to ask, and no mechanism to wait for a reply. "Ask the owner first" therefore means: **do not do it.** Skip the action entirely, note clearly in the email report exactly what you would have done and why, and leave it for the owner to do themselves in a live session. Never interpret silence, a timeout, or the absence of a response as approval.
 
 - Change the hard budget cap
 - Change account numbers (YOUR_AGENTIC_ACCOUNT_ID or YOUR_PERSONAL_ACCOUNT_ID)
