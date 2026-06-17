@@ -25,7 +25,7 @@ The run is saved to Upstash Redis and surfaced on a dashboard.
 
 ### Additional crons
 
-Scheduled via **GitHub Actions** (`.github/workflows/cron.yml`), not Vercel's own cron — Vercel's Hobby plan crons can drift by up to ~50 minutes from their scheduled time, while GitHub Actions schedules are accurate to within a few minutes.
+All crons are scheduled via **Vercel** (`vercel.json`), which sends `Authorization: Bearer $CRON_SECRET` automatically. Requires Vercel Pro (the Hobby plan silently caps at 2 active cron jobs).
 
 | Time (PT) | Endpoint | Purpose |
 |---|---|---|
@@ -35,7 +35,7 @@ Scheduled via **GitHub Actions** (`.github/workflows/cron.yml`), not Vercel's ow
 | 10:00am | `/api/drop-check` | Stop-loss: exit any position down ≥5% intraday |
 | 12:00pm | `/api/earnings-exit` | Exit positions with earnings within 2 days |
 
-Each fires by calling the endpoint over HTTP with `Authorization: Bearer $CRON_SECRET` (stored as a GitHub Actions secret). `vercel.json` intentionally has no `crons` key — running both Vercel's and GitHub's schedulers would double-fire the same endpoint.
+`.github/workflows/cron.yml` is kept as a manual fallback (`workflow_dispatch`) for triggering individual endpoints on demand.
 
 ### Signal stack
 
