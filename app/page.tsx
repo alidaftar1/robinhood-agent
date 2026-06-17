@@ -199,7 +199,9 @@ export default async function DashboardPage({
       <div style={s.header}>
         <div style={s.title}>Robinhood Agent</div>
         <div style={s.subtitle}>
-          Agentic account ••••4256 · $1,544 budget · Daily 7:30am PT
+          Agentic account ••••4256
+          {latest?.portfolioAfter && ` · $${parseFloat(latest.portfolioAfter.totalValue).toFixed(0)} portfolio`}
+          {` · Daily 7:30am PT`}
           {latest && ` · Last run ${latest.date}`}
         </div>
       </div>
