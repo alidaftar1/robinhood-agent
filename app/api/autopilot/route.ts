@@ -1,6 +1,18 @@
 import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 
+interface VerifyResult {
+  status: string;
+  discrepancies: string[];
+  diff: {
+    cashDiff: number | null;
+    valueDiff: number | null;
+    positionIssues: Array<{ type: string; symbol: string }>;
+    uncapturedOrders: unknown[];
+  };
+  mcpAvailable: { balance: boolean; positions: boolean; orders: boolean };
+}
+
 export const maxDuration = 120;
 
 function todayPT(): string {
@@ -145,6 +157,54 @@ export async function GET(request: Request) {
     }
   }
 
+  // ─── Live Robinhood verification ─────────────────────────────────────────────
+  // /api/verify runs Haiku+MCP server-side — compares live state to stored run.
+
+  let verifyResult: VerifyResult | null = null;
+
+  try {
+    const verifyRes = await fetch(`${host}/api/verify`, {
+      headers: { Authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (verifyRes.ok) {
+      verifyResult = await verifyRes.json() as VerifyResult;
+    }
+  } catch {
+    // Verification failed — non-fatal, note in email
+  }
+
+  if (verifyResult) {
+    if (verifyResult.status === "discrepancy") {
+      // Auto-fix: if position issues include missing-sell, run patchTrades
+      const posIssues = verifyResult.diff?.positionIssues ?? [];
+      const hasMissingSell = posIssues.some((p: any) => p.type === "missing_from_live_no_sell_record");
+      if (hasMissingSell) {
+        const result = await callDebug("patchTrades=1");
+        const msg = result?.patchTrades ?? "";
+        if (msg && !msg.startsWith("error")) {
+          autoFixed.push(`Live verify found missing sells — re-patched: ${msg}`);
+          runs = await getRuns(30);
+          todayRun = runs.find(r => r.date === today) ?? todayRun;
+        }
+      }
+      // Surface remaining discrepancies as issues
+      const remaining = verifyResult.discrepancies.filter((d: string) => {
+        if (hasMissingSell && d.includes("no sell record")) return false;
+        return true;
+      });
+      for (const d of remaining) {
+        issues.push(`Live verify: ${d}`);
+      }
+    } else if (verifyResult.status === "partial") {
+      const missing = Object.entries(verifyResult.mcpAvailable ?? {})
+        .filter(([, v]) => !v).map(([k]) => k).join(", ");
+      autoFixed.push(`Live verify partial (MCP timeout on: ${missing || "unknown"}) — comparison incomplete.`);
+    }
+  } else {
+    autoFixed.push("Live verify skipped — /api/verify unavailable.");
+  }
+
   // ─── Derive display data from (possibly repaired) run ────────────────────────
 
   const trades = todayRun?.trades ?? [];
@@ -224,6 +284,13 @@ export async function GET(request: Request) {
   </div>`
     : ""}
 
+  ${verifyResult ? `<div style="background:${verifyResult.status === "ok" ? "#ecfdf5" : verifyResult.status === "discrepancy" ? "#fef3c7" : "#f3f4f6"};border-left:4px solid ${verifyResult.status === "ok" ? "#10b981" : verifyResult.status === "discrepancy" ? "#f59e0b" : "#9ca3af"};padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>Live Robinhood verify: ${verifyResult.status.toUpperCase()}</strong>
+    ${verifyResult.diff?.cashDiff != null ? `<p style="margin:6px 0 0;font-size:13px">Cash diff: ${verifyResult.diff.cashDiff >= 0 ? "+" : ""}$${verifyResult.diff.cashDiff.toFixed(2)} | Value diff: ${verifyResult.diff.valueDiff != null ? `${verifyResult.diff.valueDiff >= 0 ? "+" : ""}$${verifyResult.diff.valueDiff.toFixed(2)}` : "—"}</p>` : ""}
+    ${verifyResult.status !== "ok" && verifyResult.discrepancies.length > 0 ? `<ul style="margin:8px 0 0;padding-left:20px;font-size:13px">${verifyResult.discrepancies.map(d => `<li>${d}</li>`).join("")}</ul>` : ""}
+    <p style="margin:6px 0 0;font-size:11px;color:#6b7280">MCP: balance=${verifyResult.mcpAvailable?.balance} positions=${verifyResult.mcpAvailable?.positions} orders=${verifyResult.mcpAvailable?.orders}</p>
+  </div>` : `<div style="background:#f3f4f6;border-left:4px solid #9ca3af;padding:12px 16px;margin-bottom:16px;border-radius:4px"><strong>Live verify:</strong> skipped — endpoint unavailable</div>`}
+
   ${todayRun?.summary
     ? `<div style="background:#f3f4f6;padding:12px 16px;border-radius:4px;margin-bottom:16px">
     <strong>Run summary:</strong>
@@ -257,6 +324,7 @@ export async function GET(request: Request) {
     sells: sells.length,
     totalValue,
     issues,
+    verifyStatus: verifyResult?.status ?? "skipped",
     emailSent,
   });
 }

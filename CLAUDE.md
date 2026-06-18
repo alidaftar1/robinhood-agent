@@ -75,28 +75,36 @@ curl -s "$APP_URL/api/debug?clearReturnForDate=YYYY-MM-DD" -H "Authorization: Be
 
 ### Step 3 — Verify live Robinhood data against stored run
 
-This is the critical step the Vercel cron cannot do. Use the Robinhood MCP tools to get ground truth.
+Call the `/api/verify` endpoint — it runs Haiku+MCP server-side and returns a structured diff:
 
-**Get live portfolio balance:**
-Use `mcp__robinhood__get_portfolio` for account `$AGENTIC_ACCOUNT_ID`.
+```bash
+curl -s "$APP_URL/api/verify" -H "Authorization: Bearer $CRON_SECRET"
+```
 
-Compare live `buyingPower` (cash) to `portfolioAfter.cash` in today's stored run.
-- Discrepancy > $10: investigate. Likely cause: a trade executed but wasn't captured, or T+1 settlement landed.
-- Discrepancy > $100: flag in email, do not auto-fix without understanding why.
+Response shape:
+```json
+{
+  "status": "ok | discrepancy | partial | error",
+  "discrepancies": ["...human-readable strings..."],
+  "diff": {
+    "cashDiff": 12.34,
+    "valueDiff": 5.00,
+    "positionIssues": [...],
+    "uncapturedOrders": [...]
+  },
+  "mcpAvailable": { "balance": true, "positions": true, "orders": true }
+}
+```
 
-**Get live positions:**
-Use `mcp__robinhood__get_equity_positions` for account `$AGENTIC_ACCOUNT_ID`.
-
-Compare live positions (symbol + quantity) to `positions[]` in today's stored run:
-- Symbol in live but not in stored → trade happened that wasn't captured
-- Symbol in stored but not in live → sell happened that wasn't recorded (run patchTrades)
-- Quantity differs → partial fill wasn't captured
-
-If discrepancies found, document exactly what differs and whether it can be auto-fixed.
-
-**Get recent orders (if position mismatch found):**
-Use `mcp__robinhood__get_equity_orders` for account `$AGENTIC_ACCOUNT_ID`.
-Look at the most recent 10 orders to understand what actually executed.
+Interpret results:
+- `status: "ok"` — nothing to do
+- `status: "discrepancy"` — review `discrepancies[]` array and `diff` fields
+  - `cashDiff > $10`: investigate. Likely T+1 settlement or uncaptured trade.
+  - `cashDiff > $100`: flag in email, do not auto-fix without understanding why.
+  - `positionIssues` with type `missing_from_live_no_sell_record` → run `patchTrades`
+  - `uncapturedOrders` → trades executed in Robinhood but not stored — note in email
+- `status: "partial"` — MCP calls timed out; note in email, not a code error
+- `mcpAvailable.*: false` — that MCP call failed; partial data only
 
 ---
 
