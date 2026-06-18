@@ -1,4 +1,4 @@
-import { dedupeRuns, getLatestRun, updateLatestRun } from "@/lib/run-store";
+import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, computeDailyReturn } from "@/lib/run-store";
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -48,8 +48,58 @@ export async function GET(request: Request) {
     results.dedup = `error: ${e}`;
   }
 
-  // Clear agenticDailyReturn on latest run if it was computed against a same-day baseline
   const url = new URL(request.url);
+
+  // Infer missing sell records and recompute return for the latest run.
+  // Needed when the sell session timed out after orders were already placed on Robinhood.
+  if (url.searchParams.get("patchTrades") === "1") {
+    try {
+      const runs = await getRuns(10);
+      const latest = runs[0];
+      const prevDay = runs.find(r => r.date < (latest?.date ?? ""));
+      if (latest && prevDay?.portfolioAfter) {
+        const todaySymbols = new Set(latest.positions.map(p => p.symbol));
+        const recordedSells = new Set((latest.trades ?? []).filter(t => t.side === "sell").map(t => t.symbol));
+        const missingSellPos = prevDay.positions.filter(p => !todaySymbols.has(p.symbol) && !recordedSells.has(p.symbol));
+
+        if (missingSellPos.length > 0) {
+          const buyCost = (latest.trades ?? []).filter(t => t.side === "buy")
+            .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+          const cashBefore = parseFloat(prevDay.portfolioAfter.cash);
+          const cashAfter = parseFloat(latest.portfolioAfter?.cash ?? "0");
+          const totalProceeds = Math.max(0, cashAfter - cashBefore + buyCost);
+          const totalEstValue = missingSellPos.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
+
+          const inferredSells = missingSellPos.map(pos => {
+            const estValue = parseFloat(pos.quantity) * parseFloat(pos.price);
+            const proportion = totalEstValue > 0 ? estValue / totalEstValue : 1 / missingSellPos.length;
+            const avgPrice = parseFloat(pos.quantity) > 0 ? (totalProceeds * proportion) / parseFloat(pos.quantity) : parseFloat(pos.price);
+            return { symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred" };
+          });
+
+          const patchedTrades = [...(latest.trades ?? []), ...inferredSells];
+          const agenticResult = latest.portfolioAfter
+            ? computeDailyReturn(
+                parseFloat(latest.portfolioAfter.totalValue),
+                parseFloat(prevDay.portfolioAfter.totalValue),
+                latest.positions, prevDay.positions, patchedTrades
+              )
+            : null;
+
+          await updateLatestRun({ ...latest, trades: patchedTrades, agenticDailyReturn: agenticResult?.dailyReturn ?? null, agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null });
+          results.patchTrades = `patched ${inferredSells.length} sell(s): ${inferredSells.map(s => `${s.symbol}@$${s.avgPrice}`).join(", ")} → return ${agenticResult?.dailyReturn != null ? (agenticResult.dailyReturn * 100).toFixed(2) + "%" : "null"}`;
+        } else {
+          results.patchTrades = "no missing sells detected";
+        }
+      } else {
+        results.patchTrades = "not enough run data";
+      }
+    } catch (e) {
+      results.patchTrades = `error: ${e}`;
+    }
+  }
+
+  // Clear agenticDailyReturn on latest run if it was computed against a same-day baseline
   if (url.searchParams.get("clearReturn") === "1") {
     try {
       const latest = await getLatestRun();

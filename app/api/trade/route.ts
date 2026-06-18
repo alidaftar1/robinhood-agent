@@ -366,6 +366,38 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
         price: String(priceMap.get(p.symbol) ?? parseFloat(p.avgCost)),
       }));
       cashAfter = liveBalanceAfter.buyingPower;
+
+      // Infer sells that executed on Robinhood but weren't recorded (e.g. sell session
+      // timed out after orders were already placed). Compare pre-trade vs post-trade positions.
+      if (livePositions !== null) {
+        const afterSymbols = new Set(livePositionsAfter.map(p => p.symbol));
+        const recordedSells = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
+        const missingSells = livePositions.filter(p => !afterSymbols.has(p.symbol) && !recordedSells.has(p.symbol));
+
+        if (missingSells.length > 0) {
+          // Derive total sell proceeds from the cash flow identity:
+          //   cashAfter = cashBefore - buyCost + sellProceeds
+          const buyCost = trades.filter(t => t.side === "buy")
+            .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+          const totalProceeds = Math.max(0, cashAfter - agenticBalance.buyingPower + buyCost);
+
+          // Allocate proceeds proportionally by each position's estimated market value
+          const totalEstValue = missingSells.reduce((s, p) => {
+            return s + parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost));
+          }, 0);
+
+          for (const pos of missingSells) {
+            const estPrice = priceMap.get(pos.symbol) ?? parseFloat(pos.avgCost);
+            const estValue = parseFloat(pos.quantity) * estPrice;
+            const proportion = totalEstValue > 0 ? estValue / totalEstValue : 1 / missingSells.length;
+            const proceeds = totalProceeds * proportion;
+            const avgPrice = parseFloat(pos.quantity) > 0 ? proceeds / parseFloat(pos.quantity) : estPrice;
+            trades.push({ symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred" });
+            console.log("INFERRED_SELL", { symbol: pos.symbol, quantity: pos.quantity, avgPrice: avgPrice.toFixed(2) });
+          }
+        }
+      }
+
       console.log("POST_TRADE_LIVE_SNAPSHOT_OK", { positions: positions.length, cash: cashAfter });
     } else {
       console.warn("POST_TRADE_LIVE_SNAPSHOT_MISSING — falling back to reconstructed snapshot");
