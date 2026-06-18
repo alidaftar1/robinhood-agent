@@ -6,7 +6,10 @@
       "Edit(*)",
       "Write(*)",
       "WebFetch(*)",
-      "WebSearch(*)"
+      "WebSearch(*)",
+      "mcp__robinhood__get_portfolio",
+      "mcp__robinhood__get_equity_positions",
+      "mcp__robinhood__get_equity_orders"
     ]
   }
 }

@@ -14,13 +14,26 @@ echo "=== Robinhood Autopilot $(date) ===" >> "$LOG_FILE"
 
 cd "$PROJECT_DIR"
 
-# Load project env vars (gives Claude access to RESEND_API_KEY for email sending)
+# Load project env vars (gives Claude access to API keys, secrets, and account IDs)
 set -a; source .env.local 2>/dev/null || true; set +a
 
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 
+# Pass live credentials in the prompt so Claude doesn't have to guess placeholder values.
+# CLAUDE.md has the full protocol — this prompt just surfaces the runtime context.
 claude --print \
-  "Run the daily autopilot check as defined in CLAUDE.md. Check today's trade run, fix any issues found, and send a summary email." \
+  "Run the full daily autopilot check as defined in CLAUDE.md.
+
+Runtime context (from .env.local):
+  APP_URL=${APP_URL}
+  CRON_SECRET=${CRON_SECRET}
+  AGENTIC_ACCOUNT_ID=${AGENTIC_ACCOUNT_ID}
+  ALERT_EMAIL=${ALERT_EMAIL}
+
+API base:  ${APP_URL}
+Auth header: Authorization: Bearer ${CRON_SECRET}
+
+Follow every step in CLAUDE.md in order, including the live Robinhood position verification. Fix any issues found before sending the email." \
   2>&1 | tee -a "$LOG_FILE"
 
 echo "=== Done $(date) ===" >> "$LOG_FILE"

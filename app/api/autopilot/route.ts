@@ -1,7 +1,7 @@
 import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 
-export const maxDuration = 90;
+export const maxDuration = 120;
 
 function todayPT(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
@@ -35,49 +35,117 @@ export async function GET(request: Request) {
     return Response.json({ skipped: true, reason: "market holiday" });
   }
 
-  let runs = await getRuns(5);
+  const host = new URL(request.url).origin;
+  const secret = process.env.CRON_SECRET ?? "";
+
+  async function callDebug(param: string): Promise<Record<string, string> | null> {
+    try {
+      const res = await fetch(`${host}/api/debug?${param}`, {
+        headers: { Authorization: `Bearer ${secret}` },
+      });
+      if (!res.ok) return null;
+      return res.json() as Promise<Record<string, string>>;
+    } catch {
+      return null;
+    }
+  }
+
+  let runs = await getRuns(30);
   let todayRun = runs.find((r) => r.date === today) ?? null;
 
   const issues: string[] = [];
+  const autoFixed: string[] = [];
   let selfHealed = false;
 
-  if (!todayRun) {
-    // Attempt self-heal: trigger the trade cron and re-fetch. Retry once (15s delay)
-    // in case a deployment was still rolling out when the 7:30am cron fired.
-    const host = new URL(request.url).origin;
-    const secret = process.env.CRON_SECRET ?? "";
-    let triggerOk = false;
+  // ─── Self-heal: trigger trade cron if today's run is missing ─────────────────
 
+  if (!todayRun) {
+    let triggerOk = false;
     for (let attempt = 1; attempt <= 2; attempt++) {
       if (attempt === 2) await new Promise((r) => setTimeout(r, 15_000));
       try {
         const tradeRes = await fetch(`${host}/api/trade`, {
           headers: { Authorization: `Bearer ${secret}` },
         });
-        if (tradeRes.ok) {
-          triggerOk = true;
-          break;
-        }
-        if (attempt === 2) {
+        if (tradeRes.ok) { triggerOk = true; break; }
+        if (attempt === 2)
           issues.push(`Trade cron missing — auto-trigger failed after 2 attempts (${tradeRes.status}).`);
-        }
       } catch {
-        if (attempt === 2) {
+        if (attempt === 2)
           issues.push("Trade cron missing — auto-trigger threw an error after 2 attempts.");
-        }
       }
     }
-
     if (triggerOk) {
       selfHealed = true;
-      runs = await getRuns(5);
+      runs = await getRuns(30);
       todayRun = runs.find((r) => r.date === today) ?? null;
     }
-
     if (!todayRun) {
       issues.push("Trade cron missing and auto-trigger failed — manual intervention needed.");
     }
   }
+
+  // ─── Auto-repair phase ────────────────────────────────────────────────────────
+  // Fix issues mechanically before deciding what to alert on.
+
+  if (todayRun) {
+    // Fix 1: Positions that disappeared without a recorded sell.
+    // Happens when the sell session times out after orders already landed on Robinhood.
+    const prevRun = runs.find(r => r.date < today);
+    if (prevRun?.positions?.length) {
+      const todaySyms = new Set(todayRun.positions.map(p => p.symbol));
+      // Treat existing inferred sells as unconfirmed — patchTrades will re-derive them correctly
+      const confirmedSells = new Set(
+        (todayRun.trades ?? []).filter(t => t.side === "sell" && t.state !== "inferred").map(t => t.symbol)
+      );
+      const orphaned = prevRun.positions.filter(p => !todaySyms.has(p.symbol) && !confirmedSells.has(p.symbol));
+      if (orphaned.length > 0) {
+        const result = await callDebug("patchTrades=1");
+        const msg = result?.patchTrades ?? "";
+        if (msg && !msg.startsWith("error") && !msg.includes("no missing")) {
+          autoFixed.push(`Inferred missing sells: ${msg}`);
+          runs = await getRuns(30);
+          todayRun = runs.find(r => r.date === today) ?? todayRun;
+        } else {
+          issues.push(
+            `Positions disappeared without sell records: ${orphaned.map(p => p.symbol).join(", ")}. Auto-patch: ${msg || "failed"}.`,
+          );
+        }
+      }
+    }
+
+    // Fix 2: Today's return is null but all data needed to compute it is present.
+    if (todayRun.agenticDailyReturn == null && todayRun.portfolioAfter) {
+      const prevRun2 = runs.find(r => r.date < today);
+      if (prevRun2?.portfolioAfter) {
+        const result = await callDebug(`patchDate=${today}`);
+        const msg = result?.patchDate ?? "";
+        if (msg && !msg.startsWith("error") && !msg.includes("not found")) {
+          autoFixed.push(`Computed missing return: ${msg}`);
+          runs = await getRuns(30);
+          todayRun = runs.find(r => r.date === today) ?? todayRun;
+        }
+      }
+    }
+  }
+
+  // Fix 3: Bogus 0% return on the oldest run (first-ever run had same-day baseline).
+  {
+    const chronological = [...runs].reverse();
+    const oldest = chronological[0];
+    if (oldest && oldest.agenticDailyReturn === 0) {
+      const hasPrior = runs.some(r => r.date < oldest.date);
+      if (!hasPrior) {
+        const result = await callDebug(`clearReturnForDate=${oldest.date}`);
+        const msg = result?.clearReturnForDate ?? "";
+        if (msg && !msg.startsWith("error")) {
+          autoFixed.push(`Cleared bogus 0% inception return on ${oldest.date}`);
+        }
+      }
+    }
+  }
+
+  // ─── Derive display data from (possibly repaired) run ────────────────────────
 
   const trades = todayRun?.trades ?? [];
   const buyingPower = todayRun?.portfolioAfter?.cash ?? null;
@@ -85,6 +153,9 @@ export async function GET(request: Request) {
   const positions = todayRun?.positions ?? [];
   const agenticReturn = todayRun?.agenticDailyReturn;
   const personalReturn = todayRun?.personalDailyReturn;
+  const impliedTransfer = todayRun?.agenticImpliedTransfer;
+
+  // ─── Validation phase (post-repair) ──────────────────────────────────────────
 
   if (trades.length === 0 && buyingPower && parseFloat(buyingPower) > 50) {
     issues.push(
@@ -92,18 +163,20 @@ export async function GET(request: Request) {
     );
   }
 
-  // Positions that appeared in the previous run but vanished today without a sell record
-  const prevRun = runs.find(r => r.date < today);
-  if (todayRun && prevRun?.positions?.length) {
-    const todaySyms = new Set(todayRun.positions.map(p => p.symbol));
-    const recordedSells = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
-    const orphaned = prevRun.positions.filter(p => !todaySyms.has(p.symbol) && !recordedSells.has(p.symbol));
-    if (orphaned.length > 0) {
-      issues.push(
-        `Position${orphaned.length > 1 ? "s" : ""} disappeared without sell records: ${orphaned.map(p => p.symbol).join(", ")} — possible unrecorded trade. Run ?patchTrades=1 on /api/debug to fix.`,
-      );
-    }
+  if (agenticReturn != null && Math.abs(agenticReturn) > 0.30) {
+    issues.push(
+      `Extreme return (${(agenticReturn * 100).toFixed(1)}%) — likely a data error. Check implied transfer and sell records.`,
+    );
   }
+
+  if (impliedTransfer != null && Math.abs(impliedTransfer) > 300) {
+    const direction = impliedTransfer > 0 ? "deposit" : "withdrawal";
+    autoFixed.push(
+      `Detected large ${direction} (~$${Math.abs(impliedTransfer).toFixed(0)}) — return is transfer-adjusted.`,
+    );
+  }
+
+  // ─── Email ────────────────────────────────────────────────────────────────────
 
   const statusLabel = issues.length > 0 ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";
   const statusColor = issues.length > 0 ? "#f59e0b" : "#10b981";
@@ -133,27 +206,30 @@ export async function GET(request: Request) {
     ${row("Agentic return", fmt(agenticReturn))}
     ${row("Personal return", fmt(personalReturn), "#f9fafb")}
     ${row("Buys", buys.length > 0 ? buys.map((t) => `${t.symbol} ×${t.quantity} @$${t.avgPrice}`).join(", ") : "none")}
-    ${row("Sells", sells.length > 0 ? sells.map((t) => `${t.symbol} ×${t.quantity} @$${t.avgPrice}`).join(", ") : "none", "#f9fafb")}
+    ${row("Sells", sells.length > 0 ? sells.map((t) => `${t.symbol} ×${t.quantity} @$${t.avgPrice}${t.state === "inferred" ? " (inferred)" : ""}`).join(", ") : "none", "#f9fafb")}
     ${row("Positions", positions.length > 0 ? positions.map((p) => p.symbol).join(", ") : "none")}
   </table>
 
-  ${
-    issues.length > 0
-      ? `<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;margin-bottom:16px;border-radius:4px">
-    <strong>Issues to investigate:</strong>
+  ${autoFixed.length > 0
+    ? `<div style="background:#ecfdf5;border-left:4px solid #10b981;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🔧 Auto-repaired:</strong>
+    <ul style="margin:8px 0 0;padding-left:20px">${autoFixed.map((f) => `<li>${f}</li>`).join("")}</ul>
+  </div>`
+    : ""}
+
+  ${issues.length > 0
+    ? `<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>⚠️ Needs attention:</strong>
     <ul style="margin:8px 0 0;padding-left:20px">${issues.map((i) => `<li>${i}</li>`).join("")}</ul>
   </div>`
-      : ""
-  }
+    : ""}
 
-  ${
-    todayRun?.summary
-      ? `<div style="background:#f3f4f6;padding:12px 16px;border-radius:4px;margin-bottom:16px">
+  ${todayRun?.summary
+    ? `<div style="background:#f3f4f6;padding:12px 16px;border-radius:4px;margin-bottom:16px">
     <strong>Run summary:</strong>
     <p style="margin:8px 0 0;white-space:pre-wrap;font-size:13px">${todayRun.summary.slice(0, 800)}</p>
   </div>`
-      : ""
-  }
+    : ""}
 
   <p style="font-size:12px;color:#9ca3af;margin-top:24px">
     Sent by Vercel cron at 8am PT — no Mac required.<br/>
@@ -167,7 +243,6 @@ export async function GET(request: Request) {
   if (!alreadySent) {
     const subject = `Robinhood Agent — ${today} ${issues.length > 0 ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY"}`;
     emailSent = await sendEmail(subject, html);
-    // Don't mark as sent on forced calls — lets the scheduled cron still fire.
     if (emailSent && !force) await markAutopilotSent(today);
   }
 
@@ -176,6 +251,7 @@ export async function GET(request: Request) {
     status: statusLabel,
     ranToday: todayRun !== null,
     selfHealed,
+    autoFixed,
     trades: trades.length,
     buys: buys.length,
     sells: sells.length,
