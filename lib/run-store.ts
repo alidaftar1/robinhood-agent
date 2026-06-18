@@ -177,6 +177,20 @@ export function computeDailyReturn(
   return { dailyReturn: valueChange / yesterdayValue, impliedTransfer: 0 };
 }
 
+// Updates a specific run by date, applying an updater function. Rewrites the full list.
+export async function updateRunByDate(date: string, updater: (run: TradeRun) => TradeRun): Promise<boolean> {
+  const all = await getRuns(90);
+  const idx = all.findIndex(r => r.date === date);
+  if (idx < 0) return false;
+  all[idx] = updater(all[idx]);
+  const pipeline = [
+    ["DEL", RUNS_KEY],
+    ...all.map(r => ["RPUSH", RUNS_KEY, JSON.stringify(r)]),
+  ];
+  await redisPost("pipeline", pipeline);
+  return true;
+}
+
 // Idempotency guard for the autopilot email — one send per calendar date.
 const AUTOPILOT_SENT_PREFIX = "robinhood:autopilot:sent:";
 

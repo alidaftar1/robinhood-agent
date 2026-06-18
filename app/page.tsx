@@ -13,16 +13,24 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
   const chronological = [...runs].reverse();
   let agentIdx = 100;
   let hasReturn = false;
-  let spyBase: number | null = null;
   const points: ReturnPoint[] = [];
+
+  // Anchor SPY to the run just before the first agent return so both series
+  // share the same start point and the comparison is fair.
+  const firstReturnIdx = chronological.findIndex(r => r.agenticDailyReturn != null);
+  const spyBase: number | null = firstReturnIdx > 0
+    ? (chronological[firstReturnIdx - 1].spyPrice ?? null)
+    : firstReturnIdx === 0
+      ? (chronological[0].spyPrice ?? null)
+      : null;
 
   for (const run of chronological) {
     if (run.agenticDailyReturn != null) {
       agentIdx *= (1 + run.agenticDailyReturn);
       hasReturn = true;
     }
-    const spy = run.spyPrice
-      ? (() => { if (spyBase == null) { spyBase = run.spyPrice!; return 100; } return (run.spyPrice! / spyBase) * 100; })()
+    const spy = run.spyPrice && spyBase != null
+      ? (run.spyPrice / spyBase) * 100
       : null;
     points.push({
       date: run.date,
@@ -220,11 +228,19 @@ export default async function DashboardPage({
   const latest = runs[0] ?? null;
   const inception = runs[runs.length - 1] ?? null;
 
+  // Use the run just before the first agent return as the perf baseline so
+  // SPY return covers the same window as the agent cumulative return.
+  const runsChronological = [...runs].reverse();
+  const firstReturnIdx = runsChronological.findIndex(r => r.agenticDailyReturn != null);
+  const perfBaseline = firstReturnIdx > 0
+    ? runsChronological[firstReturnIdx - 1]
+    : (firstReturnIdx === 0 ? runsChronological[0] : inception);
+
   const spyReturn = (() => {
     const ls = latest?.spyPrice;
-    const is = inception?.spyPrice;
-    if (!ls || !is) return null;
-    return ((ls - is) / is) * 100;
+    const bs = perfBaseline?.spyPrice;
+    if (!ls || !bs) return null;
+    return ((ls - bs) / bs) * 100;
   })();
 
   // Transfer-adjusted cumulative return from stored daily returns (null until enough data)
@@ -263,7 +279,7 @@ export default async function DashboardPage({
             <span style={{ ...s.perfValue, color: returnColor(agentReturn) }}>
               {agentReturn != null ? fmtPct(agentReturn) : "—"}
             </span>
-            <span style={s.perfSince}>since {inception!.date}</span>
+            <span style={s.perfSince}>since {perfBaseline?.date ?? inception!.date}</span>
           </div>
           <div style={s.perfStat}>
             <span style={s.perfLabel}>SPY Return</span>

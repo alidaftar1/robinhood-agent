@@ -1,4 +1,4 @@
-import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, computeDailyReturn } from "@/lib/run-store";
+import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, computeDailyReturn } from "@/lib/run-store";
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -96,6 +96,37 @@ export async function GET(request: Request) {
       }
     } catch (e) {
       results.patchTrades = `error: ${e}`;
+    }
+  }
+
+  // Recompute agenticDailyReturn for a specific historical run by date.
+  // Use when a run was injected with agenticDailyReturn=null but all position/trade data is present.
+  if (url.searchParams.get("patchDate")) {
+    const date = url.searchParams.get("patchDate")!;
+    try {
+      const runs = await getRuns(30);
+      const run = runs.find(r => r.date === date);
+      const prevRun = runs.find(r => r.date < date);
+      if (!run || !run.portfolioAfter || !prevRun?.portfolioAfter) {
+        results.patchDate = `run or prev not found for ${date}`;
+      } else {
+        const result = computeDailyReturn(
+          parseFloat(run.portfolioAfter.totalValue),
+          parseFloat(prevRun.portfolioAfter.totalValue),
+          run.positions, prevRun.positions,
+          run.trades ?? []
+        );
+        const patched = await updateRunByDate(date, r => ({
+          ...r,
+          agenticDailyReturn: result?.dailyReturn ?? null,
+          agenticImpliedTransfer: result?.impliedTransfer ?? null,
+        }));
+        results.patchDate = patched
+          ? `${date}: return = ${result?.dailyReturn != null ? (result.dailyReturn * 100).toFixed(2) + "%" : "null"}`
+          : `no run found for ${date}`;
+      }
+    } catch (e) {
+      results.patchDate = `error: ${e}`;
     }
   }
 

@@ -92,6 +92,19 @@ export async function GET(request: Request) {
     );
   }
 
+  // Positions that appeared in the previous run but vanished today without a sell record
+  const prevRun = runs.find(r => r.date < today);
+  if (todayRun && prevRun?.positions?.length) {
+    const todaySyms = new Set(todayRun.positions.map(p => p.symbol));
+    const recordedSells = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
+    const orphaned = prevRun.positions.filter(p => !todaySyms.has(p.symbol) && !recordedSells.has(p.symbol));
+    if (orphaned.length > 0) {
+      issues.push(
+        `Position${orphaned.length > 1 ? "s" : ""} disappeared without sell records: ${orphaned.map(p => p.symbol).join(", ")} — possible unrecorded trade. Run ?patchTrades=1 on /api/debug to fix.`,
+      );
+    }
+  }
+
   const statusLabel = issues.length > 0 ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";
   const statusColor = issues.length > 0 ? "#f59e0b" : "#10b981";
 
