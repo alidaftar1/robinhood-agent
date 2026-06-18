@@ -14,6 +14,7 @@ export interface TradeSnapshot {
   quantity: string;
   avgPrice: string;
   state: string;
+  strategy?: "main" | "influencer"; // which sub-portfolio this trade belongs to
 }
 
 export interface PersonalSnapshot {
@@ -45,6 +46,9 @@ export interface TradeRun {
   personalDailyReturn?: number | null;
   agenticImpliedTransfer?: number | null;
   personalImpliedTransfer?: number | null;
+  // Influencer sub-portfolio (added 2026-06-18)
+  influencerPositions?: PositionSnapshot[];
+  influencerDailyReturn?: number | null;
 }
 
 async function redisCommand(command: string, ...args: (string | number)[]): Promise<unknown> {

@@ -1,8 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { buildSystemPrompt, buildAnalysisPrompt, type PortfolioContext } from "@/lib/strategy";
+import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice } from "@/lib/market-data";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, type PositionSnapshot, type TradeSnapshot, type PersonalSnapshot } from "@/lib/run-store";
+import { getInfluencerSignals, formatInfluencerSignals } from "@/lib/influencer-signals";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 
@@ -10,6 +11,7 @@ export const maxDuration = 300;
 
 const ACCOUNT = process.env.AGENTIC_ACCOUNT_ID ?? "";
 const PERSONAL_ACCOUNT = process.env.PERSONAL_ACCOUNT_ID ?? "";
+const sp500Set = new Set(SP500_UNIVERSE);
 
 async function fetchAgenticBuyingPower(
   anthropic: Anthropic,
@@ -143,13 +145,14 @@ export async function GET(request: Request) {
     const accessToken = await getValidAccessToken();
     console.log("TOKEN_OK");
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions] = await Promise.all([
+    const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache] = await Promise.all([
       getMarketData(),
       fetchCurrentPrice("SPY"),
       getLatestRun(),
       getPreviousDayRun(today),
       fetchAgenticBuyingPower(anthropic, accessToken),
       fetchAgenticPositions(anthropic, accessToken),
+      getInfluencerSignals(),
     ]);
     console.log("MARKET_DATA_OK", { stocks: marketData.stocks.length });
     if (agenticBalance) {
@@ -163,6 +166,25 @@ export async function GET(request: Request) {
     const tradingStart = Date.now();
 
     const priceMap = new Map<string, number>(marketData.stocks.map(s => [s.symbol, s.price]));
+
+    // Fetch live prices for top influencer tickers (those outside the SP500 universe)
+    let influencerSection = "";
+    if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
+      const topInfluencerTickers = Object.entries(influencerCache.tickerCounts)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 12)
+        .map(([t]) => t)
+        .filter(t => !priceMap.has(t)); // only fetch those not already in market data
+      if (topInfluencerTickers.length > 0) {
+        const extraPrices = await Promise.allSettled(topInfluencerTickers.map(t => fetchCurrentPrice(t).then(p => ({ t, p }))));
+        for (const r of extraPrices) {
+          if (r.status === "fulfilled" && r.value.p != null) {
+            priceMap.set(r.value.t, r.value.p);
+          }
+        }
+      }
+      influencerSection = formatInfluencerSignals(influencerCache, priceMap);
+    }
 
     // Always inject portfolio state so Claude never needs to call get_portfolio or get_equity_positions.
     // Use live Haiku-fetched data when available; fall back to previous run estimate.
@@ -200,7 +222,7 @@ export async function GET(request: Request) {
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 2048,
-        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx!),
+        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx!, influencerSection),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       }, { signal: analysisController.signal });
       analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -211,7 +233,7 @@ export async function GET(request: Request) {
     textContent = analysisText;
 
     // Parse TRADE_DECISION
-    type TradeDecision = { thesis: string; sells: Array<{ symbol: string; quantity: number }>; buys: Array<{ symbol: string; quantity: number; price: number }> };
+    type TradeDecision = { thesis: string; sells: Array<{ symbol: string; quantity: number }>; buys: Array<{ symbol: string; quantity: number; price: number; strategy?: string }> };
     let decision: TradeDecision = { thesis: "", sells: [], buys: [] };
     const decisionMatch = analysisText.match(/^TRADE_DECISION:(.+)$/m);
     if (decisionMatch) {
@@ -243,8 +265,11 @@ export async function GET(request: Request) {
         }, { signal: sellController.signal });
         const sellText = sellResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
         console.log("SELLS_DONE", { result: sellText.slice(0, 100) });
+        // Inherit strategy tag from the previous run's buy trade for this position
+        const prevTrades = previousRun?.trades ?? [];
         for (const s of decision.sells) {
-          trades.push({ symbol: s.symbol, side: "sell", quantity: String(s.quantity), avgPrice: String(priceMap.get(s.symbol) ?? 0), state: "filled" });
+          const origBuy = prevTrades.find(t => t.side === "buy" && t.symbol === s.symbol);
+          trades.push({ symbol: s.symbol, side: "sell", quantity: String(s.quantity), avgPrice: String(priceMap.get(s.symbol) ?? 0), state: "filled", strategy: origBuy?.strategy });
         }
       } catch (e) {
         console.warn("SELLS_FAILED", e instanceof Error ? e.message : String(e));
@@ -274,8 +299,12 @@ export async function GET(request: Request) {
         console.log("BUYS_DONE", { result: buyText.slice(0, 100) });
         buysSessionSucceeded = true;
         // Temporarily populate with planned prices — verification step below overwrites with real fill data.
+        // Guard: any non-S&P 500 ticker (expanded universe) can ONLY belong to the influencer bucket.
         for (const b of decision.buys) {
-          trades.push({ symbol: b.symbol, side: "buy", quantity: String(b.quantity), avgPrice: String(b.price), state: "unconfirmed" });
+          const isSP500 = sp500Set.has(b.symbol);
+          const strategy: "main" | "influencer" =
+            (b.strategy === "influencer" || !isSP500) ? "influencer" : "main";
+          trades.push({ symbol: b.symbol, side: "buy", quantity: String(b.quantity), avgPrice: String(b.price), state: "unconfirmed", strategy });
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -316,13 +345,14 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
           const verifiedMap = new Map(verifiedOrders.map(o => [o.symbol, o]));
           console.log("VERIFY_OK", { verified: verifiedOrders.length, planned: decision.buys.length });
 
-          // Replace unconfirmed placeholders with real fill data.
+          // Replace unconfirmed placeholders with real fill data (preserve strategy tag).
+          const strategyBySymbol = new Map(trades.filter(t => t.side === "buy").map(t => [t.symbol, t.strategy]));
           trades = trades.filter(t => t.side !== "buy");
           const missing: string[] = [];
           for (const b of decision.buys) {
             const real = verifiedMap.get(b.symbol);
             if (real) {
-              trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state });
+              trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state, strategy: strategyBySymbol.get(b.symbol) });
             } else {
               missing.push(b.symbol);
             }
@@ -473,6 +503,33 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
         )
       : null;
 
+    // Derive influencer sub-portfolio: positions that had a buy trade tagged "influencer"
+    const influencerBoughtSymbols = new Set(
+      trades.filter(t => t.side === "buy" && t.strategy === "influencer").map(t => t.symbol)
+    );
+    // Also carry forward influencer positions from previous run that weren't sold today
+    const prevInfluencerSymbols = new Set(
+      (previousRun?.influencerPositions ?? []).map(p => p.symbol)
+    );
+    const soldSymbolsSet = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
+    const influencerSymbols = new Set([
+      ...influencerBoughtSymbols,
+      ...[...prevInfluencerSymbols].filter(s => !soldSymbolsSet.has(s)),
+    ]);
+    const influencerPositions = positions.filter(p => influencerSymbols.has(p.symbol));
+
+    // Influencer daily return: P&L of influencer positions vs previous day
+    const prevInfluencerPositions = previousDayRun?.influencerPositions ?? [];
+    const influencerResult = influencerPositions.length > 0 && prevInfluencerPositions.length > 0
+      ? computeDailyReturn(
+          influencerPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0),
+          prevInfluencerPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0),
+          influencerPositions,
+          prevInfluencerPositions,
+          trades.filter(t => influencerSymbols.has(t.symbol))
+        )
+      : null;
+
     // Patch the run already saved at index 0 with personal snapshot + return metrics.
     await updateLatestRun({
       ...baseRun,
@@ -480,10 +537,12 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
       positions,
       trades,
       personal,
+      influencerPositions,
       agenticDailyReturn: agenticResult?.dailyReturn ?? null,
       personalDailyReturn: personalResult?.dailyReturn ?? null,
       agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null,
       personalImpliedTransfer: personalResult?.impliedTransfer ?? null,
+      influencerDailyReturn: influencerResult?.dailyReturn ?? null,
     });
 
     console.log("TRADE_RUN_COMPLETE", { date: today, summary: textContent.slice(0, 300) });

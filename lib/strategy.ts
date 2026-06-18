@@ -173,7 +173,7 @@ Rules for each field:
 - Use prices from the market data table.`;
 }
 
-export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext): string {
+export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext, influencerSection?: string): string {
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => `  ${p.symbol} × ${p.quantity} @ $${parseFloat(p.avgCost).toFixed(2)} avg`).join("\n")
     : "  (none — full cash)";
@@ -213,11 +213,13 @@ CONSTRAINTS:
 - HARD LIMIT: total cost of all buys ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} (settled buying power). This number is fixed — selling today does NOT increase it. If you sell $300 of stock today and settled power is $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}, you can still only spend $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} on buys.
 
 Write a brief thesis (2–4 sentences). Then, before writing TRADE_DECISION, compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}. If it exceeds that, reduce or remove the most expensive buy until it fits. Then output exactly one line:
-TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","quantity":N}],"buys":[{"symbol":"X","quantity":N,"price":P}]}
+TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","quantity":N}],"buys":[{"symbol":"X","quantity":N,"price":P,"strategy":"main"}]}
 
 Rules:
 - sells = only symbols you currently hold that you want to exit
-- buys = new or added positions, total cost ≤ settled buying power, prices from the market data table
+- buys = new or added positions, total cost ≤ settled buying power, prices from the market data table or influencer price column
+- strategy = "main" for S&P 500 picks (default), "influencer" for picks from the INFLUENCER SIGNALS section
 - If nothing to sell: sells=[]
-- If not enough buying power or no good opportunities: buys=[]`;
+- If not enough buying power or no good opportunities: buys=[]
+${influencerSection ?? ""}`;
 }
