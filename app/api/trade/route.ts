@@ -375,23 +375,12 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
         const missingSells = livePositions.filter(p => !afterSymbols.has(p.symbol) && !recordedSells.has(p.symbol));
 
         if (missingSells.length > 0) {
-          // Derive total sell proceeds from the cash flow identity:
-          //   cashAfter = cashBefore - buyCost + sellProceeds
-          const buyCost = trades.filter(t => t.side === "buy")
-            .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
-          const totalProceeds = Math.max(0, cashAfter - agenticBalance.buyingPower + buyCost);
-
-          // Allocate proceeds proportionally by each position's estimated market value
-          const totalEstValue = missingSells.reduce((s, p) => {
-            return s + parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost));
-          }, 0);
-
+          // Use current market price as best estimate of the fill price.
+          // The cash-flow identity (cashAfter - cashBefore + buyCost) is unreliable
+          // here because cashAfter includes T+1 settlement from the previous day's
+          // sells, which has nothing to do with today's inferred sell proceeds.
           for (const pos of missingSells) {
-            const estPrice = priceMap.get(pos.symbol) ?? parseFloat(pos.avgCost);
-            const estValue = parseFloat(pos.quantity) * estPrice;
-            const proportion = totalEstValue > 0 ? estValue / totalEstValue : 1 / missingSells.length;
-            const proceeds = totalProceeds * proportion;
-            const avgPrice = parseFloat(pos.quantity) > 0 ? proceeds / parseFloat(pos.quantity) : estPrice;
+            const avgPrice = priceMap.get(pos.symbol) ?? parseFloat(pos.avgCost);
             trades.push({ symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred" });
             console.log("INFERRED_SELL", { symbol: pos.symbol, quantity: pos.quantity, avgPrice: avgPrice.toFixed(2) });
           }

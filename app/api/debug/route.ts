@@ -59,25 +59,21 @@ export async function GET(request: Request) {
       const prevDay = runs.find(r => r.date < (latest?.date ?? ""));
       if (latest && prevDay?.portfolioAfter) {
         const todaySymbols = new Set(latest.positions.map(p => p.symbol));
-        const recordedSells = new Set((latest.trades ?? []).filter(t => t.side === "sell").map(t => t.symbol));
+        // Strip any previously inferred sells so we can re-derive them with the corrected formula
+        const realTrades = (latest.trades ?? []).filter(t => t.state !== "inferred");
+        const recordedSells = new Set(realTrades.filter(t => t.side === "sell").map(t => t.symbol));
         const missingSellPos = prevDay.positions.filter(p => !todaySymbols.has(p.symbol) && !recordedSells.has(p.symbol));
 
         if (missingSellPos.length > 0) {
-          const buyCost = (latest.trades ?? []).filter(t => t.side === "buy")
-            .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
-          const cashBefore = parseFloat(prevDay.portfolioAfter.cash);
-          const cashAfter = parseFloat(latest.portfolioAfter?.cash ?? "0");
-          const totalProceeds = Math.max(0, cashAfter - cashBefore + buyCost);
-          const totalEstValue = missingSellPos.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
-
+          // Use prevDay position's stored price as best estimate of fill price.
+          // The cash-flow identity is unreliable here: cashAfter includes T+1
+          // settlement from the previous day's sells, inflating apparent proceeds.
           const inferredSells = missingSellPos.map(pos => {
-            const estValue = parseFloat(pos.quantity) * parseFloat(pos.price);
-            const proportion = totalEstValue > 0 ? estValue / totalEstValue : 1 / missingSellPos.length;
-            const avgPrice = parseFloat(pos.quantity) > 0 ? (totalProceeds * proportion) / parseFloat(pos.quantity) : parseFloat(pos.price);
+            const avgPrice = parseFloat(pos.price) > 0 ? parseFloat(pos.price) : parseFloat(pos.avgCost);
             return { symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred" };
           });
 
-          const patchedTrades = [...(latest.trades ?? []), ...inferredSells];
+          const patchedTrades = [...realTrades, ...inferredSells];
           const agenticResult = latest.portfolioAfter
             ? computeDailyReturn(
                 parseFloat(latest.portfolioAfter.totalValue),
