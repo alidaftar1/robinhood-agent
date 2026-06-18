@@ -1,7 +1,7 @@
 import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 
-export const maxDuration = 60;
+export const maxDuration = 90;
 
 function todayPT(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
@@ -42,21 +42,36 @@ export async function GET(request: Request) {
   let selfHealed = false;
 
   if (!todayRun) {
-    // Attempt self-heal: trigger the trade cron and re-fetch.
-    try {
-      const host = new URL(request.url).origin;
-      const tradeRes = await fetch(`${host}/api/trade`, {
-        headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
-      });
-      if (tradeRes.ok) {
-        selfHealed = true;
-        runs = await getRuns(5);
-        todayRun = runs.find((r) => r.date === today) ?? null;
-      } else {
-        issues.push(`Trade cron missing — auto-trigger failed (${tradeRes.status}).`);
+    // Attempt self-heal: trigger the trade cron and re-fetch. Retry once (15s delay)
+    // in case a deployment was still rolling out when the 7:30am cron fired.
+    const host = new URL(request.url).origin;
+    const secret = process.env.CRON_SECRET ?? "";
+    let triggerOk = false;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (attempt === 2) await new Promise((r) => setTimeout(r, 15_000));
+      try {
+        const tradeRes = await fetch(`${host}/api/trade`, {
+          headers: { Authorization: `Bearer ${secret}` },
+        });
+        if (tradeRes.ok) {
+          triggerOk = true;
+          break;
+        }
+        if (attempt === 2) {
+          issues.push(`Trade cron missing — auto-trigger failed after 2 attempts (${tradeRes.status}).`);
+        }
+      } catch {
+        if (attempt === 2) {
+          issues.push("Trade cron missing — auto-trigger threw an error after 2 attempts.");
+        }
       }
-    } catch {
-      issues.push("Trade cron missing — auto-trigger threw an error.");
+    }
+
+    if (triggerOk) {
+      selfHealed = true;
+      runs = await getRuns(5);
+      todayRun = runs.find((r) => r.date === today) ?? null;
     }
 
     if (!todayRun) {
