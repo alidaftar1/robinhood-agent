@@ -1,3 +1,4 @@
+import React from "react";
 import { getRuns, type TradeRun } from "@/lib/run-store";
 
 // ─── Return series + chart ────────────────────────────────────────────────────
@@ -90,6 +91,55 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
       })}
     </svg>
   );
+}
+
+// ─── Markdown renderer ───────────────────────────────────────────────────────
+
+function renderInline(text: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((p, i) =>
+    p.startsWith("**") && p.endsWith("**")
+      ? <strong key={i}>{p.slice(2, -2)}</strong>
+      : p
+  );
+}
+
+function MarkdownSummary({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const nodes: React.ReactNode[] = [];
+  let bulletBuffer: string[] = [];
+
+  const flushBullets = () => {
+    if (bulletBuffer.length === 0) return;
+    nodes.push(
+      <ul key={nodes.length} style={{ margin: "4px 0 4px 16px", padding: 0 }}>
+        {bulletBuffer.map((b, i) => (
+          <li key={i} style={{ marginBottom: 2 }}>{renderInline(b)}</li>
+        ))}
+      </ul>
+    );
+    bulletBuffer = [];
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (line.startsWith("### ")) {
+      flushBullets();
+      nodes.push(<div key={nodes.length} style={{ fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.5px", color: "#666", marginTop: 14, marginBottom: 4 }}>{line.slice(4)}</div>);
+    } else if (line.startsWith("## ")) {
+      flushBullets();
+      nodes.push(<div key={nodes.length} style={{ fontWeight: 700, fontSize: 13, color: "#999", marginTop: 16, marginBottom: 6 }}>{line.slice(3)}</div>);
+    } else if (line.startsWith("- ")) {
+      bulletBuffer.push(line.slice(2));
+    } else if (line.trim() === "") {
+      flushBullets();
+    } else {
+      flushBullets();
+      nodes.push(<div key={nodes.length} style={{ marginBottom: 4 }}>{renderInline(line)}</div>);
+    }
+  }
+  flushBullets();
+  return <>{nodes}</>;
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -333,7 +383,7 @@ export default async function DashboardPage({
               )}
 
               <hr style={s.divider} />
-              <div style={s.summary}>{run.summary}</div>
+              <div style={s.summary}><MarkdownSummary text={run.summary} /></div>
             </div>
           );
         })
