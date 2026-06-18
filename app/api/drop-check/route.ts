@@ -22,6 +22,11 @@ export async function GET(request: Request) {
     return Response.json({ skipped: true, reason: "market holiday" });
   }
 
+  // scope=influencer → only check influencer positions (hourly tight leash).
+  // No scope → check ALL positions (the original once-daily full stop check).
+  const scope = new URL(request.url).searchParams.get("scope");
+  const influencerOnly = scope === "influencer";
+
   const previousRun = await getLatestRun();
   const heldPositions = previousRun?.positions ?? [];
 
@@ -33,16 +38,26 @@ export async function GET(request: Request) {
   // A position is an influencer pick if it appears in the latest run's influencerPositions
   const influencerSymbols = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
 
-  // CHEAP DETECTION PASS — fetch only held-position quotes (≤10), not the full universe.
+  // Detection set: influencer-only runs check just those names; full runs check everything.
+  // (Holdings context for redeployment below always uses the complete position list.)
+  const positionsToCheck = influencerOnly
+    ? heldPositions.filter((p) => influencerSymbols.has(p.symbol))
+    : heldPositions;
+
+  if (positionsToCheck.length === 0) {
+    return Response.json({ skipped: true, reason: influencerOnly ? "no influencer positions" : "no positions held" });
+  }
+
+  // CHEAP DETECTION PASS — fetch only the to-check position quotes (≤10), not the full universe.
   // Lets this run hourly without hammering Yahoo. Full market data is only loaded below
   // if a drop is actually detected (needed for the redeployment prompt).
   const liteQuotes = await Promise.all(
-    heldPositions.map((p) => fetchQuoteLite(p.symbol).then((q) => ({ symbol: p.symbol, q })))
+    positionsToCheck.map((p) => fetchQuoteLite(p.symbol).then((q) => ({ symbol: p.symbol, q })))
   );
   const liteMap = new Map(liteQuotes.map((r) => [r.symbol, r.q]));
 
-  // Find held positions with a severe intraday drop
-  const droppedPositions = heldPositions
+  // Find positions with a severe drop
+  const droppedPositions = positionsToCheck
     .map((p) => {
       const q = liteMap.get(p.symbol);
       const currentPrice = q?.price ?? 0;
@@ -61,11 +76,11 @@ export async function GET(request: Request) {
     .filter(({ change1d }) => change1d <= DROP_THRESHOLD_PCT);
 
   if (droppedPositions.length === 0) {
-    const worst = heldPositions
+    const worst = positionsToCheck
       .map((p) => `${p.symbol}(${(liteMap.get(p.symbol)?.change1d ?? 0).toFixed(1)}%)`)
       .join(", ");
-    console.log("DROP_CHECK_SKIP — no severe drops", { held: worst });
-    return Response.json({ skipped: true, reason: "no severe drops", held: worst });
+    console.log("DROP_CHECK_SKIP — no severe drops", { scope: scope ?? "all", held: worst });
+    return Response.json({ skipped: true, reason: "no severe drops", scope: scope ?? "all", held: worst });
   }
 
   const droppedNames = droppedPositions
