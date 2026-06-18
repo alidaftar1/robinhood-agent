@@ -79,7 +79,7 @@ rank = sharpe5d × 0.6 + sharpe14d × 0.4
 
 ## Eval suite
 
-25 scenarios covering the full decision space. Run with:
+12 scenarios, 25+ structural checks covering the full decision space. Run with:
 
 ```bash
 bun --env-file=.env.local test evals/eval.test.ts
@@ -178,7 +178,7 @@ lib/market-data.ts              — Price data, momentum signals, formatting
 lib/run-store.ts                — Redis read/write helpers
 lib/insider.ts                  — EDGAR insider buy fetching
 lib/analyst.ts                  — Analyst rating fetching
-evals/eval.test.ts              — Full eval suite (25 scenarios)
+evals/eval.test.ts              — Full eval suite (12 scenarios, 25+ checks)
 evals/fixtures.ts               — Market data fixtures + scenario definitions
 evals/checks.ts                 — Structural assertion library
 scripts/autopilot.sh            — Local autopilot shell script
