@@ -131,12 +131,82 @@ export async function GET(request: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const url = new URL(request.url);
+  const dryRun = url.searchParams.get("dryRun") === "1";
+  const simulateCash = url.searchParams.get("simulateCash");
+
   try {
     const today = new Date().toISOString().split("T")[0];
 
     if (isMarketHoliday(today)) {
       console.log("MARKET_HOLIDAY_SKIP", { date: today });
       return Response.json({ skipped: true, reason: "market holiday", date: today });
+    }
+
+    // ── DRY RUN ───────────────────────────────────────────────────────────────
+    // Analysis only: no MCP, no orders, no saveRun. Lets us validate that influencer
+    // signals flow into Sonnet's decision (and the influencer cap) without real trades.
+    if (dryRun) {
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const [marketData, previousRun, influencerCache] = await Promise.all([
+        getMarketData(),
+        getLatestRun(),
+        getInfluencerSignals(),
+      ]);
+      const priceMap = new Map<string, number>(marketData.stocks.map(s => [s.symbol, s.price]));
+
+      // Price influencer tickers not already in the market table
+      let influencerSection = "";
+      if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
+        const topTickers = Object.entries(influencerCache.tickerCounts)
+          .sort(([, a], [, b]) => b - a).slice(0, 12).map(([t]) => t).filter(t => !priceMap.has(t));
+        if (topTickers.length > 0) {
+          const extra = await Promise.allSettled(topTickers.map(t => fetchCurrentPrice(t).then(p => ({ t, p }))));
+          for (const r of extra) if (r.status === "fulfilled" && r.value.p != null) priceMap.set(r.value.t, r.value.p);
+        }
+        influencerSection = formatInfluencerSignals(influencerCache, priceMap);
+      }
+
+      const buyingPower = simulateCash ? parseFloat(simulateCash) : parseFloat(previousRun?.portfolioAfter?.cash ?? "0");
+      const portfolioCtx: PortfolioContext = {
+        buyingPower: `$${buyingPower.toFixed(2)} (SIMULATED — dry run)`,
+        totalValue: `$${previousRun?.portfolioAfter?.totalValue ?? "0"} (estimated)`,
+        positions: (previousRun?.positions ?? []).map(p => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost })),
+      };
+
+      const analysisResp = await (anthropic.beta.messages as any).create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 2048,
+        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx, influencerSection),
+        messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
+      });
+      const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+
+      type DryDecision = { thesis: string; sells: Array<{ symbol: string; quantity: number }>; buys: Array<{ symbol: string; quantity: number; price: number; strategy?: string }> };
+      let decision: DryDecision = { thesis: "", sells: [], buys: [] };
+      const m = analysisText.match(/^TRADE_DECISION:(.+)$/m);
+      if (m) { try { decision = JSON.parse(m[1]); } catch { /* keep empty */ } }
+
+      // Apply the same influencer cap logic the real run uses (display only)
+      const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !decision.sells.some(s => s.symbol === p.symbol)).length;
+      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) => b.strategy === "influencer" || !sp500Set.has(b.symbol);
+      const annotatedBuys = decision.buys.map(b => ({
+        ...b,
+        resolvedStrategy: isInfluencerBuy(b) ? "influencer" : "main",
+      }));
+      const influencerBuys = annotatedBuys.filter(b => b.resolvedStrategy === "influencer");
+      const allowedNew = Math.max(0, 2 - keptInfluencer);
+
+      return Response.json({
+        dryRun: true,
+        simulateCash: buyingPower,
+        influencerSignalsAvailable: influencerCache?.signals.length ?? 0,
+        topInfluencerTickers: Object.entries(influencerCache?.tickerCounts ?? {}).sort(([, a], [, b]) => b - a).slice(0, 8).map(([t, s]) => `${t}(${s})`),
+        influencerSectionInjected: influencerSection.length > 0,
+        decision: { thesis: decision.thesis, sells: decision.sells, buys: annotatedBuys },
+        influencerCap: { keptInfluencer, allowedNew, influencerBuysRequested: influencerBuys.length, wouldTrim: Math.max(0, influencerBuys.length - allowedNew) },
+        thesisPreview: analysisText.slice(0, 1200),
+      });
     }
 
     console.log("TRADE_START");

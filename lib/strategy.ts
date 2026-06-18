@@ -211,8 +211,9 @@ CONSTRAINTS:
 - Max $400 per position, min $50. Whole shares only. Stocks from table only.
 - Never buy ⚠⚠ IMMINENT.
 - HARD LIMIT: total cost of all buys ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} (settled buying power). This number is fixed — selling today does NOT increase it. If you sell $300 of stock today and settled power is $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}, you can still only spend $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} on buys.
+${influencerSection ?? ""}
 
-Write a brief thesis (2–4 sentences). Then, before writing TRADE_DECISION, compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}. If it exceeds that, reduce or remove the most expensive buy until it fits. Then output exactly one line:
+Write a brief thesis (2–4 sentences). ${influencerSection ? "Your thesis MUST explicitly state your influencer-bucket decision: which influencer pick(s) you're buying and why, OR — if you're buying none — the specific disqualifier (all picks priced > $400, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer bucket." : ""} Then, before writing TRADE_DECISION, compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}. If it exceeds that, reduce or remove the most expensive buy until it fits. Then output exactly one line:
 TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","quantity":N}],"buys":[{"symbol":"X","quantity":N,"price":P,"strategy":"main"}]}
 
 Rules:
@@ -220,6 +221,5 @@ Rules:
 - buys = new or added positions, total cost ≤ settled buying power, prices from the market data table or influencer price column
 - strategy = "main" for S&P 500 picks (default), "influencer" for picks from the INFLUENCER SIGNALS section
 - If nothing to sell: sells=[]
-- If not enough buying power or no good opportunities: buys=[]
-${influencerSection ?? ""}`;
+- If not enough buying power or no good opportunities: buys=[]`;
 }
