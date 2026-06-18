@@ -1,8 +1,8 @@
 const TOKEN_ENDPOINT = "https://api.robinhood.com/oauth2/token/";
-const CLIENT_ID = "LtLiNmbs9owbYfWgBlC68Z2V-claude";
+const CLIENT_ID = "LtLiNmbs9owbYfWgBlC68Z2V-claude"; // public Robinhood MCP OAuth client
 const REDIS_KEY = "robinhood:tokens";
-const VERCEL_PROJECT_ID = "prj_ZuxI54GfDuF8LHkPeFO6v50Eq2m8";
-const VERCEL_TEAM_ID = "team_LfvuFaOuFGNzwcXHyNvEsw8Z";
+const VERCEL_PROJECT_ID = process.env.VERCEL_PROJECT_ID ?? "";
+const VERCEL_TEAM_ID = process.env.VERCEL_TEAM_ID ?? "";
 const BUFFER_MS = 5 * 60 * 1000; // refresh 5 min before expiry
 
 interface StoredTokens {

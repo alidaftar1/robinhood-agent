@@ -109,7 +109,7 @@ Each scenario runs 10 structural checks (sell-before-buy ordering, position caps
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/robinhood-agent
+git clone https://github.com/alidaftar1/robinhood-agent
 cd robinhood-agent
 bun install
 ```
