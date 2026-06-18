@@ -376,19 +376,25 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
   if (!rows) return "";
 
   return `\n\n══════════════════════════════════════════════════════
-INFLUENCER SIGNALS (YouTube — last 48h) — refreshed ${cache.refreshedAt.slice(0, 10)}
+INFLUENCER SIGNALS (YouTube — last 7 days) — refreshed ${cache.refreshedAt.slice(0, 10)}
 Independent finance YouTubers (Meet Kevin, Tom Nash, Ticker Symbol YOU, etc.)
-You have 25% of total budget (~$511) reserved for influencer picks.
-Rules for influencer sub-portfolio:
-• Pick at most 1–2 tickers from this list — HARD LIMIT of 2 influencer positions held at once (the system will reject extras)
-• Total influencer buys this run should stay within ~25% of total portfolio (~$511) — do NOT over-allocate to influencer picks
-• Max $400 per position (same as main strategy), min $50
-• Prefer score ≥ 3 (multiple channel mentions or high-confidence pick)
-• Must fit within your settled buying power (shared pool)
-• Tag ALL influencer buys in TRADE_DECISION with "strategy":"influencer"
-• Tickers in THIS section that are NOT S&P 500 constituents (e.g. PLTR, COIN, HOOD, RBLX) may ONLY be bought as influencer picks — never as a "main" pick
-• Your main S&P 500 momentum picks default to "main" — do not tag them
+This is a deliberate HIGH-RISK / HIGH-REWARD sleeve — ~25% of total budget (~$511) is
+allocated to following these creators' picks. It runs ALONGSIDE your main momentum book,
+NOT instead of it. Do not skip it just because your momentum table looks better.
+
+ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
+• If ANY ticker below has score ≥ 3, you SHOULD buy 1–2 of them this run (target ~25% of budget),
+  UNLESS every qualifying pick is disqualified (price > $400, ⚠⚠ imminent earnings, or no settled cash).
+• HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
+• Max $400 per position, min $50. Whole shares only.
+• Prefer the highest score; a score-6 pick is a strong, broadly-covered signal — do not ignore it.
+• Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".
+• Non-S&P-500 tickers here (e.g. SPCX, PLTR, COIN, HOOD) can ONLY be bought as influencer picks.
+• These are funded from the SAME settled buying power as main picks — total buys still ≤ budget.
 
 ${rows}
+
+Reminder: influencer names are volatile by design and carry a tight −5% stop. That is expected —
+the sleeve is sized small (25%) precisely so you can take these higher-variance bets.
 ══════════════════════════════════════════════════════`;
 }
