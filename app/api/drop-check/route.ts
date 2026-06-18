@@ -34,11 +34,28 @@ export async function GET(request: Request) {
     fetchCurrentPrice("SPY"),
   ]);
 
+  const priceMapDrop = new Map(marketData.stocks.map(s => [s.symbol, s.price]));
+
+  // Influencer picks: use tighter stop-loss vs buy price (not prev close)
+  // A position is an influencer pick if it appears in the latest run's influencerPositions
+  const influencerSymbols = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
+
   // Find held positions with a severe intraday drop
   const droppedPositions = heldPositions
     .map((p) => {
       const stock = marketData.stocks.find((s) => s.symbol === p.symbol);
-      return { position: p, change1d: stock?.change1d ?? 0 };
+      const currentPrice = priceMapDrop.get(p.symbol) ?? 0;
+      const isInfluencer = influencerSymbols.has(p.symbol);
+
+      let change1d: number;
+      if (isInfluencer && currentPrice > 0 && parseFloat(p.avgCost) > 0) {
+        // For influencer picks: measure drop from buy price, not previous close
+        change1d = ((currentPrice - parseFloat(p.avgCost)) / parseFloat(p.avgCost)) * 100;
+      } else {
+        change1d = stock?.change1d ?? 0;
+      }
+
+      return { position: p, change1d, isInfluencer };
     })
     .filter(({ change1d }) => change1d <= DROP_THRESHOLD_PCT);
 

@@ -7,12 +7,15 @@ interface ReturnPoint {
   date: string;
   agentic: number | null;
   spy: number | null;
+  influencer: number | null;
 }
 
 function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
   const chronological = [...runs].reverse();
   let agentIdx = 100;
+  let influencerIdx = 100;
   let hasReturn = false;
+  let hasInfluencer = false;
   const points: ReturnPoint[] = [];
 
   // Anchor SPY to the run just before the first agent return so both series
@@ -29,6 +32,10 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
       agentIdx *= (1 + run.agenticDailyReturn);
       hasReturn = true;
     }
+    if (run.influencerDailyReturn != null) {
+      influencerIdx *= (1 + run.influencerDailyReturn);
+      hasInfluencer = true;
+    }
     const spy = run.spyPrice && spyBase != null
       ? (run.spyPrice / spyBase) * 100
       : null;
@@ -36,6 +43,7 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
       date: run.date,
       agentic: hasReturn ? agentIdx : null,
       spy,
+      influencer: hasInfluencer ? influencerIdx : null,
     });
   }
   return points;
@@ -48,7 +56,7 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
   const W = 760, H = 140, PL = 44, PR = 12, PT = 8, PB = 28;
   const cw = W - PL - PR, ch = H - PT - PB;
 
-  const allVals = valid.flatMap(p => [p.agentic, p.spy].filter(v => v != null) as number[]);
+  const allVals = valid.flatMap(p => [p.agentic, p.spy, p.influencer].filter(v => v != null) as number[]);
   const minV = Math.min(...allVals), maxV = Math.max(...allVals);
   const pad = Math.max((maxV - minV) * 0.1, 1);
   const lo = minV - pad, hi = maxV + pad;
@@ -82,6 +90,7 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
       {/* Lines */}
       {polyline(p => p.spy, "#444")}
       {polyline(p => p.agentic, "#7dba7d")}
+      {polyline(p => p.influencer, "#e8943a")}
       {/* Y-axis labels */}
       {ticks.map((t, i) => (
         <text key={i} x={PL - 4} y={yOf(t) + 4} textAnchor="end" fill="#555" fontSize="10">
@@ -252,6 +261,14 @@ export default async function DashboardPage({
   const alpha = agentReturn != null && spyReturn != null ? agentReturn - spyReturn : null;
   const hasComparison = returnSeries.some(p => p.agentic != null);
 
+  const latestInfluencer = returnSeries[returnSeries.length - 1]?.influencer;
+  const influencerCumReturn = latestInfluencer != null ? latestInfluencer - 100 : null;
+  const influencerAlpha = influencerCumReturn != null && spyReturn != null ? influencerCumReturn - spyReturn : null;
+  const hasInfluencerData = returnSeries.some(p => p.influencer != null);
+
+  // Influencer positions in latest run
+  const influencerPositions = latest?.influencerPositions ?? [];
+
   const runsWithReturn = runs.filter(r => r.agenticDailyReturn != null);
   const winRate = runsWithReturn.length >= 3
     ? runsWithReturn.filter(r => r.agenticDailyReturn! > 0).length / runsWithReturn.length
@@ -316,6 +333,35 @@ export default async function DashboardPage({
         </div>
       )}
 
+      {/* Influencer sub-portfolio card */}
+      {(hasInfluencerData || influencerPositions.length > 0) && (
+        <div style={{ ...s.perfCard, borderColor: "#2a1f0d" }}>
+          <div style={{ ...s.perfStat }}>
+            <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>📺 Influencer Return</span>
+            <span style={{ ...s.perfValue, color: returnColor(influencerCumReturn) }}>
+              {influencerCumReturn != null ? fmtPct(influencerCumReturn) : "—"}
+            </span>
+            <span style={s.perfSince}>YouTube picks sub-portfolio</span>
+          </div>
+          <div style={s.perfStat}>
+            <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>vs SPY</span>
+            <span style={{ ...s.perfValue, color: returnColor(influencerAlpha) }}>
+              {influencerAlpha != null ? fmtPct(influencerAlpha) : "—"}
+            </span>
+            <span style={s.perfSince}>influencer alpha</span>
+          </div>
+          {influencerPositions.length > 0 && (
+            <div style={s.perfStat}>
+              <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>Positions</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: "#e8943a", marginTop: 4 }}>
+                {influencerPositions.map(p => p.symbol).join(", ")}
+              </span>
+              <span style={s.perfSince}>~25% of budget</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {hasComparison && (
         <div style={s.chartCard}>
           <div style={s.chartTitle}>Performance Comparison (indexed to 100)</div>
@@ -325,6 +371,12 @@ export default async function DashboardPage({
               <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#7dba7d" strokeWidth="2" /></svg>
               Agentic {agenticCumReturn != null ? `(${fmtPct(agenticCumReturn)})` : ""}
             </div>
+            {hasInfluencerData && (
+              <div style={s.legendItem}>
+                <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#e8943a" strokeWidth="2" /></svg>
+                Influencer {influencerCumReturn != null ? `(${fmtPct(influencerCumReturn)})` : ""}
+              </div>
+            )}
             <div style={s.legendItem}>
               <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#444" strokeWidth="2" /></svg>
               SPY
@@ -379,6 +431,7 @@ export default async function DashboardPage({
                       <span key={j} style={t.side === "buy" ? s.tradeBuy : s.tradeSell}>
                         <span>{t.side === "buy" ? "▲ BUY" : "▼ SELL"}</span>
                         <span>{t.symbol} ×{parseFloat(t.quantity).toFixed(0)} @ ${parseFloat(t.avgPrice || "0").toFixed(2)}</span>
+                        {t.strategy === "influencer" && <span style={{ fontSize: 10, opacity: 0.7 }}>📺</span>}
                       </span>
                     ))}
                   </div>
