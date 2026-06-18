@@ -139,5 +139,16 @@ export async function GET(request: Request) {
     }
   }
 
+  // Clear agenticDailyReturn for a specific date (use when early runs have bogus 0% same-day returns)
+  if (url.searchParams.get("clearReturnForDate")) {
+    const date = url.searchParams.get("clearReturnForDate")!;
+    try {
+      const patched = await updateRunByDate(date, r => ({ ...r, agenticDailyReturn: null, agenticImpliedTransfer: null }));
+      results.clearReturnForDate = patched ? `cleared return for ${date}` : `no run found for ${date}`;
+    } catch (e) {
+      results.clearReturnForDate = `error: ${e}`;
+    }
+  }
+
   return Response.json(results);
 }
