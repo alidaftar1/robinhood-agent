@@ -380,7 +380,7 @@ INFLUENCER SIGNALS (YouTube — last 48h) — refreshed ${cache.refreshedAt.slic
 Independent finance YouTubers (Meet Kevin, Tom Nash, Ticker Symbol YOU, etc.)
 You have 25% of total budget (~$511) reserved for influencer picks.
 Rules for influencer sub-portfolio:
-• Pick 1–3 tickers from this list only
+• Pick at most 1–2 tickers from this list — HARD LIMIT of 2 influencer positions held at once (the system will reject extras)
 • Total influencer buys this run should stay within ~25% of total portfolio (~$511) — do NOT over-allocate to influencer picks
 • Max $400 per position (same as main strategy), min $50
 • Prefer score ≥ 3 (multiple channel mentions or high-confidence pick)

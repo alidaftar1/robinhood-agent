@@ -344,6 +344,31 @@ export async function fetchCurrentPrice(symbol: string): Promise<number | null> 
   }
 }
 
+// Lightweight single-symbol quote (price + 1-day % change). Lets the stop-check
+// detect drops from just the held positions instead of fetching the full universe,
+// so it can run frequently (hourly) without hammering Yahoo.
+export async function fetchQuoteLite(symbol: string): Promise<{ price: number; change1d: number } | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1d&interval=1d`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as {
+      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number; regularMarketPreviousClose?: number; chartPreviousClose?: number } }> };
+    };
+    const meta = data?.chart?.result?.[0]?.meta;
+    if (!meta?.regularMarketPrice) return null;
+    const price = meta.regularMarketPrice;
+    const prevClose = meta.regularMarketPreviousClose ?? meta.chartPreviousClose ?? price;
+    const change1d = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+    return { price, change1d };
+  } catch {
+    return null;
+  }
+}
+
 export function formatMarketDataForPrompt(data: MarketData): string {
   const isImpactfulUpgrade = (ratings: import("./analyst").AnalystRating[]) =>
     ratings.some((r) => r.action === "upgrade" && (r.pctUpside ?? 0) >= 15);

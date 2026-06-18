@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
-import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice } from "@/lib/market-data";
+import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite } from "@/lib/market-data";
 import { saveRun, getLatestRun, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -29,22 +29,23 @@ export async function GET(request: Request) {
     return Response.json({ skipped: true, reason: "no positions held" });
   }
 
-  const [marketData, spyPrice] = await Promise.all([
-    getMarketData(),
-    fetchCurrentPrice("SPY"),
-  ]);
-
-  const priceMapDrop = new Map(marketData.stocks.map(s => [s.symbol, s.price]));
-
   // Influencer picks: use tighter stop-loss vs buy price (not prev close)
   // A position is an influencer pick if it appears in the latest run's influencerPositions
   const influencerSymbols = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
 
+  // CHEAP DETECTION PASS — fetch only held-position quotes (≤10), not the full universe.
+  // Lets this run hourly without hammering Yahoo. Full market data is only loaded below
+  // if a drop is actually detected (needed for the redeployment prompt).
+  const liteQuotes = await Promise.all(
+    heldPositions.map((p) => fetchQuoteLite(p.symbol).then((q) => ({ symbol: p.symbol, q })))
+  );
+  const liteMap = new Map(liteQuotes.map((r) => [r.symbol, r.q]));
+
   // Find held positions with a severe intraday drop
   const droppedPositions = heldPositions
     .map((p) => {
-      const stock = marketData.stocks.find((s) => s.symbol === p.symbol);
-      const currentPrice = priceMapDrop.get(p.symbol) ?? 0;
+      const q = liteMap.get(p.symbol);
+      const currentPrice = q?.price ?? 0;
       const isInfluencer = influencerSymbols.has(p.symbol);
 
       let change1d: number;
@@ -52,7 +53,7 @@ export async function GET(request: Request) {
         // For influencer picks: measure drop from buy price, not previous close
         change1d = ((currentPrice - parseFloat(p.avgCost)) / parseFloat(p.avgCost)) * 100;
       } else {
-        change1d = stock?.change1d ?? 0;
+        change1d = q?.change1d ?? 0;
       }
 
       return { position: p, change1d, isInfluencer };
@@ -61,10 +62,7 @@ export async function GET(request: Request) {
 
   if (droppedPositions.length === 0) {
     const worst = heldPositions
-      .map((p) => {
-        const stock = marketData.stocks.find((s) => s.symbol === p.symbol);
-        return `${p.symbol}(${(stock?.change1d ?? 0).toFixed(1)}%)`;
-      })
+      .map((p) => `${p.symbol}(${(liteMap.get(p.symbol)?.change1d ?? 0).toFixed(1)}%)`)
       .join(", ");
     console.log("DROP_CHECK_SKIP — no severe drops", { held: worst });
     return Response.json({ skipped: true, reason: "no severe drops", held: worst });
@@ -79,6 +77,12 @@ export async function GET(request: Request) {
   try {
     const accessToken = await getValidAccessToken();
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    // A drop was detected — NOW load full market data for the redeployment decision.
+    const [marketData, spyPrice] = await Promise.all([
+      getMarketData(),
+      fetchCurrentPrice("SPY"),
+    ]);
 
     const priceMap = new Map<string, number>(marketData.stocks.map((s) => [s.symbol, s.price]));
 
@@ -165,6 +169,9 @@ Do NOT do a full portfolio rebalance. Only exit the damaged positions.
       }
     }
 
+    // Carry forward influencer tracking: surviving influencer positions only (sold ones drop out).
+    const influencerPositions = positions.filter((p) => influencerSymbols.has(p.symbol));
+
     await saveRun({
       timestamp: runTimestamp,
       date: today,
@@ -173,6 +180,7 @@ Do NOT do a full portfolio rebalance. Only exit the damaged positions.
       positions,
       trades,
       personal: previousRun?.personal ?? null,
+      influencerPositions,
       market: { stocksLoaded: marketData.stocks.length, headlinesLoaded: marketData.headlines.length },
       ...(spyPrice != null ? { spyPrice } : {}),
     });

@@ -247,6 +247,29 @@ export async function GET(request: Request) {
       console.warn("DECISION_MISSING — no TRADE_DECISION found in analysis output");
     }
 
+    // ── Hard cap: max concurrent influencer positions ─────────────────────────
+    // The influencer bucket is high-risk by design; limit concentration regardless
+    // of what the model decides. Count positions we'd KEEP plus NEW influencer buys.
+    const MAX_INFLUENCER_POSITIONS = 2;
+    {
+      const soldSet = new Set(decision.sells.map(s => s.symbol));
+      const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !soldSet.has(p.symbol)).length;
+      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
+        b.strategy === "influencer" || !sp500Set.has(b.symbol);
+      const allowedNew = Math.max(0, MAX_INFLUENCER_POSITIONS - keptInfluencer);
+      let kept = 0;
+      const trimmed: string[] = [];
+      decision.buys = decision.buys.filter(b => {
+        if (!isInfluencerBuy(b)) return true;       // main picks unaffected
+        if (kept < allowedNew) { kept++; return true; }
+        trimmed.push(b.symbol);
+        return false;
+      });
+      if (trimmed.length > 0) {
+        console.log("INFLUENCER_CAP_TRIMMED", { keptInfluencer, allowedNew, trimmed });
+      }
+    }
+
     const mcpServer = { type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken };
 
     // ── SESSION 2: Execute sells (Haiku, MCP) ────────────────────────────────
