@@ -1,5 +1,6 @@
 import React from "react";
 import { getRuns, type TradeRun } from "@/lib/run-store";
+import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription } from "@/lib/risk-metrics";
 
 // ─── Return series + chart ────────────────────────────────────────────────────
 
@@ -269,6 +270,11 @@ export default async function DashboardPage({
   // Influencer positions in latest run
   const influencerPositions = latest?.influencerPositions ?? [];
 
+  // Risk & attribution — why the agent is behind, not just that it is
+  const cashPct = latest ? computeCashPct(latest) : null;
+  const sectorBreakdown = latest ? computeSectorBreakdown(latest) : [];
+  const beta = computeBeta(runs);
+
   const runsWithReturn = runs.filter(r => r.agenticDailyReturn != null);
   const winRate = runsWithReturn.length >= 3
     ? runsWithReturn.filter(r => r.agenticDailyReturn! > 0).length / runsWithReturn.length
@@ -387,6 +393,45 @@ export default async function DashboardPage({
               {runs.slice(0, 10).filter(r => Math.abs(r.agenticImpliedTransfer ?? 0) > 10).map((r, i) => (
                 <div key={i}>⟳ {r.date}: agentic transfer detected ${(r.agenticImpliedTransfer!).toFixed(0)} (excluded from return)</div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {latest && (cashPct != null || sectorBreakdown.length > 0 || beta) && (
+        <div style={s.chartCard}>
+          <div style={s.chartTitle}>Risk & Attribution — why, not just whether</div>
+          <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginBottom: sectorBreakdown.length > 0 ? 20 : 0 }}>
+            <div style={{ ...s.perfStat, minWidth: 150 }}>
+              <span style={s.perfLabel}>Cash (uninvested)</span>
+              <span style={{ ...s.perfValue, color: cashPct != null && cashPct > 10 ? "#e8943a" : "#e5e5e5" }}>
+                {cashPct != null ? `${cashPct.toFixed(1)}%` : "—"}
+              </span>
+              <span style={s.perfSince}>idle cash drags vs SPY in up weeks</span>
+            </div>
+            <div style={{ ...s.perfStat, minWidth: 170 }}>
+              <span style={s.perfLabel}>Beta vs SPY</span>
+              <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
+                {beta ? beta.beta.toFixed(2) : "—"}
+              </span>
+              <span style={s.perfSince}>
+                {beta ? `${betaDescription(beta.beta)} · n=${beta.n}${beta.n < 5 ? " (early)" : ""}` : "need a few more trading days"}
+              </span>
+            </div>
+          </div>
+          {sectorBreakdown.length > 0 && (
+            <div>
+              <div style={{ ...s.perfLabel, marginBottom: 10 }}>Sector exposure</div>
+              {sectorBreakdown.map((sec) => (
+                <div key={sec.etf} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                  <span style={{ width: 110, fontSize: 12, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sec.name}</span>
+                  <div style={{ flex: 1, background: "#1a1a1a", borderRadius: 4, height: 14, overflow: "hidden" }}>
+                    <div style={{ width: `${sec.pct}%`, background: sec.pct >= 50 ? "#e8943a" : "#7dba7d", height: "100%" }} />
+                  </div>
+                  <span style={{ width: 40, textAlign: "right", fontSize: 12, color: "#888" }}>{sec.pct.toFixed(0)}%</span>
+                </div>
+              ))}
+              <div style={{ ...s.perfSince, marginTop: 8 }}>heavy weight in one sector = a bet on that sector, not stock-picking</div>
             </div>
           )}
         </div>
