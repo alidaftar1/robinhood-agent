@@ -4,7 +4,7 @@ import { getAnalystRatings, type AnalystRating } from "./analyst";
 
 export type { InsiderBuy, AnalystRating };
 
-const SECTOR_ETFS: Record<string, string> = {
+export const SECTOR_ETFS: Record<string, string> = {
   XLK:  "Technology",
   XLC:  "Comm Svcs",
   XLF:  "Financials",
@@ -18,7 +18,7 @@ const SECTOR_ETFS: Record<string, string> = {
   XLU:  "Utilities",
 };
 
-const STOCK_SECTOR: Record<string, string> = {
+export const STOCK_SECTOR: Record<string, string> = {
   // Technology (XLK)
   A:"XLK", AAPL:"XLK", ACN:"XLK", ADBE:"XLK", ADI:"XLK", AMAT:"XLK", AMD:"XLK",
   ANSS:"XLK", APH:"XLK", BRKR:"XLK", CDNS:"XLK", CDAY:"XLK", CDW:"XLK", CRM:"XLK",
