@@ -32,6 +32,7 @@ export interface TradeRun {
     totalValue: string;
     cash: string;
     equity: string;
+    unsettledCash?: string; // unsettled sell proceeds (T+1) — captured from 2026-06-21
   } | null;
   positions: PositionSnapshot[];
   market: {
