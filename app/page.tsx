@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Drag } from "@/lib/risk-metrics";
 
 // ─── Return series + chart ────────────────────────────────────────────────────
 
@@ -274,6 +274,7 @@ export default async function DashboardPage({
   const cashPct = latest ? computeCashPct(latest) : null;
   const sectorBreakdown = latest ? computeSectorBreakdown(latest) : [];
   const beta = computeBeta(runs);
+  const t1Drag = computeT1Drag(runs);
 
   const runsWithReturn = runs.filter(r => r.agenticDailyReturn != null);
   const winRate = runsWithReturn.length >= 3
@@ -402,12 +403,21 @@ export default async function DashboardPage({
         <div style={s.chartCard}>
           <div style={s.chartTitle}>Risk & Attribution — why, not just whether</div>
           <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginBottom: sectorBreakdown.length > 0 ? 20 : 0 }}>
-            <div style={{ ...s.perfStat, minWidth: 150 }}>
-              <span style={s.perfLabel}>Cash (uninvested)</span>
+            <div style={{ ...s.perfStat, minWidth: 160 }}>
+              <span style={s.perfLabel}>Settled cash (snapshot)</span>
               <span style={{ ...s.perfValue, color: cashPct != null && cashPct > 10 ? "#e8943a" : "#e5e5e5" }}>
                 {cashPct != null ? `${cashPct.toFixed(1)}%` : "—"}
               </span>
-              <span style={s.perfSince}>idle cash drags vs SPY in up weeks</span>
+              <span style={s.perfSince}>post-trade settled cash — excludes unsettled proceeds</span>
+            </div>
+            <div style={{ ...s.perfStat, minWidth: 175 }}>
+              <span style={s.perfLabel}>Est. T+1 drag</span>
+              <span style={{ ...s.perfValue, color: t1Drag ? (t1Drag.dragPct > 0.05 ? "#e8943a" : t1Drag.dragPct < -0.05 ? "#7dba7d" : "#e5e5e5") : "#e5e5e5" }}>
+                {t1Drag ? `${t1Drag.dragPct >= 0 ? "−" : "+"}${Math.abs(t1Drag.dragPct).toFixed(2)}%` : "—"}
+              </span>
+              <span style={s.perfSince}>
+                {t1Drag ? `sell proceeds idle ~1 day · ${t1Drag.rebalances} rebalance${t1Drag.rebalances === 1 ? "" : "s"}` : "no rebalances yet"}
+              </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 170 }}>
               <span style={s.perfLabel}>Beta vs SPY</span>

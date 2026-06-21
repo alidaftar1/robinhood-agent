@@ -16,7 +16,7 @@ const sp500Set = new Set(SP500_UNIVERSE);
 async function fetchAgenticBuyingPower(
   anthropic: Anthropic,
   accessToken: string
-): Promise<{ buyingPower: number; totalValue: number } | null> {
+): Promise<{ buyingPower: number; totalValue: number; unsettled: number } | null> {
   const controller = new AbortController();
   const killTimer = setTimeout(() => controller.abort(), 20000);
   try {
@@ -24,8 +24,8 @@ async function fetchAgenticBuyingPower(
       model: "claude-haiku-4-5-20251001",
       max_tokens: 256,
       system: `Call get_portfolio for account ${ACCOUNT}. Output exactly one line:
-AGENTIC_BALANCE:{"buyingPower":"XX.XX","totalValue":"XX.XX"}
-Use buying_power.buying_power for buyingPower and total_value for totalValue. Output nothing else.`,
+AGENTIC_BALANCE:{"buyingPower":"XX.XX","totalValue":"XX.XX","unsettled":"XX.XX"}
+Use buying_power.buying_power for buyingPower and total_value for totalValue. For unsettled, use unsettled_funds (or unsettled_funds_nullable / cash − buying_power) if the response has it, else "0". Output nothing else.`,
       messages: [{ role: "user", content: `Fetch live balance for account ${ACCOUNT}.` }],
       mcp_servers: [{ type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken }],
       betas: ["mcp-client-2025-04-04"],
@@ -37,7 +37,9 @@ Use buying_power.buying_power for buyingPower and total_value for totalValue. Ou
     const p = JSON.parse(match[1]);
     const bp = parseFloat(String(p.buyingPower ?? "0"));
     const tv = parseFloat(String(p.totalValue ?? "0"));
-    return (bp > 0 || tv > 0) ? { buyingPower: bp, totalValue: tv } : null;
+    const unsettledRaw = parseFloat(String(p.unsettled ?? "0"));
+    const unsettled = isFinite(unsettledRaw) && unsettledRaw > 0 ? unsettledRaw : 0;
+    return (bp > 0 || tv > 0) ? { buyingPower: bp, totalValue: tv, unsettled } : null;
   } catch {
     return null;
   } finally {
@@ -530,13 +532,19 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
       cashAfter = Math.max(0, startingCash - buyCost);
     }
 
+    // Unsettled sell proceeds (T+1): captured from the live post-trade balance when
+    // available and stored separately, so we can measure true idle capital (settled +
+    // unsettled) WITHOUT changing the load-bearing totalValue / daily-return math.
+    const unsettledAfter = liveBalanceAfter?.unsettled ?? 0;
+
     const equityAfter = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
     const portfolioAfter = {
       totalValue: (cashAfter + equityAfter).toFixed(2),
       cash: cashAfter.toFixed(2),
       equity: equityAfter.toFixed(2),
+      unsettledCash: unsettledAfter.toFixed(2),
     };
-    console.log("SNAPSHOT_BUILT", { cash: cashAfter, positions: positions.length, trades: trades.length });
+    console.log("SNAPSHOT_BUILT", { cash: cashAfter, unsettled: unsettledAfter, positions: positions.length, trades: trades.length });
 
     const baseRun = {
       timestamp: runTimestamp,

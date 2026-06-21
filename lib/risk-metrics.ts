@@ -74,3 +74,35 @@ export function betaDescription(beta: number): string {
   if (beta < 0.9) return "swings less than the market";
   return "roughly tracks the market";
 }
+
+// ─── T+1 settlement drag ─────────────────────────────────────────────────────
+// The cash account can't redeploy sell proceeds until they settle the next trading
+// day, so on every rebalance that capital sits idle for ~1 day. The cost of that
+// idle day ≈ (capital sold / portfolio) × (market's move over that day). Summed
+// across rebalances, it estimates how much the T+1 lockup cost vs a fully-invested
+// benchmark. Note: when the market FELL on an idle day, the lockup actually helped
+// (avoided a loss) → that day contributes a negative drag. The signed total is the
+// honest net effect, not a guaranteed cost.
+export function computeT1Drag(runs: TradeRun[]): { dragPct: number; rebalances: number } | null {
+  const chron = [...runs].reverse(); // oldest → newest
+  let dragPct = 0;
+  let rebalances = 0;
+  for (let i = 0; i < chron.length - 1; i++) {
+    const run = chron[i];
+    const next = chron[i + 1];
+    const soldValue = (run.trades ?? [])
+      .filter((t) => t.side === "sell")
+      .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+    if (!isFinite(soldValue) || soldValue <= 0) continue;
+    const total = parseFloat(run.portfolioAfter?.totalValue ?? "");
+    if (!isFinite(total) || total <= 0) continue;
+    const spyNow = run.spyPrice;
+    const spyNext = next.spyPrice;
+    if (!spyNow || !spyNext) continue;
+    const spyRet = spyNext / spyNow - 1; // market move over the idle day
+    dragPct += (soldValue / total) * spyRet * 100;
+    rebalances += 1;
+  }
+  if (rebalances === 0) return null;
+  return { dragPct, rebalances };
+}
