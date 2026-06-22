@@ -156,30 +156,29 @@ export function computeDailyReturn(
 ): { dailyReturn: number; impliedTransfer: number } | null {
   if (yesterdayValue <= 0) return null;
 
-  const todayHasPrices = todayPositions.every(p => parseFloat(p.price) > 0);
-  const yesterdayHasPrices = yesterdayPositions.every(p => parseFloat(p.price) > 0);
+  // Always use the transfer-aware, position-level formula. If a single position is
+  // missing a live price (e.g. a freshly-listed non-S&P name), fall back to its
+  // avgCost FOR THAT POSITION rather than abandoning the whole calc. Abandoning it
+  // (the old behavior) routed to a total-value diff that counts DEPOSITS as return —
+  // so a deposit on a day a price was missing would show as a huge fake gain.
+  const priceOf = (p: PositionSnapshot) => {
+    const price = parseFloat(p.price);
+    return price > 0 ? price : (parseFloat(p.avgCost) || 0);
+  };
+  const posValToday = todayPositions.reduce((s, p) => s + parseFloat(p.quantity) * priceOf(p), 0);
+  const posValYesterday = yesterdayPositions.reduce((s, p) => s + parseFloat(p.quantity) * priceOf(p), 0);
 
-  if (todayHasPrices && yesterdayHasPrices) {
-    const posValToday = todayPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
-    const posValYesterday = yesterdayPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
+  // Include ALL placed trades — Claude emits state "submitted", not "filled",
+  // so filtering by state would zero out tradeNetCash and overstate P&L on trade days.
+  const tradeNetCash = todayTrades.reduce((s, t) => {
+    const qty = parseFloat(t.quantity);
+    const price = parseFloat(t.avgPrice);
+    return s + (t.side === "buy" ? qty * price : -(qty * price));
+  }, 0);
 
-    // Include ALL placed trades — Claude emits state "submitted", not "filled",
-    // so filtering by state would zero out tradeNetCash and overstate P&L on trade days.
-    const tradeNetCash = todayTrades.reduce((s, t) => {
-      const qty = parseFloat(t.quantity);
-      const price = parseFloat(t.avgPrice);
-      return s + (t.side === "buy" ? qty * price : -(qty * price));
-    }, 0);
-
-    const pnl = (posValToday - posValYesterday) - tradeNetCash;
-    const impliedTransfer = todayValue - yesterdayValue - pnl;
-    return { dailyReturn: pnl / yesterdayValue, impliedTransfer };
-  }
-
-  // Fallback: use total portfolio value change directly. Assumes no external
-  // transfers (correct for the agentic account; acceptable for personal).
-  const valueChange = todayValue - yesterdayValue;
-  return { dailyReturn: valueChange / yesterdayValue, impliedTransfer: 0 };
+  const pnl = (posValToday - posValYesterday) - tradeNetCash;
+  const impliedTransfer = todayValue - yesterdayValue - pnl;
+  return { dailyReturn: pnl / yesterdayValue, impliedTransfer };
 }
 
 // Updates a specific run by date, applying an updater function. Rewrites the full list.

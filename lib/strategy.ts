@@ -80,7 +80,16 @@ export interface PortfolioContext {
   positions?: Array<{ symbol: string; quantity: string; avgCost: string }>;
 }
 
+// Per-position dollar cap: a $400 floor that scales to 20% of the portfolio as the
+// account grows, so larger deposits get larger positions instead of forcing dozens
+// of tiny ones. Keeps the high-conviction 4–10 position profile at any budget.
+export function maxPositionDollars(totalValueText?: string | null): number {
+  const totalVal = parseFloat((totalValueText ?? "").replace(/[^0-9.]/g, "")) || 0;
+  return Math.max(400, Math.floor(0.2 * totalVal));
+}
+
 export function buildSystemPrompt(today: string, marketData?: string, portfolio?: PortfolioContext): string {
+  const maxPos = maxPositionDollars(portfolio?.totalValue);
   const positionsLines = portfolio?.positions?.length
     ? portfolio.positions.map(p => `  ${p.symbol} × ${p.quantity} @ $${parseFloat(p.avgCost).toFixed(2)} avg`).join("\n")
     : "  (none — full cash)";
@@ -101,10 +110,10 @@ ${positionsLines}
   const processSteps = portfolio?.buyingPower
     ? `PROCESS (follow in order):
 1. ✅ SKIP get_equity_positions and get_portfolio — your full portfolio state is in the box above.
-2. Scan the market data table. Mark any stock with price > $400 as INELIGIBLE.
+2. Scan the market data table. Mark any stock with price > $${maxPos} as INELIGIBLE.
 3. WRITE your thesis before placing any orders. For every position decision (keep, sell, buy), write one sentence with the specific reason. If a stock has ★INS, name the insider's role and dollar amount and explain why it raises your conviction. If a stock has an analyst signal, name the firm and implied upside. If you are skipping a stock due to ⚠⚠ IMMINENT earnings, say so explicitly.
-4. Decide target portfolio: 3–10 positions, all price ≤ $400/share.
-5. For each buy, verify quantity × price ≤ $400 and fits within available cash.
+4. Decide target portfolio: 4–10 positions, each ≤ $${maxPos} per position.
+5. For each buy, verify quantity × price ≤ $${maxPos} and fits within available cash.
 6. Execute: place ALL sells in one batch (multiple tool_use blocks in a single response), then place ALL buys in one batch. This is 2 tool-call rounds total — do not place orders one at a time.
 
 IMPORTANT: Current prices for all displayed stocks are in the market data table above. Do NOT call get_equity_quotes — read prices from the table instead.
@@ -114,21 +123,21 @@ IMPORTANT: Do NOT call get_equity_positions or get_portfolio — all account dat
     : `PROCESS (follow in order):
 1. Call get_portfolio (account ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"}) to check buying power and total value.
 2. Call get_equity_positions (account ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"}) to see current holdings.
-3. Scan the market data table. Mark any stock with price > $400 as INELIGIBLE.
+3. Scan the market data table. Mark any stock with price > $${maxPos} as INELIGIBLE.
 4. Think: which sectors are in favor? Which names have best risk-adjusted momentum + signals?
-5. Decide target portfolio: 3–10 positions, all price ≤ $400/share.
-6. For each buy, verify quantity × price ≤ $400 and fits within available cash.
+5. Decide target portfolio: 4–10 positions, each ≤ $${maxPos} per position.
+6. For each buy, verify quantity × price ≤ $${maxPos} and fits within available cash.
 7. Execute: place ALL sells in one batch (multiple tool_use blocks in a single response), then place ALL buys in one batch. This is 2 tool-call rounds total — do not place orders one at a time.
 
 IMPORTANT: Current prices for all displayed stocks are in the market data table above. Do NOT call get_equity_quotes — read prices from the table instead.
 IMPORTANT: All stocks in the table are tradeable — do NOT call get_equity_tradability.
 IMPORTANT: Do NOT call review_equity_order — place orders directly with place_equity_order.`;
 
-  return `You are an autonomous equity trading agent managing a $2,044 cash portfolio on Robinhood.
+  return `You are an autonomous equity trading agent managing a cash portfolio on Robinhood.
 ${marketData ?? ""}
 ${portfolioSection}
 Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} (the "Agentic" cash account — agentic trading enabled).
-Hard budget cap: $2,044. You cannot request or expect additional funds.
+BUDGET: your budget is the full value of this account. Always work from the live settled buying power shown above — never a fixed number. The owner may add (or remove) funds over time; simply deploy whatever buying power is currently available.
 Today's date: ${today}
 
 Your investment universe is the S&P 500. The table above shows the top 40 stocks by risk-adjusted momentum (plus any with insider buys or analyst signals), drawn from the full ~450-stock universe.
@@ -156,7 +165,7 @@ CONSTRAINTS:
 - Gradual rotation: do not liquidate the entire portfolio in one session — sell at most a few positions per run.
 - Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive sharpe5 or sharpe14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis.
 - Never exceed settled buying power on buys.
-- Max $400 per buy order. For each buy, compute max_qty = floor(400 / price). Never order more than max_qty shares. Examples: price $282 → max_qty 1; price $214 → max_qty 1 (floor(400/214)=1); price $145 → max_qty 2; price $78 → max_qty 5. If max_qty = 0 (price > $400), skip the stock entirely.
+- Max $${maxPos} per position. For each buy, compute max_qty = floor(${maxPos} / price). Never order more than max_qty shares. If max_qty = 0 (price > $${maxPos}), skip the stock entirely.
 - Min position size: $50 (skip a stock if 1 share costs less than $50).
 - Only trade symbols shown in the market data table above — all are S&P 500 constituents.
 - Whole shares only — no fractional shares.
@@ -174,6 +183,7 @@ Rules for each field:
 }
 
 export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string): string {
+  const maxPos = maxPositionDollars(portfolio.totalValue);
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => `  ${p.symbol} × ${p.quantity} @ $${parseFloat(p.avgCost).toFixed(2)} avg`).join("\n")
     : "  (none — full cash)";
@@ -208,13 +218,13 @@ CONSTRAINTS:
 - Gradual rotation: sell at most a few positions per run — don't liquidate everything at once.
 - Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive sharpe5 or sharpe14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis. For every current holding not in the top table, explicitly state in your thesis why it's being kept or sold.
 - Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
-- Max $400 per position, min $50. Whole shares only. Stocks from table only.
+- Max $${maxPos} per position (compute max_qty = floor(${maxPos} / price)), min $50. Whole shares only. Stocks from table only.
 - Never buy ⚠⚠ IMMINENT.
 - SECTOR CAP (risk control): avoid holding more than ~40% of the portfolio in any single sector. Momentum tends to cluster in one sector — don't sleepwalk into a concentrated sector bet. If a buy would push a sector past 40%, prefer an equally-strong name from an underweight sector instead. If you're ALREADY over 40% in a sector (see SECTOR EXPOSURE above), lean toward trimming it and redeploying into underweight sectors — unless you can give a specific reason the concentration is worth the risk.
 - HARD LIMIT: total cost of all buys ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} (settled buying power). This number is fixed — selling today does NOT increase it. If you sell $300 of stock today and settled power is $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}, you can still only spend $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} on buys.
 ${influencerSection ?? ""}
 
-Write a brief thesis (2–4 sentences). Your thesis MUST note your sector balance — confirm you're within the ~40% per-sector cap, or if you're deliberately over it, justify why. ${influencerSection ? "It MUST also state your influencer-bucket decision: which influencer pick(s) you're buying and why, OR — if you're buying none — the specific disqualifier (all picks priced > $400, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer bucket." : ""} Then, before writing TRADE_DECISION, compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}. If it exceeds that, reduce or remove the most expensive buy until it fits. Then output exactly one line:
+Write a brief thesis (2–4 sentences). ${sectorSection ? "Your thesis MUST note your sector balance — confirm you're within the ~40% per-sector cap, or if you're deliberately over it, justify why. " : ""}${influencerSection ? "It MUST also state your influencer-bucket decision: which influencer pick(s) you're buying and why, OR — if you're buying none — the specific disqualifier (all picks priced above the per-position cap, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer bucket." : ""} Then, before writing TRADE_DECISION, compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}. If it exceeds that, reduce or remove the most expensive buy until it fits. Then output exactly one line:
 TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","quantity":N}],"buys":[{"symbol":"X","quantity":N,"price":P,"strategy":"main"}]}
 
 Rules:

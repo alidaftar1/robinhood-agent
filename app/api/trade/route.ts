@@ -182,7 +182,7 @@ export async function GET(request: Request) {
 
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
-        max_tokens: 2048,
+        max_tokens: 3000,
         system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx, influencerSection, sectorSection),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       });
@@ -302,7 +302,7 @@ export async function GET(request: Request) {
     try {
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
-        max_tokens: 2048,
+        max_tokens: 3000,
         system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx!, influencerSection, sectorSection),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       }, { signal: analysisController.signal });

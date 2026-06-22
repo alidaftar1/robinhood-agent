@@ -16,7 +16,7 @@ Runtime values are passed via the prompt from `scripts/autopilot.sh`. Use `$APP_
 
 - **Agentic account**: `$AGENTIC_ACCOUNT_ID` — the ONLY account the agent trades
 - **Personal account**: `$PERSONAL_ACCOUNT_ID` — read-only comparison, NEVER trade this
-- **Budget cap**: $2,044 — hard limit, do NOT change
+- **Budget**: dynamic — whatever the account holds. The agent deploys the full live settled buying power; there is NO fixed cap. The owner adds funds over time and deposits are EXPECTED (and correctly excluded from returns as transfers). The agent itself must still NEVER deposit or withdraw — that's the owner's action only.
 
 ---
 
@@ -169,7 +169,7 @@ curl -s -X POST https://api.resend.com/emails \
 
 This job is headless — "ask first" means don't do it. Document it in the email instead.
 
-- Change budget cap or account numbers
+- Change account numbers or per-position sizing rules
 - Change CRON_SECRET or cron schedule
 - Delete run history from Redis
 - Remove stocks from `SP500_UNIVERSE`
