@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Drag, computeMaxDrawdown, computeConcentration } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Drag, computeT1Settling, computeMaxDrawdown, computeConcentration } from "@/lib/risk-metrics";
 
 // ─── Return series + chart ────────────────────────────────────────────────────
 
@@ -275,6 +275,7 @@ export default async function DashboardPage({
   const sectorBreakdown = latest ? computeSectorBreakdown(latest) : [];
   const beta = computeBeta(runs);
   const t1Drag = computeT1Drag(runs);
+  const t1Settling = latest ? computeT1Settling(latest) : null;
   const concentration = latest ? computeConcentration(latest) : null;
   // Max drawdown over the same co-indexed window for both series
   const ddPoints = returnSeries.filter(p => p.agentic != null);
@@ -415,13 +416,15 @@ export default async function DashboardPage({
               </span>
               <span style={s.perfSince}>post-trade settled cash — excludes unsettled proceeds</span>
             </div>
-            <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <span style={s.perfLabel}>Est. T+1 drag</span>
-              <span style={{ ...s.perfValue, color: t1Drag ? (t1Drag.dragPct > 0.05 ? "#e8943a" : t1Drag.dragPct < -0.05 ? "#7dba7d" : "#e5e5e5") : "#e5e5e5" }}>
-                {t1Drag ? `${t1Drag.dragPct >= 0 ? "−" : "+"}${Math.abs(t1Drag.dragPct).toFixed(2)}%` : "—"}
+            <div style={{ ...s.perfStat, minWidth: 185 }}>
+              <span style={s.perfLabel}>T+1 settling</span>
+              <span style={{ ...s.perfValue, color: t1Settling && t1Settling.pct > 10 ? "#e8943a" : "#e5e5e5" }}>
+                {t1Settling ? `$${t1Settling.amount.toFixed(0)}` : "$0"}
               </span>
               <span style={s.perfSince}>
-                {t1Drag ? `sell proceeds idle ~1 day · ${t1Drag.rebalances} rebalance${t1Drag.rebalances === 1 ? "" : "s"}` : "no rebalances yet"}
+                {t1Settling
+                  ? `${t1Settling.pct.toFixed(0)}% idle until tomorrow${t1Drag ? ` · est. drag ${t1Drag.dragPct >= 0 ? "−" : "+"}${Math.abs(t1Drag.dragPct).toFixed(2)}%` : ""}`
+                  : "no sell proceeds settling"}
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 170 }}>

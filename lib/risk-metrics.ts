@@ -169,3 +169,18 @@ export function computeT1Drag(runs: TradeRun[]): { dragPct: number; rebalances: 
   if (rebalances === 0) return null;
   return { dragPct, rebalances };
 }
+
+// Capital currently locked in T+1 settlement = proceeds from the latest run's sells,
+// which can't be redeployed until the next trading day. Computed straight from the
+// sell trades (reliable), not Robinhood's unsettled_funds field (which came back 0).
+// pct is against the true account value (stored totalValue + the unsettled proceeds,
+// since stored totalValue excludes them).
+export function computeT1Settling(run: TradeRun): { amount: number; pct: number } | null {
+  const sold = (run.trades ?? [])
+    .filter((t) => t.side === "sell")
+    .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+  if (!isFinite(sold) || sold <= 0) return null;
+  const stored = parseFloat(run.portfolioAfter?.totalValue ?? "") || 0;
+  const trueTotal = stored + sold;
+  return { amount: sold, pct: trueTotal > 0 ? (sold / trueTotal) * 100 : 0 };
+}
