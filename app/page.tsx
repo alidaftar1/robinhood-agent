@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Drag } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Drag, computeMaxDrawdown, computeConcentration } from "@/lib/risk-metrics";
 
 // ─── Return series + chart ────────────────────────────────────────────────────
 
@@ -275,6 +275,11 @@ export default async function DashboardPage({
   const sectorBreakdown = latest ? computeSectorBreakdown(latest) : [];
   const beta = computeBeta(runs);
   const t1Drag = computeT1Drag(runs);
+  const concentration = latest ? computeConcentration(latest) : null;
+  // Max drawdown over the same co-indexed window for both series
+  const ddPoints = returnSeries.filter(p => p.agentic != null);
+  const agentDrawdown = computeMaxDrawdown(ddPoints.map(p => p.agentic!) as number[]);
+  const spyDrawdown = computeMaxDrawdown(ddPoints.filter(p => p.spy != null).map(p => p.spy!) as number[]);
 
   const runsWithReturn = runs.filter(r => r.agenticDailyReturn != null);
   const winRate = runsWithReturn.length >= 3
@@ -426,6 +431,24 @@ export default async function DashboardPage({
               </span>
               <span style={s.perfSince}>
                 {beta ? `${betaDescription(beta.beta)} · n=${beta.n}${beta.n < 5 ? " (early)" : ""}` : "need a few more trading days"}
+              </span>
+            </div>
+            <div style={{ ...s.perfStat, minWidth: 175 }}>
+              <span style={s.perfLabel}>Max drawdown</span>
+              <span style={{ ...s.perfValue, color: agentDrawdown != null && spyDrawdown != null && agentDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
+                {agentDrawdown != null ? `−${agentDrawdown.toFixed(2)}%` : "—"}
+              </span>
+              <span style={s.perfSince}>
+                {spyDrawdown != null ? `worst drop · SPY −${spyDrawdown.toFixed(2)}%` : "worst peak-to-trough drop"}
+              </span>
+            </div>
+            <div style={{ ...s.perfStat, minWidth: 175 }}>
+              <span style={s.perfLabel}>Concentration</span>
+              <span style={{ ...s.perfValue, color: concentration && concentration.largestPct > 25 ? "#e8943a" : "#e5e5e5" }}>
+                {concentration ? `${concentration.largestPct.toFixed(0)}%` : "—"}
+              </span>
+              <span style={s.perfSince}>
+                {concentration ? `${concentration.largestSymbol} largest · ${concentration.count} positions · top 3 = ${concentration.topThreePct.toFixed(0)}%` : "—"}
               </span>
             </div>
           </div>
