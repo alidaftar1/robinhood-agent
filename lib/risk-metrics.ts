@@ -21,15 +21,15 @@ export interface SectorSlice {
   pct: number;
 }
 
-export function computeSectorBreakdown(run: TradeRun): SectorSlice[] {
+// Core grouping — works from any (symbol, dollar value) list.
+export function computeSectorSlices(positions: Array<{ symbol: string; value: number }>): SectorSlice[] {
   const byEtf = new Map<string, number>();
   let equity = 0;
-  for (const p of run.positions ?? []) {
-    const val = parseFloat(p.quantity) * parseFloat(p.price);
-    if (!isFinite(val) || val <= 0) continue;
+  for (const p of positions) {
+    if (!isFinite(p.value) || p.value <= 0) continue;
     const etf = STOCK_SECTOR[p.symbol] ?? "OTHER";
-    byEtf.set(etf, (byEtf.get(etf) ?? 0) + val);
-    equity += val;
+    byEtf.set(etf, (byEtf.get(etf) ?? 0) + p.value);
+    equity += p.value;
   }
   if (equity <= 0) return [];
   return [...byEtf.entries()]
@@ -40,6 +40,25 @@ export function computeSectorBreakdown(run: TradeRun): SectorSlice[] {
       pct: (value / equity) * 100,
     }))
     .sort((a, b) => b.value - a.value);
+}
+
+export function computeSectorBreakdown(run: TradeRun): SectorSlice[] {
+  return computeSectorSlices(
+    (run.positions ?? []).map((p) => ({ symbol: p.symbol, value: parseFloat(p.quantity) * parseFloat(p.price) }))
+  );
+}
+
+export const SECTOR_CAP_PCT = 40;
+
+// Renders the current sector mix + a soft-cap nudge for the analysis prompt.
+export function formatSectorExposure(slices: SectorSlice[]): string {
+  if (slices.length === 0) return "";
+  const lines = slices.map((s) => `  • ${s.name}: ${s.pct.toFixed(0)}%`).join("\n");
+  const top = slices[0];
+  const over = top && top.pct > SECTOR_CAP_PCT
+    ? `\n⚠ You are ${top.pct.toFixed(0)}% in ${top.name} — OVER the ${SECTOR_CAP_PCT}% soft cap. Lean toward trimming it and redeploying into an underweight sector, unless you explicitly justify keeping the concentration.`
+    : "";
+  return `\nSECTOR EXPOSURE (current holdings, by value):\n${lines}${over}\n`;
 }
 
 // ─── Beta vs SPY ───────────────────────────────────────────────────────────────
