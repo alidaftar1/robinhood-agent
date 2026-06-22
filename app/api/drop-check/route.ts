@@ -8,7 +8,8 @@ import { isMarketHoliday } from "@/lib/holidays";
 
 export const maxDuration = 300;
 
-const DROP_THRESHOLD_PCT = -5; // sell if intraday change < -5%
+const DROP_THRESHOLD_PCT = -5; // sell if down ≥5% (intraday for main; from buy for influencer)
+const TAKE_PROFIT_PCT = 20;    // influencer winners: lock the gain at +20% from buy price
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -56,7 +57,8 @@ export async function GET(request: Request) {
   );
   const liteMap = new Map(liteQuotes.map((r) => [r.symbol, r.q]));
 
-  // Find positions with a severe drop
+  // Find positions to exit: a severe drop (stop-loss) OR an influencer winner up
+  // ≥ TAKE_PROFIT_PCT from buy (take-profit — lock the gain before it round-trips).
   const droppedPositions = positionsToCheck
     .map((p) => {
       const q = liteMap.get(p.symbol);
@@ -65,29 +67,33 @@ export async function GET(request: Request) {
 
       let change1d: number;
       if (isInfluencer && currentPrice > 0 && parseFloat(p.avgCost) > 0) {
-        // For influencer picks: measure drop from buy price, not previous close
+        // For influencer picks: measure from BUY price (covers both the −5% stop and +20% target)
         change1d = ((currentPrice - parseFloat(p.avgCost)) / parseFloat(p.avgCost)) * 100;
       } else {
         change1d = q?.change1d ?? 0;
       }
 
-      return { position: p, change1d, isInfluencer };
+      let reason: "stop" | "profit" | null = null;
+      if (change1d <= DROP_THRESHOLD_PCT) reason = "stop";
+      else if (isInfluencer && change1d >= TAKE_PROFIT_PCT) reason = "profit";
+
+      return { position: p, change1d, isInfluencer, reason };
     })
-    .filter(({ change1d }) => change1d <= DROP_THRESHOLD_PCT);
+    .filter((e) => e.reason !== null);
 
   if (droppedPositions.length === 0) {
     const worst = positionsToCheck
       .map((p) => `${p.symbol}(${(liteMap.get(p.symbol)?.change1d ?? 0).toFixed(1)}%)`)
       .join(", ");
-    console.log("DROP_CHECK_SKIP — no severe drops", { scope: scope ?? "all", held: worst });
-    return Response.json({ skipped: true, reason: "no severe drops", scope: scope ?? "all", held: worst });
+    console.log("DROP_CHECK_SKIP — no exits", { scope: scope ?? "all", held: worst });
+    return Response.json({ skipped: true, reason: "no exits triggered", scope: scope ?? "all", held: worst });
   }
 
   const droppedNames = droppedPositions
-    .map(({ position, change1d }) => `${position.symbol} (${change1d.toFixed(1)}% today)`)
+    .map(({ position, change1d, reason }) => `${position.symbol} (${change1d >= 0 ? "+" : ""}${change1d.toFixed(1)}%, ${reason === "profit" ? "TAKE-PROFIT" : "stop-loss"})`)
     .join(", ");
 
-  console.log("DROP_CHECK_TRIGGERED", { droppedPositions: droppedPositions.map(({ position }) => position.symbol) });
+  console.log("DROP_CHECK_TRIGGERED", { exits: droppedPositions.map(({ position, reason }) => `${position.symbol}:${reason}`) });
 
   try {
     const accessToken = await getValidAccessToken();
@@ -109,19 +115,21 @@ export async function GET(request: Request) {
 
     const basePrompt = buildSystemPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx);
 
-    const urgentHeader = `🔴 STOP-LOSS RUN — ${today} 🔴
-The following held positions have dropped ≥${Math.abs(DROP_THRESHOLD_PCT)}% intraday — thesis breakdown signal — must be evaluated for exit:
+    const hasProfit = droppedPositions.some((e) => e.reason === "profit");
+    const hasStop = droppedPositions.some((e) => e.reason === "stop");
+    const urgentHeader = `🔴 RISK-EXIT RUN — ${today} 🔴
+These held positions hit an exit trigger and must be SOLD:
   ${droppedNames}
-
+${hasStop ? `• stop-loss = down ≥${Math.abs(DROP_THRESHOLD_PCT)}% (thesis breakdown — cut it).\n` : ""}${hasProfit ? `• TAKE-PROFIT = an influencer pick up ≥${TAKE_PROFIT_PCT}% from buy. Lock the gain — these are hype names that round-trip; do NOT let it ride.\n` : ""}
 INSTRUCTIONS — deviate from standard process:
-1. SELL the positions listed above immediately — the drop signals a breakdown in thesis.
+1. SELL every position listed above immediately — both stop-loss and take-profit exits.
 2. Keep ALL other positions UNCHANGED.
 3. With the freed cash, either:
-   a. Buy ONE high-conviction alternative (best sharpe, no imminent earnings, price ≤ $400), OR
+   a. Buy ONE high-conviction alternative (best sharpe, no imminent earnings, within the per-position cap), OR
    b. Hold cash if SPY is also broadly down (>1.5% today) — capital preservation takes priority.
-   c. If the drop is clearly sympathy selling (broad market down, stock fundamentals unchanged), use your judgment — you may hold rather than sell.
+   c. For a STOP-LOSS only: if it's clearly sympathy selling (broad market down, fundamentals unchanged), you may use judgment and hold. A TAKE-PROFIT exit is NOT optional — always lock the gain.
 4. Emit PORTFOLIO_SNAPSHOT as usual.
-Do NOT do a full portfolio rebalance. Only exit the damaged positions.
+Do NOT do a full portfolio rebalance. Only exit the listed positions.
 
 `;
 
@@ -134,7 +142,7 @@ Do NOT do a full portfolio rebalance. Only exit the damaged positions.
       system: systemPrompt,
       messages: [{
         role: "user",
-        content: `STOP-LOSS: ${droppedPositions.map(({ position, change1d }) => `${position.symbol} is down ${change1d.toFixed(1)}% today`).join(", ")}. Sell and assess redeployment. Place orders now.`,
+        content: `RISK-EXIT: ${droppedPositions.map(({ position, change1d, reason }) => `${position.symbol} ${reason === "profit" ? `is up +${change1d.toFixed(1)}% from buy (take-profit)` : `is down ${change1d.toFixed(1)}% (stop-loss)`}`).join(", ")}. Sell these and assess redeployment. Place orders now.`,
       }],
       mcp_servers: [{
         type: "url",
@@ -190,7 +198,7 @@ Do NOT do a full portfolio rebalance. Only exit the damaged positions.
     await saveRun({
       timestamp: runTimestamp,
       date: today,
-      summary: `[STOP-LOSS] Sold: ${droppedNames}\n\n${textContent}`,
+      summary: `[RISK-EXIT] Sold: ${droppedNames}\n\n${textContent}`,
       portfolioAfter,
       positions,
       trades,
@@ -201,7 +209,7 @@ Do NOT do a full portfolio rebalance. Only exit the damaged positions.
     });
 
     await sendAlert(
-      `🔴 Stop-Loss Triggered — ${today}`,
+      `${hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
       `Sold ${droppedNames}.\n\nCheck the dashboard:\n${process.env.APP_URL ?? ""}/?key=${process.env.CRON_SECRET ?? ""}`
     );
 
