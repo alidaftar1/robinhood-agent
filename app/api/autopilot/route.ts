@@ -47,7 +47,10 @@ export async function GET(request: Request) {
     return Response.json({ skipped: true, reason: "market holiday" });
   }
 
-  const host = new URL(request.url).origin;
+  // Use the stable public alias for internal self-fetches. Under the Vercel cron,
+  // request.url is the internal deployment URL and self-fetches to it fail (which
+  // silently broke auto-repair + live verify). APP_URL/alias resolves correctly.
+  const host = process.env.APP_URL || "https://robinhood-agent.vercel.app";
   const secret = process.env.CRON_SECRET ?? "";
 
   async function callDebug(param: string): Promise<Record<string, string> | null> {
@@ -321,7 +324,7 @@ export async function GET(request: Request) {
 
   <p style="font-size:12px;color:#9ca3af;margin-top:24px">
     Sent by Vercel cron at 8am PT — no Mac required.<br/>
-    <a href="${process.env.APP_URL ?? ""}/?key=${process.env.CRON_SECRET ?? ""}">Open dashboard</a>
+    <a href="${host}/?key=${process.env.CRON_SECRET ?? ""}">Open dashboard</a>
   </p>
 </div>`;
 
