@@ -181,6 +181,9 @@ export function computeT1Settling(run: TradeRun): { amount: number; pct: number 
     .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
   if (!isFinite(sold) || sold <= 0) return null;
   const stored = parseFloat(run.portfolioAfter?.totalValue ?? "") || 0;
-  const trueTotal = stored + sold;
+  // New-format runs include the unsettled proceeds in totalValue (unsettledCash > 0);
+  // older runs excluded them, so add them back to get the true denominator.
+  const unsettled = parseFloat(run.portfolioAfter?.unsettledCash ?? "0") || 0;
+  const trueTotal = unsettled > 0 ? stored : stored + sold;
   return { amount: sold, pct: trueTotal > 0 ? (sold / trueTotal) * 100 : 0 };
 }
