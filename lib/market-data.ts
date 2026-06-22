@@ -369,6 +369,33 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
   }
 }
 
+// Price + downtrend signals for any single ticker. Used to screen influencer picks
+// for falling knives before buying (so the agent doesn't buy a crashing stock on hype,
+// the way it bought SPCX mid-decline). Returns BOTH 5-day net change and distance from
+// the recent 10-day high — the latter catches pump-and-dump names (e.g. a fresh IPO
+// that spiked then fell) where the 5-day net is misleadingly mild.
+export async function fetchMomentum(symbol: string): Promise<{ price: number; change5d: number; distFromHigh: number } | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const data = await res.json() as {
+      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number }; indicators?: { quote?: Array<{ close?: (number | null)[] }> } }> };
+    };
+    const r = data?.chart?.result?.[0];
+    const price = r?.meta?.regularMarketPrice;
+    if (!price) return null;
+    const closes = (r?.indicators?.quote?.[0]?.close ?? []).filter((c): c is number => c != null);
+    const fiveAgo = closes.length >= 6 ? closes[closes.length - 6] : closes[0];
+    const change5d = fiveAgo ? ((price - fiveAgo) / fiveAgo) * 100 : 0;
+    const recentHigh = Math.max(price, ...closes.slice(-10));
+    const distFromHigh = recentHigh > 0 ? ((price - recentHigh) / recentHigh) * 100 : 0;
+    return { price, change5d, distFromHigh };
+  } catch {
+    return null;
+  }
+}
+
 export function formatMarketDataForPrompt(data: MarketData): string {
   const isImpactfulUpgrade = (ratings: import("./analyst").AnalystRating[]) =>
     ratings.some((r) => r.action === "upgrade" && (r.pctUpside ?? 0) >= 15);

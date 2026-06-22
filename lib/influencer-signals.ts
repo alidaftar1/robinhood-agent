@@ -347,10 +347,24 @@ export async function getInfluencerSignals(): Promise<InfluencerCache | null> {
   return cacheGet();
 }
 
+// Falling-knife screen for influencer picks. The signal measures popularity, not price
+// trend — a stock can be most-talked-about precisely because it's crashing (SPCX post-IPO).
+// Reject if EITHER: down >8% over 5 trading days, OR >15% below its recent 10-day high
+// (the latter catches pump-and-dump names where the 5-day net is misleadingly mild).
+export const MOMENTUM_FLOOR_PCT = -8;
+export const DIST_FROM_HIGH_FLOOR = -15;
+
+export interface MomentumSignal { change5d: number; distFromHigh: number }
+export function isInfluencerDowntrend(m: MomentumSignal | undefined): boolean {
+  if (!m) return false;
+  return m.change5d < MOMENTUM_FLOOR_PCT || m.distFromHigh < DIST_FROM_HIGH_FLOOR;
+}
+
 /** Format influencer signals for inclusion in the Sonnet analysis prompt.
  *  @param priceMap optional live prices for influencer tickers (fetched in trade route)
+ *  @param momentum optional 5-day % change per ticker (downtrend screen)
  */
-export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>): string {
+export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>): string {
   if (!cache || cache.signals.length === 0) return "";
 
   // Top tickers by weighted mention count
@@ -370,7 +384,11 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     const priceStr = price ? ` $${price.toFixed(2)}` : "";
     // Liquidity filter: skip tickers outside $5-$500 range
     if (price && (price < 5 || price > 500)) return null;
-    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)} score=${score}  channels: ${channels}`;
+    const mom = momentum?.get(ticker);
+    const momStr = mom != null
+      ? ` 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${isInfluencerDowntrend(mom) ? " ⛔DOWNTREND" : ""}`
+      : "";
+    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(26)} score=${score}  channels: ${channels}`;
   }).filter(Boolean).join("\n");
 
   if (!rows) return "";
@@ -388,6 +406,7 @@ ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
 • HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
 • Same per-position cap as the main strategy, min $50. Whole shares only.
 • Prefer the highest score; a score-6 pick is a strong, broadly-covered signal — do not ignore it.
+• DOWNTREND SCREEN: do NOT buy a pick marked ⛔DOWNTREND (down >${Math.abs(MOMENTUM_FLOOR_PCT)}% over 5d, OR >${Math.abs(DIST_FROM_HIGH_FLOOR)}% below its recent high). The row shows "5d:" (5-day change) and "hi:" (distance from recent high). These signals measure popularity, not price — a falling stock can be the most-talked-about one. The system rejects these buys anyway. Prefer a flat/rising pick, or buy none this run.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".
 • Non-S&P-500 tickers here (e.g. SPCX, PLTR, COIN, HOOD) can ONLY be bought as influencer picks.
 • These are funded from the SAME settled buying power as main picks — total buys still ≤ budget.
