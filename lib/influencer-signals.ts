@@ -378,15 +378,15 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
   return `\n\n══════════════════════════════════════════════════════
 INFLUENCER SIGNALS (YouTube — last 7 days) — refreshed ${cache.refreshedAt.slice(0, 10)}
 Independent finance YouTubers (Meet Kevin, Tom Nash, Ticker Symbol YOU, etc.)
-This is a deliberate HIGH-RISK / HIGH-REWARD sleeve — ~25% of total budget (~$511) is
+This is a deliberate HIGH-RISK / HIGH-REWARD sleeve — ~25% of the total portfolio is
 allocated to following these creators' picks. It runs ALONGSIDE your main momentum book,
 NOT instead of it. Do not skip it just because your momentum table looks better.
 
 ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
-• If ANY ticker below has score ≥ 3, you SHOULD buy 1–2 of them this run (target ~25% of budget),
-  UNLESS every qualifying pick is disqualified (price > $400, ⚠⚠ imminent earnings, or no settled cash).
+• If ANY ticker below has score ≥ 3, you SHOULD buy 1–2 of them this run (target ~25% of the portfolio),
+  UNLESS every qualifying pick is disqualified (price above the per-position cap, ⚠⚠ imminent earnings, or no settled cash).
 • HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
-• Max $400 per position, min $50. Whole shares only.
+• Same per-position cap as the main strategy, min $50. Whole shares only.
 • Prefer the highest score; a score-6 pick is a strong, broadly-covered signal — do not ignore it.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".
 • Non-S&P-500 tickers here (e.g. SPCX, PLTR, COIN, HOOD) can ONLY be bought as influencer picks.

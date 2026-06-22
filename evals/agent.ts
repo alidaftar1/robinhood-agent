@@ -29,7 +29,7 @@ export async function runAnalysisAgent(systemPrompt: string): Promise<AnalysisRe
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 });
   const resp = await (anthropic.messages as any).create({
     model: "claude-sonnet-4-6",
-    max_tokens: 2048,
+    max_tokens: 3000,
     system: systemPrompt,
     messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
   });
