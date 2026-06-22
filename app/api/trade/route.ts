@@ -600,14 +600,20 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
       cashAfter = Math.max(0, startingCash - buyCost);
     }
 
-    // Unsettled sell proceeds (T+1): captured from the live post-trade balance when
-    // available and stored separately, so we can measure true idle capital (settled +
-    // unsettled) WITHOUT changing the load-bearing totalValue / daily-return math.
-    const unsettledAfter = liveBalanceAfter?.unsettled ?? 0;
+    // Unsettled sell proceeds (T+1): this run's sell proceeds are locked until the
+    // next trading day. Computed from the sell trades (deterministic) — NOT Robinhood's
+    // unsettled_funds field, which returns 0. Included in totalValue so the account
+    // value isn't understated by this amount on sell days (settled cash excludes it and
+    // equity already dropped). The daily RETURN is position-based, so this only corrects
+    // the displayed value and the impliedTransfer diagnostic — it can't distort returns.
+    const sellProceeds = trades
+      .filter(t => t.side === "sell")
+      .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+    const unsettledAfter = isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0;
 
     const equityAfter = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
     const portfolioAfter = {
-      totalValue: (cashAfter + equityAfter).toFixed(2),
+      totalValue: (cashAfter + unsettledAfter + equityAfter).toFixed(2),
       cash: cashAfter.toFixed(2),
       equity: equityAfter.toFixed(2),
       unsettledCash: unsettledAfter.toFixed(2),
