@@ -353,32 +353,91 @@ export async function GET(request: Request) {
 
     const mcpServer = { type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken };
 
-    // ── SESSION 2: Execute sells (Haiku, MCP) ────────────────────────────────
-    if (decision.sells.length > 0) {
-      const sellLines = decision.sells.map(s => `- sell ${s.symbol} ${s.quantity} shares`).join("\n");
-      const sellController = new AbortController();
-      const sellKillTimer = setTimeout(() => sellController.abort(), 120_000);
+    // ── SESSION 2: Execute sells (Haiku, MCP) — sequential + verify + retry ───
+    // Placing orders ONE AT A TIME (not "simultaneously") avoids the model dropping
+    // an order from a batched multi-tool-call. Then we verify each decided sell
+    // actually hit Robinhood and retry any that didn't, so a silent drop can't pass.
+    const sellStrategyTag = (sym: string) =>
+      (previousRun?.trades ?? []).find(t => t.side === "buy" && t.symbol === sym)?.strategy;
+
+    async function runSellSession(sells: Array<{ symbol: string; quantity: number }>, timeoutMs: number): Promise<boolean> {
+      if (sells.length === 0) return true;
+      const lines = sells.map(s => `- sell ${s.symbol} ${s.quantity} shares`).join("\n");
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        const sellResp = await (anthropic.beta.messages as any).create({
+        const resp = await (anthropic.beta.messages as any).create({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 1024,
-          system: `Place these market sell orders for account ${ACCOUNT} simultaneously using place_equity_order. Use type=market, time_in_force=gfd. Do not analyze — just execute.\n${sellLines}\nOutput: SELLS_DONE`,
-          messages: [{ role: "user", content: "Execute the sells now." }],
+          system: `Place these market sell orders one at a time for account ${ACCOUNT} using place_equity_order. Use type=market, time_in_force=gfd. Place each order sequentially and wait for confirmation before the next. Do not skip any. Do not analyze — just execute.\n${lines}\nOutput: SELLS_DONE`,
+          messages: [{ role: "user", content: "Execute the sells now, one at a time." }],
           mcp_servers: [mcpServer],
           betas: ["mcp-client-2025-04-04"],
-        }, { signal: sellController.signal });
-        const sellText = sellResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-        console.log("SELLS_DONE", { result: sellText.slice(0, 100) });
-        // Inherit strategy tag from the previous run's buy trade for this position
-        const prevTrades = previousRun?.trades ?? [];
-        for (const s of decision.sells) {
-          const origBuy = prevTrades.find(t => t.side === "buy" && t.symbol === s.symbol);
-          trades.push({ symbol: s.symbol, side: "sell", quantity: String(s.quantity), avgPrice: String(priceMap.get(s.symbol) ?? 0), state: "filled", strategy: origBuy?.strategy });
-        }
+        }, { signal: ctrl.signal });
+        const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        console.log("SELLS_DONE", { count: sells.length, result: txt.slice(0, 100) });
+        return true;
       } catch (e) {
         console.warn("SELLS_FAILED", e instanceof Error ? e.message : String(e));
+        return false;
       } finally {
-        clearTimeout(sellKillTimer);
+        clearTimeout(timer);
+      }
+    }
+
+    type VerifiedSell = { symbol: string; quantity: string; avgPrice: string; state: string };
+    async function verifySells(): Promise<Map<string, VerifiedSell>> {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 20_000);
+      try {
+        const resp = await (anthropic.beta.messages as any).create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 512,
+          system: `Call get_equity_orders for account ${ACCOUNT} filtered to today (${today}). Output exactly one line:
+VERIFIED_SELLS:[{"symbol":"XX","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
+Include only SELL orders placed today that are filled or pending (not cancelled/rejected). If none, output VERIFIED_SELLS:[]. Output nothing else.`,
+          messages: [{ role: "user", content: "Verify today's sell orders." }],
+          mcp_servers: [mcpServer],
+          betas: ["mcp-client-2025-04-04"],
+        }, { signal: ctrl.signal });
+        const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        const m = txt.match(/^VERIFIED_SELLS:(.+)$/m);
+        if (!m) return new Map();
+        const orders = JSON.parse(m[1]) as VerifiedSell[];
+        return new Map(orders.map(o => [o.symbol, o]));
+      } catch {
+        return new Map();
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    if (decision.sells.length > 0) {
+      const ok = await runSellSession(decision.sells, 120_000);
+      if (ok) {
+        let verified = await verifySells();
+        let missing = decision.sells.filter(s => !verified.has(s.symbol));
+        if (missing.length > 0) {
+          console.warn("SELL_VERIFY_MISSING — retrying", { missing: missing.map(s => s.symbol) });
+          await runSellSession(missing, 90_000); // retry only the dropped orders
+          verified = await verifySells();
+          missing = decision.sells.filter(s => !verified.has(s.symbol));
+        }
+        // Record ONLY confirmed sells. A decided sell with no confirmed order didn't
+        // execute — leave it unrecorded (the position stays held) and alert.
+        for (const s of decision.sells) {
+          const v = verified.get(s.symbol);
+          if (!v) continue;
+          const fill = parseFloat(v.avgPrice) > 0 ? v.avgPrice : String(priceMap.get(s.symbol) ?? 0);
+          trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, strategy: sellStrategyTag(s.symbol) });
+        }
+        if (missing.length > 0) {
+          console.warn("SELL_STILL_MISSING_AFTER_RETRY", { missing: missing.map(s => s.symbol) });
+          await sendAlert(
+            `⚠️ Sell orders not confirmed — ${today}`,
+            `These decided sells did NOT execute even after a retry: ${missing.map(s => s.symbol).join(", ")}.\nThey are still held. The next run will re-attempt, or place them manually in Robinhood.`,
+          );
+        }
       }
     }
 
