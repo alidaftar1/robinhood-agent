@@ -94,6 +94,50 @@ export function betaDescription(beta: number): string {
   return "roughly tracks the market";
 }
 
+// ─── Max drawdown ────────────────────────────────────────────────────────────
+// Largest peak-to-trough decline in an indexed value series, as a positive %
+// (the depth of the worst drop). The core downside-risk number — comparing the
+// agent's vs SPY's answers "when it's bad, how much worse is the agent?"
+export function computeMaxDrawdown(values: number[]): number | null {
+  if (values.length < 2) return null;
+  let peak = values[0];
+  let maxDD = 0;
+  for (const v of values) {
+    if (v > peak) peak = v;
+    if (peak > 0) {
+      const dd = (peak - v) / peak;
+      if (dd > maxDD) maxDD = dd;
+    }
+  }
+  return maxDD * 100;
+}
+
+// ─── Position concentration ──────────────────────────────────────────────────
+// Single-name concentration: how much rides on the biggest position(s). SPY's
+// largest single name is ~7%; a concentrated book can be 20%+ in one stock.
+export interface Concentration {
+  largestSymbol: string;
+  largestPct: number;
+  topThreePct: number;
+  count: number;
+}
+
+export function computeConcentration(run: TradeRun): Concentration | null {
+  const vals = (run.positions ?? [])
+    .map((p) => ({ symbol: p.symbol, value: parseFloat(p.quantity) * parseFloat(p.price) }))
+    .filter((p) => isFinite(p.value) && p.value > 0)
+    .sort((a, b) => b.value - a.value);
+  const total = vals.reduce((s, p) => s + p.value, 0);
+  if (total <= 0 || vals.length === 0) return null;
+  const topThree = vals.slice(0, 3).reduce((s, p) => s + p.value, 0);
+  return {
+    largestSymbol: vals[0].symbol,
+    largestPct: (vals[0].value / total) * 100,
+    topThreePct: (topThree / total) * 100,
+    count: vals.length,
+  };
+}
+
 // ─── T+1 settlement drag ─────────────────────────────────────────────────────
 // The cash account can't redeploy sell proceeds until they settle the next trading
 // day, so on every rebalance that capital sits idle for ~1 day. The cost of that
