@@ -1,9 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
-import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice } from "@/lib/market-data";
+import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchMomentum } from "@/lib/market-data";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, type PositionSnapshot, type TradeSnapshot, type PersonalSnapshot } from "@/lib/run-store";
-import { getInfluencerSignals, formatInfluencerSignals } from "@/lib/influencer-signals";
+import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, type MomentumSignal } from "@/lib/influencer-signals";
 import { computeSectorSlices, formatSectorExposure } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -158,16 +158,15 @@ export async function GET(request: Request) {
       ]);
       const priceMap = new Map<string, number>(marketData.stocks.map(s => [s.symbol, s.price]));
 
-      // Price influencer tickers not already in the market table
+      // Price + 5d momentum for influencer tickers (downtrend screen)
       let influencerSection = "";
+      const influencerMomentum = new Map<string, MomentumSignal>();
       if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
         const topTickers = Object.entries(influencerCache.tickerCounts)
-          .sort(([, a], [, b]) => b - a).slice(0, 12).map(([t]) => t).filter(t => !priceMap.has(t));
-        if (topTickers.length > 0) {
-          const extra = await Promise.allSettled(topTickers.map(t => fetchCurrentPrice(t).then(p => ({ t, p }))));
-          for (const r of extra) if (r.status === "fulfilled" && r.value.p != null) priceMap.set(r.value.t, r.value.p);
-        }
-        influencerSection = formatInfluencerSignals(influencerCache, priceMap);
+          .sort(([, a], [, b]) => b - a).slice(0, 12).map(([t]) => t);
+        const moms = await Promise.allSettled(topTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
+        for (const r of moms) if (r.status === "fulfilled" && r.value.m) { priceMap.set(r.value.t, r.value.m.price); influencerMomentum.set(r.value.t, { change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh }); }
+        influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
       }
 
       const buyingPower = simulateCash ? parseFloat(simulateCash) : parseFloat(previousRun?.portfolioAfter?.cash ?? "0");
@@ -193,13 +192,14 @@ export async function GET(request: Request) {
       const m = analysisText.match(/^TRADE_DECISION:(.+)$/m);
       if (m) { try { decision = JSON.parse(m[1]); } catch { /* keep empty */ } }
 
-      // Apply the same influencer cap logic the real run uses (display only)
+      // Apply the same influencer cap + downtrend guard the real run uses (display only)
       const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !decision.sells.some(s => s.symbol === p.symbol)).length;
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) => b.strategy === "influencer" || !sp500Set.has(b.symbol);
-      const annotatedBuys = decision.buys.map(b => ({
-        ...b,
-        resolvedStrategy: isInfluencerBuy(b) ? "influencer" : "main",
-      }));
+      const annotatedBuys = decision.buys.map(b => {
+        const mom = influencerMomentum.get(b.symbol);
+        const downtrendRejected = isInfluencerBuy(b) && isInfluencerDowntrend(mom);
+        return { ...b, resolvedStrategy: isInfluencerBuy(b) ? "influencer" : "main", momentum: mom ?? null, downtrendRejected };
+      });
       const influencerBuys = annotatedBuys.filter(b => b.resolvedStrategy === "influencer");
       const allowedNew = Math.max(0, 2 - keptInfluencer);
 
@@ -243,23 +243,22 @@ export async function GET(request: Request) {
 
     const priceMap = new Map<string, number>(marketData.stocks.map(s => [s.symbol, s.price]));
 
-    // Fetch live prices for top influencer tickers (those outside the SP500 universe)
+    // Fetch live prices + 5-day momentum for top influencer tickers (downtrend screen)
     let influencerSection = "";
+    const influencerMomentum = new Map<string, MomentumSignal>();
     if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
       const topInfluencerTickers = Object.entries(influencerCache.tickerCounts)
         .sort(([, a], [, b]) => b - a)
         .slice(0, 12)
-        .map(([t]) => t)
-        .filter(t => !priceMap.has(t)); // only fetch those not already in market data
-      if (topInfluencerTickers.length > 0) {
-        const extraPrices = await Promise.allSettled(topInfluencerTickers.map(t => fetchCurrentPrice(t).then(p => ({ t, p }))));
-        for (const r of extraPrices) {
-          if (r.status === "fulfilled" && r.value.p != null) {
-            priceMap.set(r.value.t, r.value.p);
-          }
+        .map(([t]) => t);
+      const moms = await Promise.allSettled(topInfluencerTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
+      for (const r of moms) {
+        if (r.status === "fulfilled" && r.value.m) {
+          priceMap.set(r.value.t, r.value.m.price);
+          influencerMomentum.set(r.value.t, { change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh });
         }
       }
-      influencerSection = formatInfluencerSignals(influencerCache, priceMap);
+      influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
     }
 
     // Always inject portfolio state so Claude never needs to call get_portfolio or get_equity_positions.
@@ -348,6 +347,28 @@ export async function GET(request: Request) {
       });
       if (trimmed.length > 0) {
         console.log("INFLUENCER_CAP_TRIMMED", { keptInfluencer, allowedNew, trimmed });
+      }
+    }
+
+    // ── Pre-buy momentum guard: reject influencer picks in a clear downtrend ──────
+    // The influencer signal measures popularity, not price trend — a stock can be the
+    // most-talked-about one precisely because it's crashing (SPCX bought mid-decline).
+    // Don't buy a falling knife; the −5% stop is cleanup, not a substitute for this.
+    {
+      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
+        b.strategy === "influencer" || !sp500Set.has(b.symbol);
+      const rejected: string[] = [];
+      decision.buys = decision.buys.filter(b => {
+        if (!isInfluencerBuy(b)) return true; // main strategy already screens momentum
+        const mom = influencerMomentum.get(b.symbol);
+        if (isInfluencerDowntrend(mom)) {
+          rejected.push(`${b.symbol} (5d ${mom!.change5d.toFixed(0)}%, ${mom!.distFromHigh.toFixed(0)}% off high)`);
+          return false;
+        }
+        return true;
+      });
+      if (rejected.length > 0) {
+        console.log("INFLUENCER_DOWNTREND_REJECTED", { rejected });
       }
     }
 
