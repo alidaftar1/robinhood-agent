@@ -236,6 +236,27 @@ export async function GET(request: Request) {
     );
   }
 
+  // Intent-vs-execution: the agent DECIDED to sell something but it's still held.
+  // Catches a silently dropped sell order (the BAX case) that data-consistency
+  // checks miss. Flag only — the next scheduled run re-attempts the sell.
+  if (todayRun?.summary && todayRun.positions.length > 0) {
+    const m = todayRun.summary.match(/TRADE_DECISION:(\{.*\})/);
+    if (m) {
+      try {
+        const decided = JSON.parse(m[1]) as { sells?: Array<{ symbol: string }> };
+        const heldSyms = new Set(todayRun.positions.map((p) => p.symbol));
+        const notExecuted = (decided.sells ?? [])
+          .map((s) => String(s.symbol))
+          .filter((sym) => heldSyms.has(sym));
+        if (notExecuted.length > 0) {
+          issues.push(
+            `Decided to sell ${notExecuted.join(", ")} but still held — sell order(s) dropped. Next run should re-attempt; place manually if it persists.`,
+          );
+        }
+      } catch { /* unparseable decision line — skip */ }
+    }
+  }
+
   // ─── Email ────────────────────────────────────────────────────────────────────
 
   const statusLabel = issues.length > 0 ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";
