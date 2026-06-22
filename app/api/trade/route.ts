@@ -4,6 +4,7 @@ import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioC
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice } from "@/lib/market-data";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, type PositionSnapshot, type TradeSnapshot, type PersonalSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals } from "@/lib/influencer-signals";
+import { computeSectorSlices, formatSectorExposure } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 
@@ -175,11 +176,14 @@ export async function GET(request: Request) {
         totalValue: `$${previousRun?.portfolioAfter?.totalValue ?? "0"} (estimated)`,
         positions: (previousRun?.positions ?? []).map(p => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost })),
       };
+      const sectorSection = formatSectorExposure(computeSectorSlices(
+        (previousRun?.positions ?? []).map(p => ({ symbol: p.symbol, value: parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost)) }))
+      ));
 
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 2048,
-        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx, influencerSection),
+        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx, influencerSection, sectorSection),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -280,6 +284,11 @@ export async function GET(request: Request) {
       };
     }
 
+    // Current sector exposure → fed into the prompt so the agent can respect the 40% soft cap
+    const sectorSection = formatSectorExposure(computeSectorSlices(
+      (portfolioCtx?.positions ?? []).map(p => ({ symbol: p.symbol, value: parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost)) }))
+    ));
+
     const runTimestamp = new Date().toISOString();
     let textContent = "";
     let trades: TradeSnapshot[] = [];
@@ -294,7 +303,7 @@ export async function GET(request: Request) {
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 2048,
-        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx!, influencerSection),
+        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx!, influencerSection, sectorSection),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       }, { signal: analysisController.signal });
       analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");

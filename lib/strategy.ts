@@ -173,7 +173,7 @@ Rules for each field:
 - Use prices from the market data table.`;
 }
 
-export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext, influencerSection?: string): string {
+export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string): string {
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => `  ${p.symbol} × ${p.quantity} @ $${parseFloat(p.avgCost).toFixed(2)} avg`).join("\n")
     : "  (none — full cash)";
@@ -187,7 +187,7 @@ PORTFOLIO STATE (live from Robinhood):
 - Total value: ${portfolio.totalValue ?? "unknown"}
 - Current positions:
 ${positionsLines}
-
+${sectorSection ?? ""}
 Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} | Today: ${today}
 
 T+1 SETTLEMENT RULE: This is a cash account. Sell proceeds do NOT settle until tomorrow. Your buy budget is the settled buying power above — it does NOT increase when you sell positions today. Plan buys within the settled buying power only.
@@ -210,10 +210,11 @@ CONSTRAINTS:
 - Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
 - Max $400 per position, min $50. Whole shares only. Stocks from table only.
 - Never buy ⚠⚠ IMMINENT.
+- SECTOR CAP (risk control): avoid holding more than ~40% of the portfolio in any single sector. Momentum tends to cluster in one sector — don't sleepwalk into a concentrated sector bet. If a buy would push a sector past 40%, prefer an equally-strong name from an underweight sector instead. If you're ALREADY over 40% in a sector (see SECTOR EXPOSURE above), lean toward trimming it and redeploying into underweight sectors — unless you can give a specific reason the concentration is worth the risk.
 - HARD LIMIT: total cost of all buys ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} (settled buying power). This number is fixed — selling today does NOT increase it. If you sell $300 of stock today and settled power is $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}, you can still only spend $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} on buys.
 ${influencerSection ?? ""}
 
-Write a brief thesis (2–4 sentences). ${influencerSection ? "Your thesis MUST explicitly state your influencer-bucket decision: which influencer pick(s) you're buying and why, OR — if you're buying none — the specific disqualifier (all picks priced > $400, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer bucket." : ""} Then, before writing TRADE_DECISION, compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}. If it exceeds that, reduce or remove the most expensive buy until it fits. Then output exactly one line:
+Write a brief thesis (2–4 sentences). Your thesis MUST note your sector balance — confirm you're within the ~40% per-sector cap, or if you're deliberately over it, justify why. ${influencerSection ? "It MUST also state your influencer-bucket decision: which influencer pick(s) you're buying and why, OR — if you're buying none — the specific disqualifier (all picks priced > $400, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer bucket." : ""} Then, before writing TRADE_DECISION, compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}. If it exceeds that, reduce or remove the most expensive buy until it fits. Then output exactly one line:
 TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","quantity":N}],"buys":[{"symbol":"X","quantity":N,"price":P,"strategy":"main"}]}
 
 Rules:
