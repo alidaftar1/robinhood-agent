@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchMomentum } from "@/lib/market-data";
-import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, type PositionSnapshot, type TradeSnapshot, type PersonalSnapshot } from "@/lib/run-store";
+import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, type MomentumSignal } from "@/lib/influencer-signals";
 import { computeSectorSlices, formatSectorExposure } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
@@ -11,7 +11,6 @@ import { isMarketHoliday } from "@/lib/holidays";
 export const maxDuration = 300;
 
 const ACCOUNT = process.env.AGENTIC_ACCOUNT_ID ?? "";
-const PERSONAL_ACCOUNT = process.env.PERSONAL_ACCOUNT_ID ?? "";
 const sp500Set = new Set(SP500_UNIVERSE);
 
 async function fetchAgenticBuyingPower(
@@ -70,57 +69,6 @@ Use instrument_symbol for symbol, quantity for quantity, average_buy_price for a
     const match = text.match(/^AGENTIC_POSITIONS:(.+)$/m);
     if (!match) return null;
     return JSON.parse(match[1]);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(killTimer);
-  }
-}
-
-async function fetchPersonalSnapshot(
-  anthropic: Anthropic,
-  accessToken: string,
-  priceMap: Map<string, number>
-): Promise<PersonalSnapshot | null> {
-  const controller = new AbortController();
-  // Hard-kill the Anthropic API call after 25s — Robinhood MCP hangs indefinitely
-  // when called with a non-agentic account ID, so we can't rely on Promise.race
-  const killTimer = setTimeout(() => controller.abort(), 25000);
-  try {
-    const res = await (anthropic.beta.messages as any).create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-      system: `You are a data fetching assistant. Call get_portfolio(account=${PERSONAL_ACCOUNT}) and get_equity_positions(account=${PERSONAL_ACCOUNT}) simultaneously. Then output exactly one line:
-PERSONAL_SNAPSHOT:{"totalValue":"XX.XX","cash":"XX.XX","positions":[{"symbol":"XX","quantity":"X","price":"XX.XX"}]}
-Where totalValue = equity value + buying_power from get_portfolio, cash = buying_power, positions = from get_equity_positions with each position's last_trade_price. Output nothing else.`,
-      messages: [{ role: "user", content: `Fetch account ${PERSONAL_ACCOUNT} snapshot now.` }],
-      mcp_servers: [{
-        type: "url",
-        url: "https://agent.robinhood.com/mcp/trading",
-        name: "robinhood",
-        authorization_token: accessToken,
-      }],
-      betas: ["mcp-client-2025-04-04"],
-    }, { signal: controller.signal });
-    clearTimeout(killTimer);
-    const text = res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-    const match = text.match(/^PERSONAL_SNAPSHOT:(.+)$/m);
-    if (!match) return null;
-    const p = JSON.parse(match[1]);
-    const positions: PositionSnapshot[] = (p.positions ?? []).map((pos: any) => ({
-      symbol: String(pos.symbol ?? ""),
-      quantity: String(pos.quantity ?? "0"),
-      avgCost: "0",
-      price: String(priceMap.get(String(pos.symbol ?? "")) ?? pos.price ?? 0),
-    }));
-    const cash = parseFloat(String(p.cash ?? "0"));
-    const equity = positions.reduce((s, pos) => s + parseFloat(pos.quantity) * parseFloat(pos.price), 0);
-    return {
-      totalValue: (cash + equity).toFixed(2),
-      cash: cash.toFixed(2),
-      positions,
-      trades: [],
-    };
   } catch {
     return null;
   } finally {
@@ -239,7 +187,6 @@ export async function GET(request: Request) {
       await sendAlert("Trade cron aborted: MCP token expired", "Balance fetch returned nothing — Robinhood MCP token appears expired. Re-authenticate and update Vercel env vars.");
       return Response.json({ skipped: true, reason: "mcp_token_expired" });
     }
-    const tradingStart = Date.now();
 
     const priceMap = new Map<string, number>(marketData.stocks.map(s => [s.symbol, s.price]));
 
@@ -291,7 +238,6 @@ export async function GET(request: Request) {
     const runTimestamp = new Date().toISOString();
     let textContent = "";
     let trades: TradeSnapshot[] = [];
-    let personal: PersonalSnapshot | null = null;
 
     // ── SESSION 1: Analysis (Sonnet, no MCP) ────────────────────────────────
     // Pure reasoning — no tool calls. Should complete in ~30-60s.
@@ -652,23 +598,14 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
       ...(spyPrice != null ? { spyPrice } : {}),
     };
 
-    // Save core run immediately — before personal snapshot — so orders + positions
-    // are persisted even if the function times out during the slower personal fetch.
+    // Save core run so orders + positions are persisted even if a later step fails.
+    // (Personal-account comparison removed: the agentic MCP token is sandboxed to the
+    // agentic account — agentic_allowed:false on the individual account — so the personal
+    // snapshot could never be read; the fetch just hung ~25s every run.)
     await saveRun({ ...baseRun, portfolioAfter, positions, trades, personal: null });
     console.log("CORE_RUN_SAVED");
 
-    // Fetch personal snapshot after main session (sequential — no MCP interference)
-    // AbortController inside fetchPersonalSnapshot kills the call after 25s
-    const elapsedMs = Date.now() - tradingStart;
-    console.log("PERSONAL_SNAPSHOT_START", { elapsedMs });
-    personal = await fetchPersonalSnapshot(anthropic, accessToken, priceMap);
-    if (personal) {
-      console.log("PERSONAL_SNAPSHOT_PARSED", { totalValue: personal.totalValue, positionCount: personal.positions.length });
-    } else {
-      console.warn("PERSONAL_SNAPSHOT_MISSING — fetch timed out or returned null");
-    }
-
-    // Compute transfer-adjusted daily returns for both accounts.
+    // Compute transfer-adjusted daily return.
     // Gather ALL of today's trades (from any earlier same-day runs + this run) so that
     // when multiple cron firings happen on one day, portfolio rotations don't look like transfers.
     const earlierTodayRuns = (await getRuns(20)).filter(
@@ -686,16 +623,6 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
           positions,
           previousDayRun.positions,
           allTradesToday
-        )
-      : null;
-
-    const personalResult = personal && previousDayRun?.personal
-      ? computeDailyReturn(
-          parseFloat(personal.totalValue),
-          parseFloat(previousDayRun.personal.totalValue),
-          personal.positions,
-          previousDayRun.personal.positions,
-          []
         )
       : null;
 
@@ -726,18 +653,16 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
         )
       : null;
 
-    // Patch the run already saved at index 0 with personal snapshot + return metrics.
+    // Patch the run already saved at index 0 with return metrics.
     await updateLatestRun({
       ...baseRun,
       portfolioAfter,
       positions,
       trades,
-      personal,
+      personal: null,
       influencerPositions,
       agenticDailyReturn: agenticResult?.dailyReturn ?? null,
-      personalDailyReturn: personalResult?.dailyReturn ?? null,
       agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null,
-      personalImpliedTransfer: personalResult?.impliedTransfer ?? null,
       influencerDailyReturn: influencerResult?.dailyReturn ?? null,
     });
 
