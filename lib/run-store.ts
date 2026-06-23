@@ -125,17 +125,70 @@ export async function getPreviousDayRun(today: string): Promise<TradeRun | null>
 }
 
 // Removes duplicate same-day runs, keeping only the latest timestamp per date.
+// Stable identity for a fill, so unioning trades across same-date runs doesn't
+// duplicate the ones both runs already recorded.
+function tradeKey(t: TradeSnapshot): string {
+  return `${t.symbol}|${t.side}|${t.quantity}|${t.avgPrice}`;
+}
+
+function unionTrades(a: TradeSnapshot[], b: TradeSnapshot[]): TradeSnapshot[] {
+  const out = [...a];
+  const seen = new Set(a.map(tradeKey));
+  for (const t of b) {
+    const k = tradeKey(t);
+    if (!seen.has(k)) { seen.add(k); out.push(t); }
+  }
+  return out;
+}
+
+// Picks which of two same-date runs is the canonical record. A day can hold both
+// the main daily-trade run AND a thin intraday secondary run (stop-loss /
+// drop-check / earnings-exit). The OLD dedup kept whichever had the later
+// timestamp — which is almost always the thin secondary run, silently discarding
+// the main run's full trade set AND its correct, transfer-adjusted return. (A thin
+// run can't recompute the day's return: it only carries its own one trade, so
+// computeDailyReturn undercounts tradeNetCash and inflates P&L.) Prefer the richer
+// record instead: a run that already has a computed agenticDailyReturn wins, then
+// the one with more trades, then the later timestamp as a final tiebreak.
+function preferRun(a: TradeRun, b: TradeRun): TradeRun {
+  const aHasReturn = a.agenticDailyReturn != null;
+  const bHasReturn = b.agenticDailyReturn != null;
+  if (aHasReturn !== bHasReturn) return aHasReturn ? a : b;
+  const aTrades = (a.trades ?? []).length;
+  const bTrades = (b.trades ?? []).length;
+  if (aTrades !== bTrades) return aTrades > bTrades ? a : b;
+  return a.timestamp >= b.timestamp ? a : b;
+}
+
+// Collapses runs to one canonical record per date. Keeps the richer run (see
+// preferRun) but unions in the dropped run's trades so no fill is lost from
+// history. Pure + side-effect free so it can be unit-tested without Redis.
+export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
+  const byDate = new Map<string, TradeRun>();
+  for (const run of all) {
+    const existing = byDate.get(run.date);
+    if (!existing) {
+      byDate.set(run.date, { ...run, trades: [...(run.trades ?? [])] });
+      continue;
+    }
+    const base = preferRun(existing, run);
+    const other = base === existing ? run : existing;
+    base.trades = unionTrades(base.trades ?? [], other.trades ?? []);
+    byDate.set(run.date, base);
+  }
+  return [...byDate.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+}
+
 export async function dedupeRuns(): Promise<number> {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) throw new Error("Upstash not configured");
   const all = await getRuns(90);
-  const seen = new Map<string, TradeRun>();
-  for (const run of all) {
-    const existing = seen.get(run.date);
-    if (!existing || run.timestamp > existing.timestamp) seen.set(run.date, run);
+  const deduped = mergeRunsByDate(all);
+  // Safety: never let a logic slip turn this history-rewriting call into a wipe.
+  if (all.length > 0 && deduped.length === 0) {
+    throw new Error("dedupeRuns: refusing to write empty run list");
   }
-  const deduped = [...seen.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   const pipeline = [
     ["DEL", RUNS_KEY],
     ...deduped.map(r => ["RPUSH", RUNS_KEY, JSON.stringify(r)]),
