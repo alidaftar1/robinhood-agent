@@ -374,7 +374,7 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
 // the way it bought SPCX mid-decline). Returns BOTH 5-day net change and distance from
 // the recent 10-day high — the latter catches pump-and-dump names (e.g. a fresh IPO
 // that spiked then fell) where the 5-day net is misleadingly mild.
-export async function fetchMomentum(symbol: string): Promise<{ price: number; change5d: number; distFromHigh: number } | null> {
+export async function fetchMomentum(symbol: string): Promise<{ price: number; change5d: number; distFromHigh: number; aboveShortMA: boolean } | null> {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
@@ -390,7 +390,12 @@ export async function fetchMomentum(symbol: string): Promise<{ price: number; ch
     const change5d = fiveAgo ? ((price - fiveAgo) / fiveAgo) * 100 : 0;
     const recentHigh = Math.max(price, ...closes.slice(-10));
     const distFromHigh = recentHigh > 0 ? ((price - recentHigh) / recentHigh) * 100 : 0;
-    return { price, change5d, distFromHigh };
+    // Confirmed-recovery signal: price above its 5-day moving average = the short-term
+    // trend has turned up (a single bounce day off a low is still below the 5d average).
+    const last5 = closes.slice(-5);
+    const fiveDayAvg = last5.length ? last5.reduce((s, c) => s + c, 0) / last5.length : price;
+    const aboveShortMA = price > fiveDayAvg;
+    return { price, change5d, distFromHigh, aboveShortMA };
   } catch {
     return null;
   }

@@ -354,10 +354,26 @@ export async function getInfluencerSignals(): Promise<InfluencerCache | null> {
 export const MOMENTUM_FLOOR_PCT = -8;
 export const DIST_FROM_HIGH_FLOOR = -15;
 
-export interface MomentumSignal { change5d: number; distFromHigh: number }
+export interface MomentumSignal { change5d: number; distFromHigh: number; aboveShortMA: boolean }
+
+// True if the pick is a falling knife we should NOT buy. A pick that's flagged
+// (down >8% over 5d, or >15% off its recent high) is normally rejected — UNLESS it's
+// shown a CONFIRMED recovery (reclaimed its 5-day moving average = short-term trend
+// turned up). That exception lets a genuine bottom back in without chasing a one-day
+// dead-cat bounce (a single pop off a low is still below the 5d average).
 export function isInfluencerDowntrend(m: MomentumSignal | undefined): boolean {
   if (!m) return false;
-  return m.change5d < MOMENTUM_FLOOR_PCT || m.distFromHigh < DIST_FROM_HIGH_FLOOR;
+  const flagged = m.change5d < MOMENTUM_FLOOR_PCT || m.distFromHigh < DIST_FROM_HIGH_FLOOR;
+  if (!flagged) return false;
+  if (m.aboveShortMA) return false; // confirmed-recovery exception
+  return true;
+}
+
+// For display: a pick that's flagged but recovering (above its 5d MA).
+export function isInfluencerRecovering(m: MomentumSignal | undefined): boolean {
+  if (!m) return false;
+  const flagged = m.change5d < MOMENTUM_FLOOR_PCT || m.distFromHigh < DIST_FROM_HIGH_FLOOR;
+  return flagged && m.aboveShortMA;
 }
 
 /** Format influencer signals for inclusion in the Sonnet analysis prompt.
@@ -385,8 +401,9 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     // Liquidity filter: skip tickers outside $5-$500 range
     if (price && (price < 5 || price > 500)) return null;
     const mom = momentum?.get(ticker);
+    const tag = mom == null ? "" : isInfluencerDowntrend(mom) ? " ⛔DOWNTREND" : isInfluencerRecovering(mom) ? " ↑RECOVERING" : "";
     const momStr = mom != null
-      ? ` 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${isInfluencerDowntrend(mom) ? " ⛔DOWNTREND" : ""}`
+      ? ` 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${tag}`
       : "";
     return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(26)} score=${score}  channels: ${channels}`;
   }).filter(Boolean).join("\n");
@@ -406,7 +423,7 @@ ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
 • HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
 • Same per-position cap as the main strategy, min $50. Whole shares only.
 • Prefer the highest score; a score-6 pick is a strong, broadly-covered signal — do not ignore it.
-• DOWNTREND SCREEN: do NOT buy a pick marked ⛔DOWNTREND (down >${Math.abs(MOMENTUM_FLOOR_PCT)}% over 5d, OR >${Math.abs(DIST_FROM_HIGH_FLOOR)}% below its recent high). The row shows "5d:" (5-day change) and "hi:" (distance from recent high). These signals measure popularity, not price — a falling stock can be the most-talked-about one. The system rejects these buys anyway. Prefer a flat/rising pick, or buy none this run.
+• DOWNTREND SCREEN: do NOT buy a pick marked ⛔DOWNTREND (down >${Math.abs(MOMENTUM_FLOOR_PCT)}% over 5d, OR >${Math.abs(DIST_FROM_HIGH_FLOOR)}% below its recent high). The row shows "5d:" (5-day change) and "hi:" (distance from recent high). These signals measure popularity, not price — a falling stock can be the most-talked-about one. The system rejects these buys anyway. A pick marked ↑RECOVERING dipped but has reclaimed its 5-day average (trend turned up) — it is allowed. Prefer a rising or ↑RECOVERING pick; never a ⛔DOWNTREND one.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".
 • Non-S&P-500 tickers here (e.g. SPCX, PLTR, COIN, HOOD) can ONLY be bought as influencer picks.
 • These are funded from the SAME settled buying power as main picks — total buys still ≤ budget.
