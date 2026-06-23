@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Drag, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate } from "@/lib/risk-metrics";
 
 // ─── Return series + chart ────────────────────────────────────────────────────
 
@@ -274,7 +274,6 @@ export default async function DashboardPage({
   const cashPct = latest ? computeCashPct(latest) : null;
   const sectorBreakdown = latest ? computeSectorBreakdown(latest) : [];
   const beta = computeBeta(runs);
-  const t1Drag = computeT1Drag(runs);
   const t1Settling = latest ? computeT1Settling(latest) : null;
   const concentration = latest ? computeConcentration(latest) : null;
   // Max drawdown over the same co-indexed window for both series
@@ -294,9 +293,9 @@ export default async function DashboardPage({
       <div style={s.header}>
         <div style={s.title}>Robinhood Agent</div>
         <div style={s.subtitle}>
-          Agentic account ••••4256
-          {latest?.portfolioAfter && ` · $${parseFloat(latest.portfolioAfter.totalValue).toFixed(0)} portfolio`}
-          {` · Daily 7:30am PT`}
+          AI trading account ••••4256
+          {latest?.portfolioAfter && ` · $${parseFloat(latest.portfolioAfter.totalValue).toFixed(0)} total`}
+          {` · Trades daily at 7:30am PT`}
           {latest && ` · Last run ${latest.date}`}
         </div>
       </div>
@@ -304,38 +303,38 @@ export default async function DashboardPage({
       {runs.length >= 2 && (
         <div style={s.perfCard}>
           <div style={s.perfStat}>
-            <span style={s.perfLabel}>Agent Return</span>
+            <span style={s.perfLabel} title="How much the AI's trading account has gained or lost since it started.">AI Return ⓘ</span>
             <span style={{ ...s.perfValue, color: returnColor(agentReturn) }}>
               {agentReturn != null ? fmtPct(agentReturn) : "—"}
             </span>
-            <span style={s.perfSince}>since {perfBaseline?.date ?? inception!.date}</span>
+            <span style={s.perfSince}>the AI, since {perfBaseline?.date ?? inception!.date}</span>
           </div>
           <div style={s.perfStat}>
-            <span style={s.perfLabel}>SPY Return</span>
+            <span style={s.perfLabel} title="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'">S&P 500 Return ⓘ</span>
             <span style={{ ...s.perfValue, color: returnColor(spyReturn) }}>
               {spyReturn != null ? fmtPct(spyReturn) : "—"}
             </span>
-            <span style={s.perfSince}>same period</span>
+            <span style={s.perfSince}>the market, same period</span>
           </div>
           <div style={s.perfStat}>
-            <span style={s.perfLabel}>Alpha</span>
+            <span style={s.perfLabel} title="Alpha: the AI's return minus the S&P 500's return over the same period. Positive = it's beating the market.">Beating the Market ⓘ</span>
             <span style={{ ...s.perfValue, color: returnColor(alpha) }}>
               {alpha != null ? fmtPct(alpha) : "—"}
             </span>
-            <span style={s.perfSince}>agent vs SPY</span>
+            <span style={s.perfSince}>vs. the S&P 500 (a.k.a. "alpha")</span>
           </div>
           {latest?.portfolioAfter && (
             <div style={s.perfStat}>
-              <span style={s.perfLabel}>Agentic Value</span>
+              <span style={s.perfLabel} title="Total value of the AI's trading account: cash plus the current value of everything it holds.">Account Value ⓘ</span>
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
                 ${parseFloat(latest.portfolioAfter.totalValue).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{runs.length} runs tracked</span>
+              <span style={s.perfSince}>cash + holdings · {runs.length} days tracked</span>
             </div>
           )}
           {beatRate != null && (
             <div style={s.perfStat}>
-              <span style={s.perfLabel}>Days Beating SPY</span>
+              <span style={s.perfLabel} title="The share of trading days the AI's daily return was higher than the S&P 500's.">Days Beating the Market ⓘ</span>
               <span style={{ ...s.perfValue, color: returnColor(beatRate.rate * 100 - 50) }}>
                 {(beatRate.rate * 100).toFixed(0)}%
               </span>
@@ -349,26 +348,26 @@ export default async function DashboardPage({
       {(hasInfluencerData || influencerPositions.length > 0) && (
         <div style={{ ...s.perfCard, borderColor: "#2a1f0d" }}>
           <div style={{ ...s.perfStat }}>
-            <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>📺 Influencer Return</span>
+            <span style={{ ...s.perfLabel, color: "#7a5a2a" }} title="A separate ~25% slice of the account that buys stocks talked up by YouTube finance creators — higher risk, higher reward.">📺 YouTube-Picks Return ⓘ</span>
             <span style={{ ...s.perfValue, color: returnColor(influencerCumReturn) }}>
               {influencerCumReturn != null ? fmtPct(influencerCumReturn) : "—"}
             </span>
-            <span style={s.perfSince}>YouTube picks sub-portfolio</span>
+            <span style={s.perfSince}>the YouTube-influencer slice</span>
           </div>
           <div style={s.perfStat}>
-            <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>vs SPY</span>
+            <span style={{ ...s.perfLabel, color: "#7a5a2a" }} title="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period.">vs. the Market ⓘ</span>
             <span style={{ ...s.perfValue, color: returnColor(influencerAlpha) }}>
               {influencerAlpha != null ? fmtPct(influencerAlpha) : "—"}
             </span>
-            <span style={s.perfSince}>influencer alpha</span>
+            <span style={s.perfSince}>YouTube picks vs. S&P 500</span>
           </div>
           {influencerPositions.length > 0 && (
             <div style={s.perfStat}>
-              <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>Positions</span>
+              <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>Holding Now</span>
               <span style={{ fontSize: 14, fontWeight: 600, color: "#e8943a", marginTop: 4 }}>
                 {influencerPositions.map(p => p.symbol).join(", ")}
               </span>
-              <span style={s.perfSince}>~25% of budget</span>
+              <span style={s.perfSince}>~25% of the budget</span>
             </div>
           )}
         </div>
@@ -376,28 +375,28 @@ export default async function DashboardPage({
 
       {hasComparison && (
         <div style={s.chartCard}>
-          <div style={s.chartTitle}>Performance Comparison (indexed to 100)</div>
+          <div style={s.chartTitle} title="Every line starts at 100 on day one, so you can compare growth directly. A line at 105 means +5% since the start.">AI vs. the Market over time ⓘ</div>
           <ReturnChart points={returnSeries} />
           <div style={s.chartLegend}>
             <div style={s.legendItem}>
               <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#7dba7d" strokeWidth="2" /></svg>
-              Agentic {agenticCumReturn != null ? `(${fmtPct(agenticCumReturn)})` : ""}
+              The AI {agenticCumReturn != null ? `(${fmtPct(agenticCumReturn)})` : ""}
             </div>
             {hasInfluencerData && (
               <div style={s.legendItem}>
                 <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#e8943a" strokeWidth="2" /></svg>
-                Influencer {influencerCumReturn != null ? `(${fmtPct(influencerCumReturn)})` : ""}
+                YouTube picks {influencerCumReturn != null ? `(${fmtPct(influencerCumReturn)})` : ""}
               </div>
             )}
             <div style={s.legendItem}>
               <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#444" strokeWidth="2" /></svg>
-              SPY
+              S&P 500 (the market)
             </div>
           </div>
           {runs.slice(0, 10).some(r => (r.agenticImpliedTransfer ?? 0) !== 0) && (
             <div style={{ marginTop: 12, fontSize: 11, color: "#555" }}>
               {runs.slice(0, 10).filter(r => Math.abs(r.agenticImpliedTransfer ?? 0) > 10).map((r, i) => (
-                <div key={i}>⟳ {r.date}: agentic transfer detected ${(r.agenticImpliedTransfer!).toFixed(0)} (excluded from return)</div>
+                <div key={i}>⟳ {r.date}: deposit/withdrawal of ${(r.agenticImpliedTransfer!).toFixed(0)} detected (not counted as gain or loss)</div>
               ))}
             </div>
           )}
@@ -406,57 +405,57 @@ export default async function DashboardPage({
 
       {latest && (cashPct != null || sectorBreakdown.length > 0 || beta) && (
         <div style={s.chartCard}>
-          <div style={s.chartTitle}>Risk & Attribution — why, not just whether</div>
+          <div style={s.chartTitle}>How risky is it? — a look under the hood</div>
           <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginBottom: sectorBreakdown.length > 0 ? 20 : 0 }}>
             <div style={{ ...s.perfStat, minWidth: 160 }}>
-              <span style={s.perfLabel}>Settled cash (snapshot)</span>
+              <span style={s.perfLabel} title="Cash that's settled and ready to trade right now, as a % of the account. Does not include money from recent sales that hasn't cleared yet.">Cash on Hand ⓘ</span>
               <span style={{ ...s.perfValue, color: cashPct != null && cashPct > 10 ? "#e8943a" : "#e5e5e5" }}>
                 {cashPct != null ? `${cashPct.toFixed(1)}%` : "—"}
               </span>
-              <span style={s.perfSince}>post-trade settled cash — excludes unsettled proceeds</span>
+              <span style={s.perfSince}>ready to trade now (idle if high)</span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 185 }}>
-              <span style={s.perfLabel}>T+1 settling</span>
+              <span style={s.perfLabel} title="When the AI sells a stock, the cash takes one business day to clear before it can be reused (called 'T+1 settlement'). This is how much is waiting to clear.">Cash Clearing ⓘ</span>
               <span style={{ ...s.perfValue, color: t1Settling && t1Settling.pct > 10 ? "#e8943a" : "#e5e5e5" }}>
                 {t1Settling ? `$${t1Settling.amount.toFixed(0)}` : "$0"}
               </span>
               <span style={s.perfSince}>
                 {t1Settling
-                  ? `${t1Settling.pct.toFixed(0)}% idle until tomorrow${t1Drag ? ` · est. drag ${t1Drag.dragPct >= 0 ? "−" : "+"}${Math.abs(t1Drag.dragPct).toFixed(2)}%` : ""}`
-                  : "no sell proceeds settling"}
+                  ? `${t1Settling.pct.toFixed(0)}% of the account · frees up next business day`
+                  : "no sale money waiting to clear"}
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 170 }}>
-              <span style={s.perfLabel}>Beta vs SPY</span>
+              <span style={s.perfLabel} title="Beta: how much the account moves compared to the market. 1.0 = moves with the market; above 1 = bigger swings; below 1 = smaller swings.">Swings vs. Market ⓘ</span>
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
-                {beta ? beta.beta.toFixed(2) : "—"}
+                {beta ? `${beta.beta.toFixed(2)}×` : "—"}
               </span>
               <span style={s.perfSince}>
-                {beta ? `${betaDescription(beta.beta)} · n=${beta.n}${beta.n < 5 ? " (early)" : ""}` : "need a few more trading days"}
+                {beta ? `${betaDescription(beta.beta)}${beta.n < 5 ? " · still early" : ""}` : "need a few more trading days"}
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <span style={s.perfLabel}>Max drawdown</span>
+              <span style={s.perfLabel} title="Max drawdown: the biggest drop from a high point to a low point over the period tracked. Lower is better.">Worst Drop ⓘ</span>
               <span style={{ ...s.perfValue, color: agentDrawdown != null && spyDrawdown != null && agentDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
                 {agentDrawdown != null ? `−${agentDrawdown.toFixed(2)}%` : "—"}
               </span>
               <span style={s.perfSince}>
-                {spyDrawdown != null ? `worst drop · SPY −${spyDrawdown.toFixed(2)}%` : "worst peak-to-trough drop"}
+                {spyDrawdown != null ? `biggest fall from a high · market −${spyDrawdown.toFixed(2)}%` : "biggest fall from a high point"}
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <span style={s.perfLabel}>Concentration</span>
+              <span style={s.perfLabel} title="How much of the account sits in its single biggest stock. A high number means more risk if that one stock drops.">Biggest Bet ⓘ</span>
               <span style={{ ...s.perfValue, color: concentration && concentration.largestPct > 25 ? "#e8943a" : "#e5e5e5" }}>
                 {concentration ? `${concentration.largestPct.toFixed(0)}%` : "—"}
               </span>
               <span style={s.perfSince}>
-                {concentration ? `${concentration.largestSymbol} largest · ${concentration.count} positions · top 3 = ${concentration.topThreePct.toFixed(0)}%` : "—"}
+                {concentration ? `in ${concentration.largestSymbol} · ${concentration.count} stocks held · top 3 = ${concentration.topThreePct.toFixed(0)}%` : "—"}
               </span>
             </div>
           </div>
           {sectorBreakdown.length > 0 && (
             <div>
-              <div style={{ ...s.perfLabel, marginBottom: 10 }}>Sector exposure</div>
+              <div style={{ ...s.perfLabel, marginBottom: 10 }} title="How the money is split across industries (technology, finance, healthcare, etc.).">Industry Mix ⓘ</div>
               {sectorBreakdown.map((sec) => (
                 <div key={sec.etf} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
                   <span style={{ width: 110, fontSize: 12, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sec.name}</span>
@@ -466,7 +465,7 @@ export default async function DashboardPage({
                   <span style={{ width: 40, textAlign: "right", fontSize: 12, color: "#888" }}>{sec.pct.toFixed(0)}%</span>
                 </div>
               ))}
-              <div style={{ ...s.perfSince, marginTop: 8 }}>heavy weight in one sector = a bet on that sector, not stock-picking</div>
+              <div style={{ ...s.perfSince, marginTop: 8 }}>a lot in one industry means it's betting on that industry, not picking individual winners</div>
             </div>
           )}
         </div>
