@@ -113,7 +113,7 @@ export async function GET(request: Request) {
         const topTickers = Object.entries(influencerCache.tickerCounts)
           .sort(([, a], [, b]) => b - a).slice(0, 12).map(([t]) => t);
         const moms = await Promise.allSettled(topTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
-        for (const r of moms) if (r.status === "fulfilled" && r.value.m) { priceMap.set(r.value.t, r.value.m.price); influencerMomentum.set(r.value.t, { change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh }); }
+        for (const r of moms) if (r.status === "fulfilled" && r.value.m) { priceMap.set(r.value.t, r.value.m.price); influencerMomentum.set(r.value.t, { change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA }); }
         influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
       }
 
@@ -202,7 +202,7 @@ export async function GET(request: Request) {
       for (const r of moms) {
         if (r.status === "fulfilled" && r.value.m) {
           priceMap.set(r.value.t, r.value.m.price);
-          influencerMomentum.set(r.value.t, { change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh });
+          influencerMomentum.set(r.value.t, { change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA });
         }
       }
       influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
