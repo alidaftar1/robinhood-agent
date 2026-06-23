@@ -64,8 +64,8 @@ export async function GET(request: Request) {
     haiku(
       anthropic, accessToken,
       `Call get_portfolio for account ${ACCOUNT}. Output exactly one line:
-LIVE_BALANCE:{"buyingPower":"XX.XX","totalValue":"XX.XX"}
-Use buying_power.buying_power for buyingPower and total_value for totalValue. Output nothing else.`,
+LIVE_BALANCE:{"buyingPower":"XX.XX","totalValue":"XX.XX","cash":"XX.XX"}
+Use buying_power.buying_power for buyingPower, total_value for totalValue, and the top-level cash field for cash (total cash incl. unsettled). Output nothing else.`,
       `Fetch live balance for account ${ACCOUNT}.`,
       256, 25_000
     ),
@@ -91,7 +91,7 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
   const liveBalance = (() => {
     const m = balanceText?.match(/^LIVE_BALANCE:(.+)$/m);
     if (!m) return null;
-    try { return JSON.parse(m[1]) as { buyingPower: string; totalValue: string }; } catch { return null; }
+    try { return JSON.parse(m[1]) as { buyingPower: string; totalValue: string; cash?: string }; } catch { return null; }
   })();
 
   const livePositions = (() => {
@@ -132,6 +132,46 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     const storedValue = parseFloat(storedRun.portfolioAfter.totalValue);
     valueDiff = liveValue - storedValue;
     // Not flagged as a discrepancy — market price drift since snapshot is expected
+  }
+
+  // Unsettled-cash reconciliation — what the dashboard's "T+1 settling" / unsettled
+  // figure shows vs the live Robinhood truth. Robinhood has no clean unsettled_funds
+  // field, so unsettled = total cash − settled buying power is the only correct source.
+  // This is the class reconciliation on settled cash alone misses (the dashboard once
+  // showed $354 unsettled when live was $505).
+  let unsettledDiff: number | null = null;
+  if (liveBalance?.cash != null && storedRun?.portfolioAfter) {
+    const liveCash = parseFloat(liveBalance.cash);
+    const liveBP = parseFloat(liveBalance.buyingPower);
+    const liveUnsettled = isFinite(liveCash) && liveCash > liveBP ? liveCash - liveBP : 0;
+    const storedUnsettled = parseFloat(storedRun.portfolioAfter.unsettledCash ?? "0");
+    unsettledDiff = liveUnsettled - storedUnsettled;
+    if (Math.abs(unsettledDiff) > 10) {
+      discrepancies.push(
+        `Unsettled cash mismatch: live $${liveUnsettled.toFixed(2)} (cash $${liveCash.toFixed(2)} − buying power $${liveBP.toFixed(2)}) vs dashboard $${storedUnsettled.toFixed(2)} (diff $${unsettledDiff.toFixed(2)}). Likely a queued order that filled, or a stale/derived figure on the dashboard.`,
+      );
+    }
+  }
+
+  // Total-value composition — the dashboard composes totalValue = settled cash +
+  // unsettled + equity. If the parts don't sum to the stored total, the displayed
+  // account value is STRUCTURALLY wrong (distinct from intraday price drift, which the
+  // live valueDiff above absorbs). Catches the understated-total bug.
+  let compositionGap: number | null = null;
+  if (storedRun?.portfolioAfter) {
+    const pa = storedRun.portfolioAfter;
+    const sCash = parseFloat(pa.cash ?? "0");
+    const sUnsettled = parseFloat(pa.unsettledCash ?? "0");
+    const sEquity = parseFloat(pa.equity ?? "0");
+    const sTotal = parseFloat(pa.totalValue ?? "0");
+    if ([sCash, sUnsettled, sEquity, sTotal].every(isFinite)) {
+      compositionGap = sTotal - (sCash + sUnsettled + sEquity);
+      if (Math.abs(compositionGap) > 5) {
+        discrepancies.push(
+          `Dashboard total value doesn't add up: totalValue $${sTotal.toFixed(2)} ≠ settled $${sCash.toFixed(2)} + unsettled $${sUnsettled.toFixed(2)} + equity $${sEquity.toFixed(2)} (gap $${compositionGap.toFixed(2)}).`,
+        );
+      }
+    }
   }
 
   // Position discrepancies
@@ -213,6 +253,8 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     stored: storedRun ? {
       date: storedRun.date,
       cash: storedRun.portfolioAfter?.cash ?? null,
+      unsettledCash: storedRun.portfolioAfter?.unsettledCash ?? null,
+      equity: storedRun.portfolioAfter?.equity ?? null,
       totalValue: storedRun.portfolioAfter?.totalValue ?? null,
       positions: storedRun.positions.map(p => ({ symbol: p.symbol, quantity: p.quantity })),
       trades: storedRun.trades ?? [],
@@ -220,6 +262,8 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     diff: {
       cashDiff,
       valueDiff,
+      unsettledDiff,
+      compositionGap,
       positionIssues,
       uncapturedOrders,
     },
