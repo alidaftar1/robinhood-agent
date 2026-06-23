@@ -167,5 +167,27 @@ export async function GET(request: Request) {
     }
   }
 
+  // Correct unsettled cash for a date, e.g. ?setUnsettled=2026-06-23&amount=505.61
+  // Recomputes totalValue = settled cash + unsettled + equity to stay consistent.
+  if (url.searchParams.get("setUnsettled")) {
+    const date = url.searchParams.get("setUnsettled")!;
+    const amount = parseFloat(url.searchParams.get("amount") ?? "");
+    if (!isFinite(amount)) {
+      results.setUnsettled = "error: missing or invalid &amount";
+    } else {
+      try {
+        const patched = await updateRunByDate(date, r => {
+          if (!r.portfolioAfter) return r;
+          const cash = parseFloat(r.portfolioAfter.cash) || 0;
+          const equity = parseFloat(r.portfolioAfter.equity) || 0;
+          return { ...r, portfolioAfter: { ...r.portfolioAfter, unsettledCash: amount.toFixed(2), totalValue: (cash + amount + equity).toFixed(2) } };
+        });
+        results.setUnsettled = patched ? `set unsettled for ${date} to ${amount}` : `no run found for ${date}`;
+      } catch (e) {
+        results.setUnsettled = `error: ${e}`;
+      }
+    }
+  }
+
   return Response.json(results);
 }

@@ -24,8 +24,8 @@ async function fetchAgenticBuyingPower(
       model: "claude-haiku-4-5-20251001",
       max_tokens: 256,
       system: `Call get_portfolio for account ${ACCOUNT}. Output exactly one line:
-AGENTIC_BALANCE:{"buyingPower":"XX.XX","totalValue":"XX.XX","unsettled":"XX.XX"}
-Use buying_power.buying_power for buyingPower and total_value for totalValue. For unsettled, use unsettled_funds (or unsettled_funds_nullable / cash − buying_power) if the response has it, else "0". Output nothing else.`,
+AGENTIC_BALANCE:{"buyingPower":"XX.XX","totalValue":"XX.XX","cash":"XX.XX"}
+Use buying_power.buying_power for buyingPower, total_value for totalValue, and the top-level cash field for cash (total cash incl. unsettled). Output nothing else.`,
       messages: [{ role: "user", content: `Fetch live balance for account ${ACCOUNT}.` }],
       mcp_servers: [{ type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken }],
       betas: ["mcp-client-2025-04-04"],
@@ -37,8 +37,10 @@ Use buying_power.buying_power for buyingPower and total_value for totalValue. Fo
     const p = JSON.parse(match[1]);
     const bp = parseFloat(String(p.buyingPower ?? "0"));
     const tv = parseFloat(String(p.totalValue ?? "0"));
-    const unsettledRaw = parseFloat(String(p.unsettled ?? "0"));
-    const unsettled = isFinite(unsettledRaw) && unsettledRaw > 0 ? unsettledRaw : 0;
+    // Unsettled = total cash − settled buying power (Robinhood has no clean unsettled_funds
+    // field; cash includes unsettled sell proceeds, buying_power is settled only).
+    const cash = parseFloat(String(p.cash ?? "0"));
+    const unsettled = isFinite(cash) && cash > bp ? cash - bp : 0;
     return (bp > 0 || tv > 0) ? { buyingPower: bp, totalValue: tv, unsettled } : null;
   } catch {
     return null;
@@ -573,10 +575,16 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
     // value isn't understated by this amount on sell days (settled cash excludes it and
     // equity already dropped). The daily RETURN is position-based, so this only corrects
     // the displayed value and the impliedTransfer diagnostic — it can't distort returns.
+    // Prefer the LIVE unsettled (total cash − settled buying power) from the post-trade
+    // balance — it's the ground truth and captures sells that filled today from a prior
+    // run (e.g. a queued stop that filled at the open). Fall back to summing this run's
+    // sell proceeds only if the live balance is unavailable.
     const sellProceeds = trades
       .filter(t => t.side === "sell")
       .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
-    const unsettledAfter = isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0;
+    const unsettledAfter = (liveBalanceAfter?.unsettled ?? 0) > 0
+      ? liveBalanceAfter!.unsettled
+      : (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0);
 
     const equityAfter = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
     const portfolioAfter = {
