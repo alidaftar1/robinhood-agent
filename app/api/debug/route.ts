@@ -150,5 +150,22 @@ export async function GET(request: Request) {
     }
   }
 
+  // Correct a recorded transfer figure for a date, e.g. ?setTransfer=2026-06-23&amount=300
+  // (used to fix a known deposit amount when the old/new totalValue format inflated it).
+  if (url.searchParams.get("setTransfer")) {
+    const date = url.searchParams.get("setTransfer")!;
+    const amount = parseFloat(url.searchParams.get("amount") ?? "");
+    if (!isFinite(amount)) {
+      results.setTransfer = "error: missing or invalid &amount";
+    } else {
+      try {
+        const patched = await updateRunByDate(date, r => ({ ...r, agenticImpliedTransfer: amount }));
+        results.setTransfer = patched ? `set transfer for ${date} to ${amount}` : `no run found for ${date}`;
+      } catch (e) {
+        results.setTransfer = `error: ${e}`;
+      }
+    }
+  }
+
   return Response.json(results);
 }

@@ -158,7 +158,7 @@ Do NOT do a full portfolio rebalance. Only exit the listed positions.
       .map((b: any) => b.text)
       .join("\n");
 
-    let portfolioAfter: { totalValue: string; cash: string; equity: string } | null = null;
+    let portfolioAfter: { totalValue: string; cash: string; equity: string; unsettledCash?: string } | null = null;
     let positions: PositionSnapshot[] = [];
     let trades: TradeSnapshot[] = [];
 
@@ -181,10 +181,15 @@ Do NOT do a full portfolio rebalance. Only exit the listed positions.
           state: String(t.state ?? "submitted"),
         }));
         const equity = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
+        // Tag unsettled (this run's sell proceeds). The model's snapshot cash already
+        // includes them, so totalValue is correct — but tagging keeps the format
+        // consistent with the trade route (prevents a spurious transfer next day).
+        const sellProceeds = trades.filter(t => t.side === "sell").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
         portfolioAfter = {
           totalValue: (cash + equity).toFixed(2),
           cash: cash.toFixed(2),
           equity: equity.toFixed(2),
+          unsettledCash: (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0).toFixed(2),
         };
         console.log("DROP_CHECK_SNAPSHOT_PARSED", { cash, sold: droppedPositions.map(({ position }) => position.symbol) });
       } catch (e) {

@@ -117,7 +117,7 @@ Do NOT do a full portfolio rebalance. Only exit the earnings risk and redeploy i
       .map((b: any) => b.text)
       .join("\n");
 
-    let portfolioAfter: { totalValue: string; cash: string; equity: string } | null = null;
+    let portfolioAfter: { totalValue: string; cash: string; equity: string; unsettledCash?: string } | null = null;
     let positions: PositionSnapshot[] = [];
     let trades: TradeSnapshot[] = [];
 
@@ -140,10 +140,14 @@ Do NOT do a full portfolio rebalance. Only exit the earnings risk and redeploy i
           state: String(t.state ?? "submitted"),
         }));
         const equity = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
+        // Tag unsettled (this run's sell proceeds) — model cash already includes them,
+        // so totalValue is correct; tagging keeps the format consistent with the trade route.
+        const sellProceeds = trades.filter(t => t.side === "sell").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
         portfolioAfter = {
           totalValue: (cash + equity).toFixed(2),
           cash: cash.toFixed(2),
           equity: equity.toFixed(2),
+          unsettledCash: (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0).toFixed(2),
         };
         console.log("EARNINGS_EXIT_SNAPSHOT_PARSED", { cash, sold: imminentPositions.map((p) => p.symbol) });
       } catch (e) {
