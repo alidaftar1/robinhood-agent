@@ -123,6 +123,24 @@ The return series baseline: the "since" date on the dashboard is derived from th
 
 ---
 
+### Step 4.5 — Skeptical-reviewer concerns + keep the registry living
+
+The Vercel 8am autopilot now runs a Sonnet "skeptical reviewer" pass
+(`lib/autopilot-review.ts`) that judges the run for falling-knife buys, derived
+metrics that don't add up, silent self-heals, sector drift, etc., reading a
+past-misses registry (`lib/autopilot-known-issues.ts`). Its concerns appear in the
+8am email under "🔍 Skeptical-reviewer concerns".
+
+- Review those concerns as part of this job; act on any high/medium ones the
+  deterministic checks didn't already fix.
+- **Keep the registry living**: if you (or the owner) catch a problem that the
+  reviewer did NOT flag, append a `KnownIssue` entry to
+  `lib/autopilot-known-issues.ts` so it's checked every future run. Phrase `check`
+  as a concrete question answerable from the run data. This is editing-a-file (a
+  pre-authorized action), not a deploy — commit/deploy still follow the usual rules.
+
+---
+
 ### Step 5 — Check for code issues (only if run had errors)
 
 If the run summary mentions errors or the trade count is wrong:

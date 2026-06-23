@@ -1,0 +1,86 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// PAST-MISSES REGISTRY
+//
+// Every entry here is a real bug or bad outcome the OWNER caught by hand that the
+// autopilot's deterministic checks did NOT flag. The skeptical-reviewer pass
+// (lib/autopilot-review.ts) reads this list every morning and explicitly checks
+// the current run for a recurrence of each one.
+//
+// HOW TO ADD ONE: whenever you catch something the autopilot missed, append a row.
+// Keep `check` phrased as a concrete, run-data-driven question the reviewer can
+// actually answer from what it's given (today's run, recent runs, positions,
+// trades, the parsed TRADE_DECISION). This is the mechanism that keeps the
+// autopilot from going stale — today's miss becomes tomorrow's check.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface KnownIssue {
+  /** When this class of miss was first caught, YYYY-MM-DD. */
+  date: string;
+  /** Short name for the failure mode. */
+  title: string;
+  /** What actually went wrong / why it mattered. */
+  lesson: string;
+  /** A concrete question the reviewer answers from the run data. */
+  check: string;
+}
+
+export const KNOWN_ISSUES: KnownIssue[] = [
+  {
+    date: "2026-06-23",
+    title: "Silent self-heal masks a failed morning",
+    lesson:
+      "The trade cron 529'd (Anthropic overloaded) at 7:30am and the 8:01am retry 529'd too; the run only succeeded on a later attempt. Because both autopilots inspect the recovered run, they reported HEALTHY and never surfaced that the pipeline failed twice and no success report went out.",
+    check:
+      "Is the run's timestamp far later than the 14:30 UTC (7:30am PT) scheduled cron? A run stamped ~15:01 UTC or later means the morning failed at least once and silently recovered — say so explicitly even though the end state is fine.",
+  },
+  {
+    date: "2026-06-22",
+    title: "Influencer falling-knife buy",
+    lesson:
+      "Bought SPCX at $166 while it was already crashing post-IPO ($211→$185→$166); it kept falling and stopped out at −6.9%. A buy can be 'valid' structurally yet be a bad falling-knife entry.",
+    check:
+      "For each BUY (especially strategy:influencer), does the run/thesis show it was bought into a downtrend (well off a recent high, negative 5d momentum) without the momentum guard catching it? Flag any influencer buy that looks like chasing a crashing name.",
+  },
+  {
+    date: "2026-06-22",
+    title: "Wrong derived metric despite clean reconciliation",
+    lesson:
+      "The 'T+1 settling' / unsettled-cash figure was inferred from sell trades and showed $354 when the live value was $505. /api/verify still passed (cashDiff $0) because the bug was in a DERIVED dashboard metric, not stored cash — reconciliation can't catch derived-metric bugs.",
+    check:
+      "Do the derived figures self-reconcile? totalValue should ≈ settled cash + unsettledCash + equity. unsettledCash should ≈ live cash − settled buying power. Flag any composition that doesn't add up, even if cashDiff reconciled.",
+  },
+  {
+    date: "2026-06-23",
+    title: "Transfer amount mislabeled as an expected deposit",
+    lesson:
+      "A real $334 deposit surfaced as impliedTransfer ~$509 (a totalValue format-transition artifact). The deterministic check only says 'transfer >$300 → expected deposit', so it auto-labeled the WRONG number as fine instead of flagging the mismatch.",
+    check:
+      "Is impliedTransfer nonzero on a day with no known owner deposit, or does its size look like an artifact rather than a round real transfer? Flag transfers that can't be cleanly explained — don't assume large == legitimate deposit.",
+  },
+  {
+    date: "2026-06-22",
+    title: "Dedup kept the thin intraday run",
+    lesson:
+      "A same-date stop-loss run (1 trade, null return) overwrote the main daily run (full trades + correct return) because dedup kept the latest timestamp. Fixed in mergeRunsByDate, but the symptom is worth watching for.",
+    check:
+      "Does today (or a recent date) show only 1 trade and a null/odd return where a full rebalance was expected? That signature suggests the main run was lost to a thin intraday run.",
+  },
+  {
+    date: "2026-06-22",
+    title: "Sector concentration drift",
+    lesson:
+      "The book quietly drifted to ~79% financials. A 40% soft cap is now in the prompt, but the autopilot never independently measured concentration, so drift was invisible until a commenter pointed it out.",
+    check:
+      "From the current positions, does any single sector look like it exceeds ~40% of equity? Flag concentration drift even though the cap is 'soft'.",
+  },
+];
+
+/** Renders the registry as a compact numbered block for the reviewer prompt. */
+export function formatKnownIssues(issues: KnownIssue[] = KNOWN_ISSUES): string {
+  return issues
+    .map(
+      (k, i) =>
+        `${i + 1}. [${k.date}] ${k.title}\n   Lesson: ${k.lesson}\n   Check: ${k.check}`,
+    )
+    .join("\n\n");
+}

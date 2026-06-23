@@ -1,5 +1,7 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
+import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 
 interface VerifyResult {
   status: string;
@@ -13,7 +15,10 @@ interface VerifyResult {
   mcpAvailable: { balance: boolean; positions: boolean; orders: boolean };
 }
 
-export const maxDuration = 120;
+// verify (up to 60s) + the skeptical-reviewer Sonnet pass (up to 45s) run
+// sequentially, plus several debug self-fetches — give the function headroom so
+// the reviewer can't push the whole autopilot over the limit (Pro allows it).
+export const maxDuration = 200;
 
 function todayPT(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
@@ -260,10 +265,29 @@ export async function GET(request: Request) {
     }
   }
 
+  // ─── Skeptical-reviewer pass ───────────────────────────────────────────────
+  // The deterministic checks above verify the END STATE. This Sonnet pass forms a
+  // JUDGMENT on the (recovered) run — falling-knife buys, derived metrics that
+  // don't add up, silent self-heals, sector drift — reading a registry of things
+  // the owner has caught before. Non-fatal: a failure just notes itself.
+
+  let reviewConcerns: ReviewConcern[] = [];
+  if (todayRun) {
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const review = await reviewRun(anthropic, todayRun, runs);
+    reviewConcerns = review.concerns;
+    if (review.error) {
+      autoFixed.push(`Skeptical-reviewer pass could not run (${review.error}).`);
+    }
+  }
+  // high/medium concerns are actionable → they flip the status; low are FYI only.
+  const seriousConcerns = reviewConcerns.filter((c) => c.severity !== "low");
+
   // ─── Email ────────────────────────────────────────────────────────────────────
 
-  const statusLabel = issues.length > 0 ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";
-  const statusColor = issues.length > 0 ? "#f59e0b" : "#10b981";
+  const needsAttention = issues.length > 0 || seriousConcerns.length > 0;
+  const statusLabel = needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";
+  const statusColor = needsAttention ? "#f59e0b" : "#10b981";
 
   const buys = trades.filter((t) => t.side === "buy");
   const sells = trades.filter((t) => t.side === "sell");
@@ -308,6 +332,18 @@ export async function GET(request: Request) {
   </div>`
     : ""}
 
+  ${reviewConcerns.length > 0
+    ? `<div style="background:#eff6ff;border-left:4px solid #3b82f6;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🔍 Skeptical-reviewer concerns:</strong>
+    <ul style="margin:8px 0 0;padding-left:20px">${reviewConcerns
+      .map((c) => {
+        const tag = c.severity === "high" ? "🔴" : c.severity === "medium" ? "🟠" : "⚪";
+        return `<li><strong>${tag} ${c.title}</strong> — ${c.detail}</li>`;
+      })
+      .join("")}</ul>
+  </div>`
+    : ""}
+
   ${verifyResult ? `<div style="background:${verifyResult.status === "ok" ? "#ecfdf5" : verifyResult.status === "discrepancy" ? "#fef3c7" : "#f3f4f6"};border-left:4px solid ${verifyResult.status === "ok" ? "#10b981" : verifyResult.status === "discrepancy" ? "#f59e0b" : "#9ca3af"};padding:12px 16px;margin-bottom:16px;border-radius:4px">
     <strong>Live Robinhood verify: ${verifyResult.status.toUpperCase()}</strong>
     ${verifyResult.diff?.cashDiff != null ? `<p style="margin:6px 0 0;font-size:13px">Cash diff: ${verifyResult.diff.cashDiff >= 0 ? "+" : ""}$${verifyResult.diff.cashDiff.toFixed(2)} | Value diff: ${verifyResult.diff.valueDiff != null ? `${verifyResult.diff.valueDiff >= 0 ? "+" : ""}$${verifyResult.diff.valueDiff.toFixed(2)}` : "—"}</p>` : ""}
@@ -332,7 +368,7 @@ export async function GET(request: Request) {
   const alreadySent = !force && await hasAutopilotSentToday(today);
   let emailSent = false;
   if (!alreadySent) {
-    const subject = `Robinhood Agent — ${today} ${issues.length > 0 ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY"}`;
+    const subject = `Robinhood Agent — ${today} ${needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY"}`;
     emailSent = await sendEmail(subject, html);
     if (emailSent && !force) await markAutopilotSent(today);
   }
@@ -348,6 +384,7 @@ export async function GET(request: Request) {
     sells: sells.length,
     totalValue,
     issues,
+    reviewConcerns,
     verifyStatus: verifyResult?.status ?? "skipped",
     emailSent,
   });
