@@ -88,6 +88,27 @@ export function computeBeta(runs: TradeRun[]): { beta: number; n: number } | nul
   return { beta: cov / varS, n: pairs.length };
 }
 
+// ─── Daily alpha win rate ──────────────────────────────────────────────────────
+// Fraction of trading days the agent's daily return BEAT SPY's daily return. For a
+// SPY-benchmarked agent this is far more meaningful than "% of up days", which at
+// daily granularity mostly tracks the market's own up-day frequency rather than any
+// skill. Uses the same aligned daily-return pairs as computeBeta (ties = not a win).
+export function computeBeatRate(runs: TradeRun[]): { rate: number; n: number } | null {
+  const chron = [...runs].reverse(); // oldest → newest
+  let wins = 0, n = 0;
+  for (let i = 1; i < chron.length; i++) {
+    const agent = chron[i].agenticDailyReturn;
+    const spyNow = chron[i].spyPrice;
+    const spyPrev = chron[i - 1].spyPrice;
+    if (agent == null || !spyNow || !spyPrev) continue;
+    const spy = spyNow / spyPrev - 1;
+    n++;
+    if (agent > spy) wins++;
+  }
+  if (n < 3) return null;
+  return { rate: wins / n, n };
+}
+
 export function betaDescription(beta: number): string {
   if (beta > 1.1) return "swings more than the market";
   if (beta < 0.9) return "swings less than the market";

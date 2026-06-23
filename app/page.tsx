@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Drag, computeT1Settling, computeMaxDrawdown, computeConcentration } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Drag, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate } from "@/lib/risk-metrics";
 
 // ─── Return series + chart ────────────────────────────────────────────────────
 
@@ -282,10 +282,9 @@ export default async function DashboardPage({
   const agentDrawdown = computeMaxDrawdown(ddPoints.map(p => p.agentic!) as number[]);
   const spyDrawdown = computeMaxDrawdown(ddPoints.filter(p => p.spy != null).map(p => p.spy!) as number[]);
 
-  const runsWithReturn = runs.filter(r => r.agenticDailyReturn != null);
-  const winRate = runsWithReturn.length >= 3
-    ? runsWithReturn.filter(r => r.agenticDailyReturn! > 0).length / runsWithReturn.length
-    : null;
+  // "% of days beating SPY" — daily alpha win rate. Isolates the agent's contribution
+  // instead of measuring the market's up-day frequency (the old % of up days did the latter).
+  const beatRate = computeBeatRate(runs);
 
   const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
   const returnColor = (v: number | null) => v == null ? "#888" : v >= 0 ? "#7dba7d" : "#e06c6c";
@@ -334,13 +333,13 @@ export default async function DashboardPage({
               <span style={s.perfSince}>{runs.length} runs tracked</span>
             </div>
           )}
-          {winRate != null && (
+          {beatRate != null && (
             <div style={s.perfStat}>
-              <span style={s.perfLabel}>Win Rate</span>
-              <span style={{ ...s.perfValue, color: returnColor(winRate * 100 - 50) }}>
-                {(winRate * 100).toFixed(0)}%
+              <span style={s.perfLabel}>Days Beating SPY</span>
+              <span style={{ ...s.perfValue, color: returnColor(beatRate.rate * 100 - 50) }}>
+                {(beatRate.rate * 100).toFixed(0)}%
               </span>
-              <span style={s.perfSince}>{runsWithReturn.length} trading days</span>
+              <span style={s.perfSince}>of {beatRate.n} trading days</span>
             </div>
           )}
         </div>
