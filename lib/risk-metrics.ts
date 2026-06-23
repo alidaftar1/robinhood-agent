@@ -170,20 +170,21 @@ export function computeT1Drag(runs: TradeRun[]): { dragPct: number; rebalances: 
   return { dragPct, rebalances };
 }
 
-// Capital currently locked in T+1 settlement = proceeds from the latest run's sells,
-// which can't be redeployed until the next trading day. Computed straight from the
-// sell trades (reliable), not Robinhood's unsettled_funds field (which came back 0).
-// pct is against the true account value (stored totalValue + the unsettled proceeds,
-// since stored totalValue excludes them).
+// Capital currently locked in T+1 settlement. Prefer the LIVE-captured unsettled
+// (portfolioAfter.unsettledCash = total cash − settled buying power), which is the
+// ground truth and includes sells that filled today from a prior run (e.g. a queued
+// stop). Fall back to summing this run's sell proceeds only for old runs that didn't
+// capture it.
 export function computeT1Settling(run: TradeRun): { amount: number; pct: number } | null {
+  const stored = parseFloat(run.portfolioAfter?.unsettledCash ?? "");
   const sold = (run.trades ?? [])
     .filter((t) => t.side === "sell")
     .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
-  if (!isFinite(sold) || sold <= 0) return null;
-  const stored = parseFloat(run.portfolioAfter?.totalValue ?? "") || 0;
-  // New-format runs include the unsettled proceeds in totalValue (unsettledCash > 0);
-  // older runs excluded them, so add them back to get the true denominator.
-  const unsettled = parseFloat(run.portfolioAfter?.unsettledCash ?? "0") || 0;
-  const trueTotal = unsettled > 0 ? stored : stored + sold;
-  return { amount: sold, pct: trueTotal > 0 ? (sold / trueTotal) * 100 : 0 };
+  const liveAvailable = isFinite(stored) && stored > 0;
+  const amount = liveAvailable ? stored : sold;
+  if (!isFinite(amount) || amount <= 0) return null;
+  const total = parseFloat(run.portfolioAfter?.totalValue ?? "") || 0;
+  // totalValue includes the unsettled amount once it's captured; for old runs, add it.
+  const trueTotal = liveAvailable ? total : total + sold;
+  return { amount, pct: trueTotal > 0 ? (amount / trueTotal) * 100 : 0 };
 }
