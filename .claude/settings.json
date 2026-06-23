@@ -11,5 +11,19 @@
       "mcp__robinhood__get_equity_positions",
       "mcp__robinhood__get_equity_orders"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import sys,json; d=json.load(sys.stdin); c=(d.get('tool_input') or {}).get('command',''); print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Pre-deploy code-review gate (robinhood-agent, live trading): run /code-review on the working diff and fix findings BEFORE deploying to prod. Then re-run prefixed with REVIEWED=1, e.g. REVIEWED=1 bun ~/.bun/bin/vercel deploy --prod'}})) if ('vercel' in c and '--prod' in c and 'REVIEWED=1' not in c) else None\"",
+            "statusMessage": "Pre-deploy review gate"
+          }
+        ]
+      }
+    ]
   }
 }

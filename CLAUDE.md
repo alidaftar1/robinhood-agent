@@ -9,7 +9,7 @@ Runtime values are passed via the prompt from `scripts/autopilot.sh`. Use `$APP_
 - **Daily trade cron**: 7:30am PT weekdays (Vercel)
 - **Vercel autopilot**: 8am PT weekdays (runs before this job, handles mechanical fixes)
 - **This job**: 8:30am PT weekdays — deep verification + anything the Vercel cron couldn't auto-fix
-- **Deploy**: `/Users/ali/.bun/bin/vercel deploy --prod` (from project root)
+- **Deploy**: `/Users/ali/.bun/bin/vercel deploy --prod` (from project root). A PreToolUse gate (`.claude/settings.json`) BLOCKS prod deploys: first run `/code-review` on the working diff and fix findings, THEN deploy prefixed with the bypass sentinel: `REVIEWED=1 /Users/ali/.bun/bin/vercel deploy --prod`. This applies to self-heal deploys too — review before shipping to a live trading account.
 - **Evals**: `bun --env-file=.env.local test evals/eval.test.ts`
 
 ## Accounts (critical — never mix these up)
@@ -149,7 +149,7 @@ If the run summary mentions errors or the trade count is wrong:
 2. Identify root cause from logs
 3. Fix the code
 4. Run evals if `lib/strategy.ts` changed: `bun --env-file=.env.local test evals/eval.test.ts`
-5. Deploy: `/Users/ali/.bun/bin/vercel deploy --prod`
+5. Deploy (gated): run `/code-review` first, fix findings, then `REVIEWED=1 /Users/ali/.bun/bin/vercel deploy --prod`
 
 ---
 
