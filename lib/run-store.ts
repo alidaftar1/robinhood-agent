@@ -160,9 +160,50 @@ function preferRun(a: TradeRun, b: TradeRun): TradeRun {
   return a.timestamp >= b.timestamp ? a : b;
 }
 
+// A position cannot survive a same-day sell that disposed of it. When an intraday
+// stop-loss / take-profit / drop-check run sells a holding AFTER the main daily run
+// already snapshotted it, the merged record keeps the main run's positions (which
+// still list the sold symbol) while only unioning in the sell trade. Left
+// unreconciled, that stale holding becomes the NEXT day's return baseline — the
+// position's full value shows up as phantom P&L (~5% on a typical name) — or gets
+// re-inferred as a duplicate sell by patchTrades the following day.
+//
+// Drop any position whose symbol was sold this day in a quantity >= the held
+// quantity. This momentum strategy never sells then re-buys the same name the same
+// day, so an equal-or-greater-qty same-day sell unambiguously means the holding is
+// gone. (A genuine post-trade snapshot already excludes sold names, so the only
+// positions this touches are ones a later intraday exit left stranded.)
+function reconcilePositions(run: TradeRun): TradeRun {
+  const soldQty = new Map<string, number>();
+  for (const t of run.trades ?? []) {
+    if (t.side === "sell") {
+      soldQty.set(t.symbol, (soldQty.get(t.symbol) ?? 0) + (parseFloat(t.quantity) || 0));
+    }
+  }
+  if (soldQty.size === 0) return run;
+  const keep = (p: PositionSnapshot) => {
+    const sold = soldQty.get(p.symbol) ?? 0;
+    return !(sold > 0 && sold >= (parseFloat(p.quantity) || 0));
+  };
+  const positions = (run.positions ?? []).filter(keep);
+  // Reconcile the influencer sub-portfolio too: a stale sold name there inflates the
+  // next day's influencer-cap count and gets carried forward as a phantom holding.
+  const influencerPositions = run.influencerPositions?.filter(keep);
+  const positionsChanged = positions.length !== (run.positions ?? []).length;
+  const influencerChanged =
+    influencerPositions != null && influencerPositions.length !== run.influencerPositions!.length;
+  if (!positionsChanged && !influencerChanged) return run;
+  return {
+    ...run,
+    positions,
+    ...(influencerPositions != null ? { influencerPositions } : {}),
+  };
+}
+
 // Collapses runs to one canonical record per date. Keeps the richer run (see
 // preferRun) but unions in the dropped run's trades so no fill is lost from
-// history. Pure + side-effect free so it can be unit-tested without Redis.
+// history, then reconciles positions against the day's sells (see
+// reconcilePositions). Pure + side-effect free so it can be unit-tested without Redis.
 export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
   const byDate = new Map<string, TradeRun>();
   for (const run of all) {
@@ -176,7 +217,9 @@ export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
     base.trades = unionTrades(base.trades ?? [], other.trades ?? []);
     byDate.set(run.date, base);
   }
-  return [...byDate.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  return [...byDate.values()]
+    .map(reconcilePositions)
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 }
 
 export async function dedupeRuns(): Promise<number> {
