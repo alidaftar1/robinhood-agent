@@ -2,6 +2,28 @@ import React from "react";
 import { getRuns, type TradeRun } from "@/lib/run-store";
 import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate } from "@/lib/risk-metrics";
 
+// ─── Plain-language tooltip ─────────────────────────────────────────────────────
+// Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
+// tooltip (no JS, works in a server component): the box shows on hover, and on
+// tap/focus too (the wrapper is focusable), so it works on mobile.
+const TIP_CSS = `
+.tip{position:relative;cursor:help;border-bottom:1px dotted #4a4a4a;outline:none}
+.tip .tipbox{position:absolute;bottom:150%;left:0;z-index:100;width:max-content;max-width:240px;
+  background:#1d1d1d;color:#dcdcdc;border:1px solid #383838;padding:8px 11px;border-radius:6px;
+  font-size:12px;line-height:1.45;text-transform:none;letter-spacing:normal;font-weight:400;
+  opacity:0;visibility:hidden;transition:opacity .12s ease;box-shadow:0 6px 18px rgba(0,0,0,.55)}
+.tip:hover .tipbox,.tip:focus .tipbox,.tip:focus-within .tipbox{opacity:1;visibility:visible}
+`;
+
+function Tip({ label, def, style }: { label: string; def: string; style?: React.CSSProperties }) {
+  return (
+    <span className="tip" tabIndex={0} style={style}>
+      {label} <span style={{ opacity: 0.55 }}>ⓘ</span>
+      <span className="tipbox">{def}</span>
+    </span>
+  );
+}
+
 // ─── Return series + chart ────────────────────────────────────────────────────
 
 interface ReturnPoint {
@@ -290,6 +312,7 @@ export default async function DashboardPage({
 
   return (
     <div style={s.page}>
+      <style dangerouslySetInnerHTML={{ __html: TIP_CSS }} />
       <div style={s.header}>
         <div style={s.title}>Robinhood Agent</div>
         <div style={s.subtitle}>
@@ -303,21 +326,21 @@ export default async function DashboardPage({
       {runs.length >= 2 && (
         <div style={s.perfCard}>
           <div style={s.perfStat}>
-            <span style={s.perfLabel} title="How much the AI's trading account has gained or lost since it started.">AI Return ⓘ</span>
+            <Tip style={s.perfLabel} label="AI Return" def="How much the AI's trading account has gained or lost since it started." />
             <span style={{ ...s.perfValue, color: returnColor(agentReturn) }}>
               {agentReturn != null ? fmtPct(agentReturn) : "—"}
             </span>
             <span style={s.perfSince}>the AI, since {perfBaseline?.date ?? inception!.date}</span>
           </div>
           <div style={s.perfStat}>
-            <span style={s.perfLabel} title="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'">S&P 500 Return ⓘ</span>
+            <Tip style={s.perfLabel} label="S&P 500 Return" def="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'" />
             <span style={{ ...s.perfValue, color: returnColor(spyReturn) }}>
               {spyReturn != null ? fmtPct(spyReturn) : "—"}
             </span>
             <span style={s.perfSince}>the market, same period</span>
           </div>
           <div style={s.perfStat}>
-            <span style={s.perfLabel} title="Alpha: the AI's return minus the S&P 500's return over the same period. Positive = it's beating the market.">Beating the Market ⓘ</span>
+            <Tip style={s.perfLabel} label="Beating the Market" def="Alpha: the AI's return minus the S&P 500's return over the same period. Positive = it's beating the market." />
             <span style={{ ...s.perfValue, color: returnColor(alpha) }}>
               {alpha != null ? fmtPct(alpha) : "—"}
             </span>
@@ -325,7 +348,7 @@ export default async function DashboardPage({
           </div>
           {latest?.portfolioAfter && (
             <div style={s.perfStat}>
-              <span style={s.perfLabel} title="Total value of the AI's trading account: cash plus the current value of everything it holds.">Account Value ⓘ</span>
+              <Tip style={s.perfLabel} label="Account Value" def="Total value of the AI's trading account: cash plus the current value of everything it holds." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
                 ${parseFloat(latest.portfolioAfter.totalValue).toFixed(2)}
               </span>
@@ -334,7 +357,7 @@ export default async function DashboardPage({
           )}
           {beatRate != null && (
             <div style={s.perfStat}>
-              <span style={s.perfLabel} title="The share of trading days the AI's daily return was higher than the S&P 500's.">Days Beating the Market ⓘ</span>
+              <Tip style={s.perfLabel} label="Days Beating the Market" def="The share of trading days the AI's daily return was higher than the S&P 500's." />
               <span style={{ ...s.perfValue, color: returnColor(beatRate.rate * 100 - 50) }}>
                 {(beatRate.rate * 100).toFixed(0)}%
               </span>
@@ -348,14 +371,14 @@ export default async function DashboardPage({
       {(hasInfluencerData || influencerPositions.length > 0) && (
         <div style={{ ...s.perfCard, borderColor: "#2a1f0d" }}>
           <div style={{ ...s.perfStat }}>
-            <span style={{ ...s.perfLabel, color: "#7a5a2a" }} title="A separate ~25% slice of the account that buys stocks talked up by YouTube finance creators — higher risk, higher reward.">📺 YouTube-Picks Return ⓘ</span>
+            <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="📺 YouTube-Picks Return" def="A separate ~25% slice of the account that buys stocks talked up by YouTube finance creators — higher risk, higher reward." />
             <span style={{ ...s.perfValue, color: returnColor(influencerCumReturn) }}>
               {influencerCumReturn != null ? fmtPct(influencerCumReturn) : "—"}
             </span>
             <span style={s.perfSince}>the YouTube-influencer slice</span>
           </div>
           <div style={s.perfStat}>
-            <span style={{ ...s.perfLabel, color: "#7a5a2a" }} title="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period.">vs. the Market ⓘ</span>
+            <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="vs. the Market" def="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period." />
             <span style={{ ...s.perfValue, color: returnColor(influencerAlpha) }}>
               {influencerAlpha != null ? fmtPct(influencerAlpha) : "—"}
             </span>
@@ -375,7 +398,7 @@ export default async function DashboardPage({
 
       {hasComparison && (
         <div style={s.chartCard}>
-          <div style={s.chartTitle} title="Every line starts at 100 on day one, so you can compare growth directly. A line at 105 means +5% since the start.">AI vs. the Market over time ⓘ</div>
+          <div style={s.chartTitle}>AI vs. the Market over time <span style={{ color: "#666", fontWeight: 400, fontSize: 12 }}>· each line starts at 100</span></div>
           <ReturnChart points={returnSeries} />
           <div style={s.chartLegend}>
             <div style={s.legendItem}>
@@ -408,14 +431,14 @@ export default async function DashboardPage({
           <div style={s.chartTitle}>How risky is it? — a look under the hood</div>
           <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginBottom: sectorBreakdown.length > 0 ? 20 : 0 }}>
             <div style={{ ...s.perfStat, minWidth: 160 }}>
-              <span style={s.perfLabel} title="Cash that's settled and ready to trade right now, as a % of the account. Does not include money from recent sales that hasn't cleared yet.">Cash on Hand ⓘ</span>
+              <Tip style={s.perfLabel} label="Cash on Hand" def="Cash that's settled and ready to trade right now, as a % of the account. Does not include money from recent sales that hasn't cleared yet." />
               <span style={{ ...s.perfValue, color: cashPct != null && cashPct > 10 ? "#e8943a" : "#e5e5e5" }}>
                 {cashPct != null ? `${cashPct.toFixed(1)}%` : "—"}
               </span>
               <span style={s.perfSince}>ready to trade now (idle if high)</span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 185 }}>
-              <span style={s.perfLabel} title="When the AI sells a stock, the cash takes one business day to clear before it can be reused (called 'T+1 settlement'). This is how much is waiting to clear.">Cash Clearing ⓘ</span>
+              <Tip style={s.perfLabel} label="Cash Clearing" def="When the AI sells a stock, the cash takes one business day to clear before it can be reused (called 'T+1 settlement'). This is how much is waiting to clear." />
               <span style={{ ...s.perfValue, color: t1Settling && t1Settling.pct > 10 ? "#e8943a" : "#e5e5e5" }}>
                 {t1Settling ? `$${t1Settling.amount.toFixed(0)}` : "$0"}
               </span>
@@ -426,7 +449,7 @@ export default async function DashboardPage({
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 170 }}>
-              <span style={s.perfLabel} title="Beta: how much the account moves compared to the market. 1.0 = moves with the market; above 1 = bigger swings; below 1 = smaller swings.">Swings vs. Market ⓘ</span>
+              <Tip style={s.perfLabel} label="Swings vs. Market" def="Beta: how much the account moves compared to the market. 1.0 = moves with the market; above 1 = bigger swings; below 1 = smaller swings." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
                 {beta ? `${beta.beta.toFixed(2)}×` : "—"}
               </span>
@@ -435,7 +458,7 @@ export default async function DashboardPage({
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <span style={s.perfLabel} title="Max drawdown: the biggest drop from a high point to a low point over the period tracked. Lower is better.">Worst Drop ⓘ</span>
+              <Tip style={s.perfLabel} label="Worst Drop" def="Max drawdown: the biggest drop from a high point to a low point over the period tracked. Lower is better." />
               <span style={{ ...s.perfValue, color: agentDrawdown != null && spyDrawdown != null && agentDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
                 {agentDrawdown != null ? `−${agentDrawdown.toFixed(2)}%` : "—"}
               </span>
@@ -444,7 +467,7 @@ export default async function DashboardPage({
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <span style={s.perfLabel} title="How much of the account sits in its single biggest stock. A high number means more risk if that one stock drops.">Biggest Bet ⓘ</span>
+              <Tip style={s.perfLabel} label="Biggest Bet" def="How much of the account sits in its single biggest stock. A high number means more risk if that one stock drops." />
               <span style={{ ...s.perfValue, color: concentration && concentration.largestPct > 25 ? "#e8943a" : "#e5e5e5" }}>
                 {concentration ? `${concentration.largestPct.toFixed(0)}%` : "—"}
               </span>
@@ -455,7 +478,7 @@ export default async function DashboardPage({
           </div>
           {sectorBreakdown.length > 0 && (
             <div>
-              <div style={{ ...s.perfLabel, marginBottom: 10 }} title="How the money is split across industries (technology, finance, healthcare, etc.).">Industry Mix ⓘ</div>
+              <div style={{ ...s.perfLabel, marginBottom: 10 }}><Tip label="Industry Mix" def="How the money is split across industries (technology, finance, healthcare, etc.)." /></div>
               {sectorBreakdown.map((sec) => (
                 <div key={sec.etf} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
                   <span style={{ width: 110, fontSize: 12, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sec.name}</span>
