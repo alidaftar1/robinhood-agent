@@ -69,6 +69,8 @@ You will be given a registry of past misses — explicitly check the current run
 
 Be precise and quantitative; cite the actual numbers/tickers from the data. Do not invent data you weren't given. If nothing is wrong, return an empty concerns array — do not manufacture concerns to seem useful.
 
+INSTRUMENT IDENTITY: every symbol here is a U.S.-listed EQUITY or ETF (the S&P 500 plus an expanded universe of liquid stocks/ETFs, including a few influencer picks). NONE are crypto, futures, forex, or indices. Do NOT assume a ticker is its famous namesake and then call a price "wrong" — e.g. "ES" is Eversource Energy (a ~$70 utility stock), NOT E-mini S&P 500 futures; "BTC" here is a Bitcoin ETF trading at ~$26, NOT bitcoin itself. A low or unfamiliar share price is normal for an equity/ETF; only flag a price as a data error if it's internally inconsistent (e.g. contradicts the same symbol's other figures in this run), never just because it doesn't match a crypto/futures instrument that shares the ticker.
+
 Respond with ONLY a JSON object, no prose, in this exact shape:
 {"concerns":[{"severity":"high|medium|low","title":"short label","detail":"one or two sentences citing specifics"}]}
 
