@@ -295,15 +295,17 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const influencerAlpha = influencerCumReturn != null && spyReturn != null ? influencerCumReturn - spyReturn : null;
   const hasInfluencerData = returnSeries.some(p => p.influencer != null);
 
-  // Influencer positions in latest run
-  const influencerPositions = latest?.influencerPositions ?? [];
+  // Current-state snapshot metrics read `current` (the latest self-consistent run a
+  // route stored atomically), NOT the merged `latest` — a merged two-run day can carry
+  // the morning run's stale cash/equity alongside reconciled positions. beta uses the
+  // full series (it's historical, not a snapshot).
+  const influencerPositions = current?.influencerPositions ?? [];
 
-  // Risk & attribution — why the agent is behind, not just that it is
-  const cashPct = latest ? computeCashPct(latest) : null;
-  const sectorBreakdown = latest ? computeSectorBreakdown(latest) : [];
+  const cashPct = current ? computeCashPct(current) : null;
+  const sectorBreakdown = current ? computeSectorBreakdown(current) : [];
   const beta = computeBeta(runs);
   const t1Settling = current ? computeT1Settling(current) : null;
-  const concentration = latest ? computeConcentration(latest) : null;
+  const concentration = current ? computeConcentration(current) : null;
   // Max drawdown over the same co-indexed window for both series
   const ddPoints = returnSeries.filter(p => p.agentic != null);
   const agentDrawdown = computeMaxDrawdown(ddPoints.map(p => p.agentic!) as number[]);
@@ -328,7 +330,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
         )}
         <div style={s.subtitle}>
           {isPublic ? "Autonomous AI trading agent" : "AI trading account ••••4256"}
-          {latest?.portfolioAfter && ` · $${parseFloat(latest.portfolioAfter.totalValue).toFixed(0)} total`}
+          {current?.portfolioAfter && ` · $${parseFloat(current.portfolioAfter.totalValue).toFixed(0)} total`}
           {` · Trades daily at 7:30am PT`}
           {latest && ` · Last run ${latest.date}`}
         </div>
@@ -357,11 +359,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </span>
             <span style={s.perfSince}>vs. the S&P 500 (a.k.a. "alpha")</span>
           </div>
-          {latest?.portfolioAfter && (
+          {current?.portfolioAfter && (
             <div style={s.perfStat}>
               <Tip style={s.perfLabel} label="Account Value" def="Total value of the AI's trading account: cash plus the current value of everything it holds." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
-                ${parseFloat(latest.portfolioAfter.totalValue).toFixed(2)}
+                ${parseFloat(current.portfolioAfter.totalValue).toFixed(2)}
               </span>
               <span style={s.perfSince}>cash + holdings · {runs.length} days tracked</span>
             </div>
