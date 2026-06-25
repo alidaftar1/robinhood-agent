@@ -1,0 +1,44 @@
+name: autopilot
+
+# Cloud replacement for the local 8:30am macOS autopilot. Runs the autonomous
+# code-fixer off the owner's Mac, with full power via repo secrets.
+on:
+  schedule:
+    # 8:45am PT (PDT, UTC-7) — after the Vercel 8:00am /api/autopilot cron.
+    # GitHub cron is UTC with no DST; in PST (winter) this fires at 7:45am PT.
+    - cron: "45 15 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # commit/push autonomous fixes
+
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
+jobs:
+  autopilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_URL: https://robinhood-agent.vercel.app
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install deps
+        run: bun install
+      - name: Install Claude Code + Vercel CLI
+        run: npm i -g @anthropic-ai/claude-code vercel
+      - name: Configure git for autonomous commits
+        run: |
+          git config user.name "robinhood-autopilot[bot]"
+          git config user.email "autopilot@users.noreply.github.com"
+      - name: Run autopilot agent
+        run: claude -p "$(cat .github/autopilot-prompt.md)" --dangerously-skip-permissions --output-format text
