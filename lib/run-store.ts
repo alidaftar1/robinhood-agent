@@ -206,16 +206,44 @@ function reconcilePositions(run: TradeRun): TradeRun {
 // reconcilePositions). Pure + side-effect free so it can be unit-tested without Redis.
 export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
   const byDate = new Map<string, TradeRun>();
+  // Track the most-recent NON-EMPTY positions snapshot per date, keyed off the
+  // ORIGINAL run timestamps (not the merged base's, which carries preferRun's
+  // chosen timestamp and could be earlier than a later run's snapshot).
+  const posSourceByDate = new Map<string, TradeRun>();
   for (const run of all) {
+    if ((run.positions?.length ?? 0) > 0) {
+      const cur = posSourceByDate.get(run.date);
+      if (!cur || run.timestamp > cur.timestamp) posSourceByDate.set(run.date, run);
+    }
     const existing = byDate.get(run.date);
     if (!existing) {
       byDate.set(run.date, { ...run, trades: [...(run.trades ?? [])] });
       continue;
     }
-    const base = preferRun(existing, run);
-    const other = base === existing ? run : existing;
+    const winner = preferRun(existing, run);
+    const other = winner === existing ? run : existing;
+    // Clone the winner before mutating so we never write back into a caller's input
+    // object (`existing` is already a fresh clone from the first-seen branch; `run`
+    // is raw). Keeps mergeRunsByDate pure, as its docstring promises.
+    const base = winner === existing ? winner : { ...winner, trades: [...(winner.trades ?? [])] };
     base.trades = unionTrades(base.trades ?? [], other.trades ?? []);
     byDate.set(run.date, base);
+  }
+  // Position snapshot: when BOTH same-date runs are full runs (e.g. the 7:30
+  // rotation AND an 8am stop-loss exit that ALSO opened a new position), the
+  // richer run (preferRun, chosen for its computed return) may carry the EARLIER,
+  // now-stale holdings — missing a name the later run bought. reconcilePositions
+  // only drops sold names, never adds bought ones, so that name would silently
+  // vanish from the canonical snapshot and resurface as phantom equity in the next
+  // day's return baseline. Overlay the latest non-empty snapshot as ground truth
+  // (a thin intraday exit has empty positions, so it can never override a full
+  // run's snapshot — the SMCI/06-24 case still holds).
+  for (const [date, base] of byDate) {
+    const src = posSourceByDate.get(date);
+    if (src && src !== base) {
+      base.positions = [...src.positions];
+      if (src.influencerPositions) base.influencerPositions = [...src.influencerPositions];
+    }
   }
   return [...byDate.values()]
     .map(reconcilePositions)

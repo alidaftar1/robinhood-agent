@@ -90,6 +90,37 @@ describe("mergeRunsByDate", () => {
     expect(remerged[0].positions.map((p) => p.symbol)).toEqual(["DAL"]);
   });
 
+  it("carries the later full run's positions when two full runs share a date", () => {
+    // Reproduces 2026-06-25: the 7:30 rotation (run with the computed return) was
+    // followed by an 8am stop-loss exit that ALSO opened a new position (ES). The
+    // richer run wins for its return, but its positions are now stale — they still
+    // list the sold name (MSFT) and lack the newly bought one (ES). The canonical
+    // snapshot must reflect the LATER full run's holdings, or ES vanishes and
+    // resurfaces as phantom equity in the next day's return baseline.
+    const rotation = run({
+      date: "2026-06-25",
+      timestamp: "2026-06-25T14:30:00.000Z",
+      agenticDailyReturn: 0.0108,
+      positions: [pos("GL"), pos("MSFT"), pos("DAL")],
+      trades: [trade("BAC", "sell"), trade("TRV", "buy")],
+    });
+    const stopLossPlusBuy = run({
+      date: "2026-06-25",
+      timestamp: "2026-06-25T15:00:00.000Z",
+      agenticDailyReturn: null,
+      positions: [pos("GL"), pos("DAL"), pos("ES")],
+      trades: [trade("MSFT", "sell"), trade("ES", "buy")],
+    });
+    const merged = mergeRunsByDate([stopLossPlusBuy, rotation]);
+    expect(merged.length).toBe(1);
+    // Keeps the richer run's return...
+    expect(merged[0].agenticDailyReturn).toBe(0.0108);
+    // ...but the LATER full run's current holdings (ES present, MSFT gone).
+    expect(merged[0].positions.map((p) => p.symbol).sort()).toEqual(["DAL", "ES", "GL"]);
+    // ...and every fill across both runs is preserved.
+    expect((merged[0].trades ?? []).map((t) => t.symbol).sort()).toEqual(["BAC", "ES", "MSFT", "TRV"]);
+  });
+
   it("keeps a partially-sold holding", () => {
     const r = run({
       date: "2026-06-25",
@@ -99,6 +130,29 @@ describe("mergeRunsByDate", () => {
     });
     const merged = mergeRunsByDate([r]);
     expect(merged[0].positions.map((p) => p.symbol)).toEqual(["AAPL"]);
+  });
+
+  it("does not mutate the caller's input run objects", () => {
+    // mergeRunsByDate promises to be pure. Guard against writing back into inputs
+    // (the merge picks one run as the canonical base — it must clone, not mutate).
+    const rotation = run({
+      date: "2026-06-25",
+      timestamp: "2026-06-25T14:30:00.000Z",
+      agenticDailyReturn: 0.0108,
+      positions: [pos("GL"), pos("MSFT")],
+      trades: [trade("TRV", "buy")],
+    });
+    const exit = run({
+      date: "2026-06-25",
+      timestamp: "2026-06-25T15:00:00.000Z",
+      positions: [pos("GL"), pos("ES")],
+      trades: [trade("MSFT", "sell"), trade("ES", "buy")],
+    });
+    mergeRunsByDate([exit, rotation]);
+    expect(rotation.trades?.map((t) => t.symbol)).toEqual(["TRV"]);
+    expect(rotation.positions.map((p) => p.symbol)).toEqual(["GL", "MSFT"]);
+    expect(exit.trades?.map((t) => t.symbol)).toEqual(["MSFT", "ES"]);
+    expect(exit.positions.map((p) => p.symbol)).toEqual(["GL", "ES"]);
   });
 
   it("leaves distinct dates untouched and sorts newest first", () => {

@@ -1,5 +1,5 @@
 import React from "react";
-import { getRuns, type TradeRun } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
 import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
@@ -246,13 +246,14 @@ export function LoginScreen() {
 // positions, thesis) is shown in both — the page output contains no secrets.
 export async function DashboardView({ isPublic = false }: { isPublic?: boolean }) {
   const allRuns = await getRuns(90);
-  // Deduplicate same-day runs — keep only the latest timestamp per date
-  const seen = new Map<string, typeof allRuns[0]>();
-  for (const run of allRuns) {
-    const ex = seen.get(run.date);
-    if (!ex || run.timestamp > ex.timestamp) seen.set(run.date, run);
-  }
-  const runs = [...seen.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  // Collapse same-day runs with the canonical merge. The OLD naive "latest
+  // timestamp per date" dedup silently dropped the richer run's correct return
+  // AND — on days with two FULL runs (e.g. the 7:30 rotation plus an 8am
+  // stop-loss exit that also opened a new position) — kept a stale positions
+  // snapshot. mergeRunsByDate keeps the run with the computed return, unions all
+  // fills, and carries the latest non-empty positions. Already used by dedupeRuns
+  // and covered by unit tests.
+  const runs = mergeRunsByDate(allRuns);
   const latest = runs[0] ?? null;
   const inception = runs[runs.length - 1] ?? null;
 
