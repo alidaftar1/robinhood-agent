@@ -189,5 +189,29 @@ export async function GET(request: Request) {
     }
   }
 
+  // Correct settled cash + equity for a date, e.g. ?setCashEquity=2026-06-25&cash=43.55&equity=1668.17
+  // Recomputes totalValue = cash + (existing unsettled) + equity. Use to repair a snapshot
+  // whose stale cash/equity (e.g. a same-day run-merge that kept the morning values) no
+  // longer matches the reconciled positions / live balance.
+  if (url.searchParams.get("setCashEquity")) {
+    const date = url.searchParams.get("setCashEquity")!;
+    const cash = parseFloat(url.searchParams.get("cash") ?? "");
+    const equity = parseFloat(url.searchParams.get("equity") ?? "");
+    if (!isFinite(cash) || !isFinite(equity)) {
+      results.setCashEquity = "error: missing or invalid &cash / &equity";
+    } else {
+      try {
+        const patched = await updateRunByDate(date, r => {
+          if (!r.portfolioAfter) return r;
+          const unsettled = parseFloat(r.portfolioAfter.unsettledCash ?? "0") || 0;
+          return { ...r, portfolioAfter: { ...r.portfolioAfter, cash: cash.toFixed(2), equity: equity.toFixed(2), totalValue: (cash + unsettled + equity).toFixed(2) } };
+        });
+        results.setCashEquity = patched ? `set cash=${cash} equity=${equity} for ${date}` : `no run found for ${date}`;
+      } catch (e) {
+        results.setCashEquity = `error: ${e}`;
+      }
+    }
+  }
+
   return Response.json(results);
 }
