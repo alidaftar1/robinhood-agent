@@ -5,6 +5,7 @@ import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuote
 import { saveRun, getLatestRun, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
+import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
 
@@ -181,16 +182,27 @@ Do NOT do a full portfolio rebalance. Only exit the listed positions.
           state: String(t.state ?? "submitted"),
         }));
         const equity = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
-        // Tag unsettled (this run's sell proceeds). The model's snapshot cash already
-        // includes them, so totalValue is correct — but tagging keeps the format
-        // consistent with the trade route (prevents a spurious transfer next day).
         const sellProceeds = trades.filter(t => t.side === "sell").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
-        portfolioAfter = {
-          totalValue: (cash + equity).toFixed(2),
-          cash: cash.toFixed(2),
-          equity: equity.toFixed(2),
-          unsettledCash: (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0).toFixed(2),
-        };
+        // Prefer the LIVE balance (settled cash + true unsettled = cash − buying power) so this
+        // thin stop-loss run records ALL of today's unsettled proceeds — including the morning
+        // rebalance's sells — not just its own. Otherwise the dashboard's "Cash Clearing"
+        // undercounts on days with both a rebalance and a stop. Fall back to the model snapshot.
+        const live = await fetchAgenticBalance(anthropic, accessToken);
+        if (live) {
+          portfolioAfter = {
+            totalValue: (live.buyingPower + live.unsettled + equity).toFixed(2),
+            cash: live.buyingPower.toFixed(2),
+            equity: equity.toFixed(2),
+            unsettledCash: live.unsettled.toFixed(2),
+          };
+        } else {
+          portfolioAfter = {
+            totalValue: (cash + equity).toFixed(2),
+            cash: cash.toFixed(2),
+            equity: equity.toFixed(2),
+            unsettledCash: (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0).toFixed(2),
+          };
+        }
         console.log("DROP_CHECK_SNAPSHOT_PARSED", { cash, sold: droppedPositions.map(({ position }) => position.symbol) });
       } catch (e) {
         console.warn("DROP_CHECK_SNAPSHOT_PARSE_FAILED", e instanceof Error ? e.message : String(e));

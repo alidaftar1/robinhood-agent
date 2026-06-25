@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { getRuns } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate } from "@/lib/run-store";
 
 export const maxDuration = 90;
 
@@ -106,9 +106,14 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     try { return JSON.parse(m[1]) as Array<{ symbol: string; side: string; quantity: string; avgPrice: string; state: string; createdAt?: string }>; } catch { return null; }
   })();
 
-  // Fetch stored run data
+  // Fetch stored run data. Reconcile orders/positions against the MERGED run (unions all
+  // of today's trades + reconciled positions) so a thin intraday stop-loss run doesn't make
+  // the morning rebalance's fills look "uncaptured". Compare cash/unsettled against the
+  // latest run by timestamp — the current snapshot the dashboard shows for Cash Clearing.
   const runs = await getRuns(5);
-  const storedRun = runs.find(r => r.date === today) ?? runs[0] ?? null;
+  const merged = mergeRunsByDate(runs);
+  const storedRun = merged.find(r => r.date === today) ?? merged[0] ?? null;
+  const cashRun = [...runs].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).find(r => r.portfolioAfter) ?? storedRun;
 
   // ─── Compare live vs stored ───────────────────────────────────────────────────
 
@@ -116,9 +121,9 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
 
   // Cash discrepancy
   let cashDiff: number | null = null;
-  if (liveBalance && storedRun?.portfolioAfter) {
+  if (liveBalance && cashRun?.portfolioAfter) {
     const liveCash = parseFloat(liveBalance.buyingPower);
-    const storedCash = parseFloat(storedRun.portfolioAfter.cash);
+    const storedCash = parseFloat(cashRun.portfolioAfter.cash);
     cashDiff = liveCash - storedCash;
     if (Math.abs(cashDiff) > 10) {
       discrepancies.push(`Cash mismatch: live $${liveCash.toFixed(2)} vs stored $${storedCash.toFixed(2)} (diff $${cashDiff.toFixed(2)})`);
@@ -127,9 +132,9 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
 
   // Total value diff — informational only (stored is a 10:30am snapshot; live price is current market)
   let valueDiff: number | null = null;
-  if (liveBalance && storedRun?.portfolioAfter) {
+  if (liveBalance && cashRun?.portfolioAfter) {
     const liveValue = parseFloat(liveBalance.totalValue);
-    const storedValue = parseFloat(storedRun.portfolioAfter.totalValue);
+    const storedValue = parseFloat(cashRun.portfolioAfter.totalValue);
     valueDiff = liveValue - storedValue;
     // Not flagged as a discrepancy — market price drift since snapshot is expected
   }
@@ -140,11 +145,11 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
   // This is the class reconciliation on settled cash alone misses (the dashboard once
   // showed $354 unsettled when live was $505).
   let unsettledDiff: number | null = null;
-  if (liveBalance?.cash != null && storedRun?.portfolioAfter) {
+  if (liveBalance?.cash != null && cashRun?.portfolioAfter) {
     const liveCash = parseFloat(liveBalance.cash);
     const liveBP = parseFloat(liveBalance.buyingPower);
     const liveUnsettled = isFinite(liveCash) && liveCash > liveBP ? liveCash - liveBP : 0;
-    const storedUnsettled = parseFloat(storedRun.portfolioAfter.unsettledCash ?? "0");
+    const storedUnsettled = parseFloat(cashRun.portfolioAfter.unsettledCash ?? "0");
     unsettledDiff = liveUnsettled - storedUnsettled;
     if (Math.abs(unsettledDiff) > 10) {
       discrepancies.push(
@@ -158,8 +163,8 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
   // account value is STRUCTURALLY wrong (distinct from intraday price drift, which the
   // live valueDiff above absorbs). Catches the understated-total bug.
   let compositionGap: number | null = null;
-  if (storedRun?.portfolioAfter) {
-    const pa = storedRun.portfolioAfter;
+  if (cashRun?.portfolioAfter) {
+    const pa = cashRun.portfolioAfter;
     const sCash = parseFloat(pa.cash ?? "0");
     const sUnsettled = parseFloat(pa.unsettledCash ?? "0");
     const sEquity = parseFloat(pa.equity ?? "0");

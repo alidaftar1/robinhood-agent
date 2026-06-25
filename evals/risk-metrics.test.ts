@@ -12,7 +12,7 @@ function run(partial: Partial<TradeRun["portfolioAfter"]> & { trades: TradeSnaps
     timestamp: "2026-06-25T15:00:00.000Z",
     date: "2026-06-25",
     summary: "",
-    portfolioAfter: { totalValue: "2462.33", cash: "115.65", equity: "1962", ...pa },
+    portfolioAfter: { totalValue: "2452", cash: "43.55", equity: "1668", ...pa },
     positions: [],
     market: { stocksLoaded: 0, headlinesLoaded: 0 },
     trades,
@@ -20,23 +20,18 @@ function run(partial: Partial<TradeRun["portfolioAfter"]> & { trades: TradeSnaps
 }
 
 describe("computeT1Settling", () => {
-  it("sums today's sells across a merged two-run day (the 06-25 MSFT-stop undercount)", () => {
-    // mergeRunsByDate keeps the 14:30 snapshot (unsettled 384.94 = BAC+C+MRNA) but
-    // UNIONS in the 15:00 MSFT stop sell. The figure must reflect BOTH batches, not
-    // just the snapshot — true unsettled ≈ 759, not 385.
-    const merged = run({
-      unsettledCash: "384.94",
-      trades: [sell("BAC", "3", "58.97"), sell("C", "1", "147.51"), sell("MRNA", "1", "60.52"), sell("MSFT", "1", "374.50")],
-    });
-    const r = computeT1Settling(merged)!;
-    expect(r.amount).toBeCloseTo(384.94 + 374.50, 1); // 759.44
+  it("uses the complete live unsettled snapshot, not the recorded sells", () => {
+    // Every run now stores the live unsettled (cash − buying power) via fetchAgenticBalance,
+    // so the latest run (e.g. the MSFT stop) reflects ALL of today's unsettled — incl. the
+    // morning rebalance's sells — not just its own. Prefer that over the placeholder-priced
+    // sell-sum (here the MSFT sell is recorded at its $374.50 buy-price placeholder).
+    const r = computeT1Settling(run({ unsettledCash: "740.35", trades: [sell("MSFT", "1", "374.50")] }))!;
+    expect(r.amount).toBeCloseTo(740.35, 2);
   });
 
-  it("keeps the stored live snapshot when it exceeds recorded sells (the 06-23 queued-fill case)", () => {
-    // A queued stop filled at open and is in live unsettled (cash−bp) but not in today's
-    // recorded trades, so the sell-sum undercounts; the stored snapshot must win.
-    const r = computeT1Settling(run({ unsettledCash: "505.61", trades: [sell("SPCX", "1", "354.00")] }))!;
-    expect(r.amount).toBeCloseTo(505.61, 2);
+  it("falls back to summed sells only when no stored unsettled (old run)", () => {
+    const r = computeT1Settling(run({ unsettledCash: "", trades: [sell("BAC", "3", "58.97"), sell("C", "1", "147.51"), sell("MRNA", "1", "60.52")] }))!;
+    expect(r.amount).toBeCloseTo(58.97 * 3 + 147.51 + 60.52, 1); // 384.94
   });
 
   it("returns null when nothing is settling", () => {

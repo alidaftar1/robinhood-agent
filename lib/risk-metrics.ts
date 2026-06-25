@@ -201,20 +201,18 @@ export function computeT1Settling(run: TradeRun): { amount: number; pct: number 
   const sold = (run.trades ?? [])
     .filter((t) => t.side === "sell")
     .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
-  // Two same-day runs (morning rebalance + a later stop-loss) each snapshot only
-  // their OWN sells into unsettledCash, so one snapshot undercounts. mergeRunsByDate
-  // unions all of today's sell trades, so take the LARGER of (stored live snapshot,
-  // summed today's sells): stored wins when a queued sell filled that isn't in today's
-  // recorded trades (the 06-23 case); the sell-sum wins when today's sells span two
-  // runs (the 06-25 case where the MSFT stop's $374 was missing). Either way → the full
-  // amount settling next business day.
-  const storedVal = isFinite(stored) && stored > 0 ? stored : 0;
-  const soldVal = isFinite(sold) && sold > 0 ? sold : 0;
-  const amount = Math.max(storedVal, soldVal);
-  if (amount <= 0) return null;
+  // Every run now snapshots the LIVE unsettled (total cash − settled buying power) via
+  // fetchAgenticBalance — including the intraday stop-loss/earnings runs — so the stored
+  // value is the COMPLETE figure (all of today's unsettled proceeds, across runs), and the
+  // dashboard passes the latest-by-timestamp run. Use stored directly; only fall back to
+  // summing today's recorded sells for old runs that predate live-unsettled capture.
+  // (The sell-sum is less accurate — it uses recorded/placeholder prices.)
+  const hasStored = isFinite(stored) && stored > 0;
+  const amount = hasStored ? stored : sold;
+  if (!isFinite(amount) || amount <= 0) return null;
   const total = parseFloat(run.portfolioAfter?.totalValue ?? "") || 0;
-  // totalValue already includes the snapshot's unsettled; if we fell back to a sell-sum
-  // from an old-format run with no stored unsettled, add it so the % isn't inflated.
-  const trueTotal = storedVal > 0 ? total : total + amount;
+  // totalValue already includes the snapshot's unsettled; for an old run with no stored
+  // unsettled we added the sell-sum, so add it to the denominator too.
+  const trueTotal = hasStored ? total : total + amount;
   return { amount, pct: trueTotal > 0 ? (amount / trueTotal) * 100 : 0 };
 }

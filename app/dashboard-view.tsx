@@ -257,6 +257,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const latest = runs[0] ?? null;
   const inception = runs[runs.length - 1] ?? null;
 
+  // For "current cash state" metrics (Cash Clearing), use the most-recent run by
+  // timestamp — an intraday stop-loss run is newer than the merged daily run and holds
+  // the up-to-date live unsettled-cash snapshot. (Performance/return metrics keep using
+  // the merged `latest`, which carries the day's computed return.)
+  // Newest run that actually has a portfolioAfter — a thin intraday run whose snapshot
+  // parse failed is saved with portfolioAfter:null, and using it would zero out Cash
+  // Clearing. Skip those; fall back to the merged latest if none qualify.
+  const current = [...allRuns].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).find(r => r.portfolioAfter) ?? latest;
+
   // Use the run just before the first agent return as the perf baseline so
   // SPY return covers the same window as the agent cumulative return.
   const runsChronological = [...runs].reverse();
@@ -293,7 +302,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const cashPct = latest ? computeCashPct(latest) : null;
   const sectorBreakdown = latest ? computeSectorBreakdown(latest) : [];
   const beta = computeBeta(runs);
-  const t1Settling = latest ? computeT1Settling(latest) : null;
+  const t1Settling = current ? computeT1Settling(current) : null;
   const concentration = latest ? computeConcentration(latest) : null;
   // Max drawdown over the same co-indexed window for both series
   const ddPoints = returnSeries.filter(p => p.agentic != null);

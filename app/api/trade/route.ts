@@ -7,47 +7,16 @@ import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, t
 import { computeSectorSlices, formatSectorExposure } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
+import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
 
 const ACCOUNT = process.env.AGENTIC_ACCOUNT_ID ?? "";
 const sp500Set = new Set(SP500_UNIVERSE);
 
-async function fetchAgenticBuyingPower(
-  anthropic: Anthropic,
-  accessToken: string
-): Promise<{ buyingPower: number; totalValue: number; unsettled: number } | null> {
-  const controller = new AbortController();
-  const killTimer = setTimeout(() => controller.abort(), 20000);
-  try {
-    const res = await (anthropic.beta.messages as any).create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 256,
-      system: `Call get_portfolio for account ${ACCOUNT}. Output exactly one line:
-AGENTIC_BALANCE:{"buyingPower":"XX.XX","totalValue":"XX.XX","cash":"XX.XX"}
-Use buying_power.buying_power for buyingPower, total_value for totalValue, and the top-level cash field for cash (total cash incl. unsettled). Output nothing else.`,
-      messages: [{ role: "user", content: `Fetch live balance for account ${ACCOUNT}.` }],
-      mcp_servers: [{ type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken }],
-      betas: ["mcp-client-2025-04-04"],
-    }, { signal: controller.signal });
-    clearTimeout(killTimer);
-    const text = res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-    const match = text.match(/^AGENTIC_BALANCE:(.+)$/m);
-    if (!match) return null;
-    const p = JSON.parse(match[1]);
-    const bp = parseFloat(String(p.buyingPower ?? "0"));
-    const tv = parseFloat(String(p.totalValue ?? "0"));
-    // Unsettled = total cash − settled buying power (Robinhood has no clean unsettled_funds
-    // field; cash includes unsettled sell proceeds, buying_power is settled only).
-    const cash = parseFloat(String(p.cash ?? "0"));
-    const unsettled = isFinite(cash) && cash > bp ? cash - bp : 0;
-    return (bp > 0 || tv > 0) ? { buyingPower: bp, totalValue: tv, unsettled } : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(killTimer);
-  }
-}
+// Live balance (settled buying power, total value, unsettled = cash − buying power) —
+// shared with drop-check/earnings-exit via lib/robinhood-balance.
+const fetchAgenticBuyingPower = fetchAgenticBalance;
 
 async function fetchAgenticPositions(
   anthropic: Anthropic,
