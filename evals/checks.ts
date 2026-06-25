@@ -283,7 +283,7 @@ export function checkHasReasoning(summary: string): CheckResult {
   const prose = summary.split(/^PORTFOLIO_SNAPSHOT:/m)[0];
   const keywords = [
     "momentum", "thesis", "sector", "because", "earnings", "macro", "catalyst",
-    "growth", "valuation", "insider", "signal", "sharpe", "upgrade", "rebalance",
+    "growth", "valuation", "insider", "signal", "mom5", "upgrade", "rebalance",
     "rotation", "alpha", "conviction", "strength", "performance", "position",
     "holding", "portfolio", "risk", "market", "buy", "sell", "keep",
   ];
@@ -501,7 +501,7 @@ export function checkDecisionSellsImminent(decision: TradeDecision | null, scena
 /** Thesis text must be substantive (not empty, uses signal keywords). */
 export function checkDecisionHasThesis(decision: TradeDecision | null): CheckResult {
   if (!decision) return { name: "thesis is substantive", passed: false, detail: "no decision parsed" };
-  const keywords = ["momentum", "sector", "sharpe", "alpha", "earnings", "insider", "upgrade", "thesis", "rotation", "signal", "conviction"];
+  const keywords = ["momentum", "sector", "mom5", "alpha", "earnings", "insider", "upgrade", "thesis", "rotation", "signal", "conviction"];
   const found = keywords.filter(k => decision.thesis.toLowerCase().includes(k));
   const passed = decision.thesis.length >= 50 && found.length >= 1;
   return {

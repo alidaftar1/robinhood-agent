@@ -117,9 +117,9 @@ export interface StockData {
   change30d: number;       // % 30-day change
   distFrom52wHigh: number; // % below 52-week high
   volatility30d: number;   // annualized vol % (30d window)
-  sharpe5d: number;        // change5d / annualized vol (5d window) — primary sort signal
-  sharpe14d: number;       // change14d / annualized vol (14d window) — confirmation signal
-  sharpe30d: number;       // change30d / volatility30d
+  sharpe5d: number;        // momentumScore(change5d, 5, vol) — annualized 5d return ÷ full-window vol; PRIMARY sort signal (labeled "mom5")
+  sharpe14d: number;       // momentumScore(change14d, 10, vol) — annualized 14d(≈10td) return ÷ full-window vol; confirmation ("mom14")
+  sharpe30d: number;       // momentumScore(change30d, 21, vol) — annualized 30d(≈21td) return ÷ full-window vol
   earningsDate: string | null;
   relStrength1d: number;   // change1d minus SPY's change1d
   relStrength5d: number;   // change5d minus SPY's change5d (near-term alpha)
@@ -167,6 +167,18 @@ function annualizedVol(closes: number[]): number {
   return Math.sqrt(variance) * Math.sqrt(252) * 100;
 }
 
+// Risk-adjusted momentum score: annualized N-day return ÷ a stable annualized
+// volatility. Annualizing the return (× 252/tradingDays) puts the 5d/14d/30d scores
+// on the SAME scale, so the blended rank (0.6×mom5 + 0.4×mom14) weights them as
+// intended — previously the un-annualized 14-day return was ~2–3× larger and silently
+// dominated the "primary" 5-day signal. Using one stable full-window vol as the
+// denominator (not a noisy ~5-point estimate) keeps the risk adjustment meaningful on
+// short windows. Shared with the eval fixtures so tests track production.
+export function momentumScore(changePct: number, tradingDays: number, annualizedVolPct: number): number {
+  if (annualizedVolPct <= 0 || tradingDays <= 0) return 0;
+  return (changePct * (252 / tradingDays)) / annualizedVolPct;
+}
+
 async function fetchQuote(symbol: string): Promise<StockData | null> {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
@@ -210,15 +222,13 @@ async function fetchQuote(symbol: string): Promise<StockData | null> {
     const closes5d = validCloses.slice(-6); // 5 trading days + anchor
     const fiveDayAgoClose = closes5d[0] ?? monthAgoClose;
     const change5d = fiveDayAgoClose ? ((price - fiveDayAgoClose) / fiveDayAgoClose) * 100 : 0;
-    const vol5d = annualizedVol(closes5d);
-    const sharpe5d = vol5d > 0 ? change5d / vol5d : 0;
+    const sharpe5d = momentumScore(change5d, 5, vol);
 
     // 14-calendar-day signal (~10 trading days back in the closes array)
     const closes14d = validCloses.slice(-11); // last 10 trading days + anchor
     const twoWeekAgoClose = closes14d[0] ?? monthAgoClose;
     const change14d = twoWeekAgoClose ? ((price - twoWeekAgoClose) / twoWeekAgoClose) * 100 : 0;
-    const vol14d = annualizedVol(closes14d);
-    const sharpe14d = vol14d > 0 ? change14d / vol14d : 0;
+    const sharpe14d = momentumScore(change14d, 10, vol);
 
     const nowMs = Date.now();
     const earningsTs = meta.earningsTimestamp;
@@ -240,7 +250,7 @@ async function fetchQuote(symbol: string): Promise<StockData | null> {
       volatility30d: vol,
       sharpe5d,
       sharpe14d,
-      sharpe30d: vol > 0 ? change30d / vol : 0,
+      sharpe30d: momentumScore(change30d, 21, vol),
       earningsDate,
       relStrength1d: 0,   // set below after SPY fetch
       relStrength5d: 0,   // set below after SPY fetch
@@ -461,7 +471,7 @@ export function formatMarketDataForPrompt(data: MarketData): string {
       const earnFlag = s.earningsDate ? ` ⚠EARN ${s.earningsDate.slice(5)}` : "";
       const insFlag = hasInsider(s) ? " ★INS" : "";
       const sect = STOCK_SECTOR[s.symbol] ?? "?";
-      return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 1d: ${d1.padStart(7)} | 5d: ${d5.padStart(7)} | α5d: ${alpha5.padStart(7)} | sharpe5: ${sharpe5.padStart(5)} | 14d: ${d14.padStart(8)} | α14d: ${alpha14.padStart(7)} | 30d: ${d30.padStart(8)} | vs52wHigh: ${fromHigh} | ${sect}${earnFlag}${insFlag}${analystFlag(s)}`;
+      return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 1d: ${d1.padStart(7)} | 5d: ${d5.padStart(7)} | α5d: ${alpha5.padStart(7)} | mom5: ${sharpe5.padStart(5)} | 14d:${d14.padStart(8)} | α14d: ${alpha14.padStart(7)} | 30d: ${d30.padStart(8)} | vs52wHigh: ${fromHigh} | ${sect}${earnFlag}${insFlag}${analystFlag(s)}`;
     })
     .join("\n");
 
@@ -528,7 +538,7 @@ export function formatMarketDataForPrompt(data: MarketData): string {
         const alpha = (s.relStrength30d >= 0 ? "+" : "") + s.relStrength30d.toFixed(1) + "%";
         const sharpe = s.sharpe30d.toFixed(2);
         const tag = i === 0 ? " 🔥 HOT" : i >= data.sectors.length - 2 ? " ❄ COLD" : "";
-        return `  ${s.etf.padEnd(5)} ${s.name.padEnd(13)} 30d: ${d30.padStart(7)} | α30d: ${alpha.padStart(7)} | sharpe: ${sharpe.padStart(5)}${tag}`;
+        return `  ${s.etf.padEnd(5)} ${s.name.padEnd(13)} 30d: ${d30.padStart(7)} | α30d: ${alpha.padStart(7)} | mom: ${sharpe.padStart(5)}${tag}`;
       }).join("\n")
     : "  (unavailable)";
 
@@ -540,14 +550,14 @@ ${spyLine}
 SECTOR ROTATION (sorted by α30d vs SPY — use this to identify macro tailwinds/headwinds):
 ${sectorTable}
 
-TOP 10 NEAR-TERM MOMENTUM (sharpe5 = 5d-return / annualized-vol | α5d = alpha vs SPY over 5d):
-${top10.map((s) => `${s.symbol} sharpe5=${s.sharpe5d.toFixed(2)} α5d=${s.relStrength5d >= 0 ? "+" : ""}${s.relStrength5d.toFixed(1)}% sharpe14=${s.sharpe14d.toFixed(2)}${hasInsider(s) ? " ★INS" : ""}${analystFlag(s)}`).join(", ")}
+TOP 10 NEAR-TERM MOMENTUM (mom5 = risk-adjusted momentum: annualized 5d return ÷ volatility, higher = stronger & steadier | α5d = alpha vs SPY over 5d):
+${top10.map((s) => `${s.symbol} mom5=${s.sharpe5d.toFixed(2)} α5d=${s.relStrength5d >= 0 ? "+" : ""}${s.relStrength5d.toFixed(1)}% mom14=${s.sharpe14d.toFixed(2)}${hasInsider(s) ? " ★INS" : ""}${analystFlag(s)}`).join(", ")}
 
 BOTTOM 10 (weakest near-term risk-adjusted momentum):
-${bottom10.map((s) => `${s.symbol} sharpe5=${s.sharpe5d.toFixed(2)} α5d=${s.relStrength5d >= 0 ? "+" : ""}${s.relStrength5d.toFixed(1)}%`).join(", ")}
+${bottom10.map((s) => `${s.symbol} mom5=${s.sharpe5d.toFixed(2)} α5d=${s.relStrength5d >= 0 ? "+" : ""}${s.relStrength5d.toFixed(1)}%`).join(", ")}
 
-FULL TABLE (sorted by 60%×sharpe5 + 40%×sharpe14 | 5d = PRIMARY signal | 14d = confirmation | 30d = trend context | α5d/α14d = vs SPY | sect = sector ETF | ★INS = insider bought | ↑/↓FIRM = analyst upgrade/downgrade | ⚠EARN = earnings within 30d):
-Symbol Price  | 1d      | 5d      | α5d     | sharpe5  | 14d      | α14d    | 30d      | vs52wHigh | sect
+FULL TABLE (sorted by 60%×mom5 + 40%×mom14 | 5d = PRIMARY signal | 14d = confirmation | 30d = trend context | α5d/α14d = vs SPY | sect = sector ETF | ★INS = insider bought | ↑/↓FIRM = analyst upgrade/downgrade | ⚠EARN = earnings within 30d):
+Symbol Price  | 1d      | 5d      | α5d     | mom5     | 14d      | α14d    | 30d      | vs52wHigh | sect
 ${momentumTable}
 ${earningsSection}
 ${insiderSection}

@@ -1,6 +1,6 @@
 import type { StockData, MarketData, InsiderBuy, AnalystRating } from "@/lib/market-data";
 import { SP500_UNIVERSE } from "@/lib/strategy";
-import { formatMarketDataForPrompt } from "@/lib/market-data";
+import { formatMarketDataForPrompt, momentumScore } from "@/lib/market-data";
 
 // Controlled prices for key S&P 100 stocks.
 // All prices chosen to be ≤ $400 (affordable on $1k budget) unless noted.
@@ -43,8 +43,6 @@ function buildMockStocks(): StockData[] {
     const vol = 20 + Math.abs(base.change30d) * 0.5;
     const change5d = base.change30d * 0.3;
     const change14d = base.change30d * 0.6;
-    const vol5d = vol * 0.8;
-    const vol14d = vol * 0.9;
     return {
       symbol,
       price: base.price,
@@ -54,9 +52,9 @@ function buildMockStocks(): StockData[] {
       change30d: base.change30d,
       distFrom52wHigh: -Math.abs(base.change30d) * 0.8,
       volatility30d: vol,
-      sharpe5d: vol5d > 0 ? change5d / vol5d : 0,
-      sharpe14d: vol14d > 0 ? change14d / vol14d : 0,
-      sharpe30d: vol > 0 ? base.change30d / vol : 0,
+      sharpe5d: momentumScore(change5d, 5, vol),
+      sharpe14d: momentumScore(change14d, 10, vol),
+      sharpe30d: momentumScore(base.change30d, 21, vol),
       earningsDate: null,
       relStrength1d: base.change1d - SPY_MOCK.change1d,
       relStrength5d: change5d - SPY_MOCK.change5d,
@@ -94,11 +92,11 @@ export function buildMarketData(
       if (!ov) return s;
       const merged = { ...s, ...ov };
       if (ov.change5d != null) {
-        merged.sharpe5d = s.volatility30d > 0 ? ov.change5d / (s.volatility30d * 0.8) : 0;
+        merged.sharpe5d = momentumScore(ov.change5d, 5, s.volatility30d);
         merged.relStrength5d = ov.change5d - SPY_MOCK.change5d;
       }
       if (ov.change14d != null) {
-        merged.sharpe14d = s.volatility30d > 0 ? ov.change14d / (s.volatility30d * 0.9) : 0;
+        merged.sharpe14d = momentumScore(ov.change14d, 10, s.volatility30d);
         merged.relStrength14d = ov.change14d - SPY_MOCK.change30d * 0.6;
       }
       return merged;

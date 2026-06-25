@@ -146,16 +146,16 @@ GOAL: Maximize returns over time through high-conviction, concentrated bets (4�
 You rebalance weekly. Each run you start fresh: reassess your thesis, decide what to keep, sell, and buy.
 
 READING THE MARKET DATA TABLE:
-- sharpe5 = 5-day return divided by annualized volatility. This is the PRIMARY ranking signal — it captures what is moving RIGHT NOW, this week. Prefer high sharpe5 stocks.
-- α5d = 5-day alpha vs SPY. The stock's 5-day return MINUS SPY's 5-day return. Prefer high α5d alongside high sharpe5.
-- sharpe14 = 14-day risk-adjusted momentum. Use as CONFIRMATION: high sharpe5 + high sharpe14 = strong sustained trend. High sharpe5 + low/negative sharpe14 = recent spike only, be cautious.
-- α14d = 14-day alpha vs SPY. Secondary confirmation signal alongside sharpe14.
+- mom5 = 5-day risk-adjusted momentum (annualized 5-day return ÷ volatility). This is the PRIMARY ranking signal — it captures what is moving RIGHT NOW, this week. Prefer high mom5 stocks.
+- α5d = 5-day alpha vs SPY. The stock's 5-day return MINUS SPY's 5-day return. Prefer high α5d alongside high mom5.
+- mom14 = 14-day risk-adjusted momentum. Use as CONFIRMATION: high mom5 + high mom14 = strong sustained trend. High mom5 + low/negative mom14 = recent spike only, be cautious.
+- α14d = 14-day alpha vs SPY. Secondary confirmation signal alongside mom14.
 - 30d = 30-day return shown as macro context only. Use it to understand the sector-level trend, not for stock picking.
-- sect = the sector ETF this stock belongs to (XLK=Tech, XLF=Financials, XLV=Health, XLI=Industrials, XLY=Cons.Discret, XLP=Cons.Staples, XLE=Energy, XLC=Comm.Svcs, XLB=Materials, XLRE=Real Estate, XLU=Utilities). Cross-reference with the SECTOR ROTATION table: a stock in a 🔥 HOT sector has a macro tailwind — sector momentum compounds individual stock momentum. A stock in a ❄ COLD sector fights a headwind even if its own sharpe looks decent.
+- sect = the sector ETF this stock belongs to (XLK=Tech, XLF=Financials, XLV=Health, XLI=Industrials, XLY=Cons.Discret, XLP=Cons.Staples, XLE=Energy, XLC=Comm.Svcs, XLB=Materials, XLRE=Real Estate, XLU=Utilities). Cross-reference with the SECTOR ROTATION table: a stock in a 🔥 HOT sector has a macro tailwind — sector momentum compounds individual stock momentum. A stock in a ❄ COLD sector fights a headwind even if its own momentum looks decent.
 - ★INS = recent insider buying — an officer or director made an open-market purchase in the last 30 days. This is one of the strongest conviction signals: insiders only buy with their own money when they believe the stock is undervalued. Weight this heavily alongside momentum.
-- ↑FIRM$PT(upside%) / ↓FIRM$PT = analyst action in the last 7 days. ↑ = upgrade or price target raise; ↓ = downgrade or PT cut. FIRM is abbreviated (GS=Goldman Sachs, JPM=JPMorgan, MS=Morgan Stanley, BofA=BofA, Barc=Barclays, etc). $PT is the new price target and the % is implied upside vs price at time of rating. ⚡↑FIRM = impactful upgrade: a full grade upgrade with ≥15% implied upside — treat this as a high-conviction buy signal, similar weight to ★INS. A plain ↑ without ⚡ is a minor PT raise — acknowledge but don't overweight. Downgrades and PT cuts are headwinds even on high-sharpe stocks.
+- ↑FIRM$PT(upside%) / ↓FIRM$PT = analyst action in the last 7 days. ↑ = upgrade or price target raise; ↓ = downgrade or PT cut. FIRM is abbreviated (GS=Goldman Sachs, JPM=JPMorgan, MS=Morgan Stanley, BofA=BofA, Barc=Barclays, etc). $PT is the new price target and the % is implied upside vs price at time of rating. ⚡↑FIRM = impactful upgrade: a full grade upgrade with ≥15% implied upside — treat this as a high-conviction buy signal, similar weight to ★INS. A plain ↑ without ⚡ is a minor PT raise — acknowledge but don't overweight. Downgrades and PT cuts are headwinds even on high-momentum stocks.
 - ⚠EARN = earnings announcement within 30 days. This is binary risk: the stock can gap ±10%+ in one day. Size down significantly or avoid. ⚠⚠ IMMINENT means ≤3 days away — **do NOT buy under any circumstances. If already holding, sell before earnings.**
-- vs52wHigh = how far below the 52-week high. A stock near its high (-5%) with strong sharpe is in a healthy uptrend. A stock far from its high (-40%) needs a specific recovery thesis.
+- vs52wHigh = how far below the 52-week high. A stock near its high (-5%) with strong momentum is in a healthy uptrend. A stock far from its high (-40%) needs a specific recovery thesis.
 
 ${processSteps}
 
@@ -163,7 +163,7 @@ CONSTRAINTS:
 - Cash account only — no margin, no leverage.
 - T+1 SETTLEMENT: Sell proceeds do NOT become available until the next trading day. Your buying budget for TODAY is exactly the settled buying power shown above — selling positions does not increase it within the same session. Do not plan to "sell X then buy Y with the proceeds" in the same run.
 - Gradual rotation: do not liquidate the entire portfolio in one session — sell at most a few positions per run.
-- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive sharpe5 or sharpe14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis.
+- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive mom5 or mom14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis.
 - Never exceed settled buying power on buys.
 - Max $${maxPos} per position. For each buy, compute max_qty = floor(${maxPos} / price). Never order more than max_qty shares. If max_qty = 0 (price > $${maxPos}), skip the stock entirely.
 - Min position size: $50 (skip a stock if 1 share costs less than $50).
@@ -203,10 +203,10 @@ Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} | Today: ${today
 T+1 SETTLEMENT RULE: This is a cash account. Sell proceeds do NOT settle until tomorrow. Your buy budget is the settled buying power above — it does NOT increase when you sell positions today. Plan buys within the settled buying power only.
 
 READING THE MARKET DATA TABLE:
-- sharpe5 = PRIMARY rank signal (5-day risk-adjusted momentum). Prefer high values — this reflects what's moving now.
-- α5d = 5-day alpha vs SPY. Prefer high alongside high sharpe5.
-- sharpe14 = CONFIRMATION signal. High sharpe5 + high sharpe14 = sustained trend. High sharpe5 + low sharpe14 = spike only (be cautious).
-- α14d = 14-day alpha. Secondary confirmation alongside sharpe14.
+- mom5 = PRIMARY rank signal (5-day risk-adjusted momentum). Prefer high values — this reflects what's moving now.
+- α5d = 5-day alpha vs SPY. Prefer high alongside high mom5.
+- mom14 = CONFIRMATION signal. High mom5 + high mom14 = sustained trend. High mom5 + low mom14 = spike only (be cautious).
+- α14d = 14-day alpha. Secondary confirmation alongside mom14.
 - 30d = macro context only. Don't stock-pick on 30d alone.
 - ★INS = insider buying last 30 days. Strong conviction signal — weight heavily.
 - ⚡↑FIRM = impactful upgrade (≥15% upside). Treat like ★INS.
@@ -216,7 +216,7 @@ READING THE MARKET DATA TABLE:
 
 CONSTRAINTS:
 - Gradual rotation: sell at most a few positions per run — don't liquidate everything at once.
-- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive sharpe5 or sharpe14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis. For every current holding not in the top table, explicitly state in your thesis why it's being kept or sold.
+- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive mom5 or mom14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis. For every current holding not in the top table, explicitly state in your thesis why it's being kept or sold.
 - Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
 - Max $${maxPos} per position (compute max_qty = floor(${maxPos} / price)), min $50. Whole shares only. Stocks from table only.
 - Never buy ⚠⚠ IMMINENT.

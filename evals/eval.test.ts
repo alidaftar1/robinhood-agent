@@ -221,7 +221,7 @@ INSTRUCTIONS — deviate from standard process:
 1. SELL the positions listed above immediately — the drop signals a breakdown in thesis.
 2. Keep ALL other positions UNCHANGED.
 3. With the freed cash, either:
-   a. Buy ONE high-conviction alternative (best sharpe, no imminent earnings, price ≤ $400), OR
+   a. Buy ONE high-conviction alternative (best momentum, no imminent earnings, price ≤ $400), OR
    b. Hold cash if SPY is also broadly down (>1.5% today) — capital preservation takes priority.
 4. Emit PORTFOLIO_SNAPSHOT as usual.
 Do NOT do a full portfolio rebalance. Only exit the damaged positions.

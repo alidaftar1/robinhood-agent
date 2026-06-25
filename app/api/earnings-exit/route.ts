@@ -86,7 +86,7 @@ This is a targeted mid-day run triggered because the following held positions ha
 INSTRUCTIONS — deviate from standard process:
 1. SELL the positions listed above IMMEDIATELY. No exceptions regardless of momentum.
 2. Keep ALL other positions UNCHANGED — do not sell or add to them.
-3. With the freed cash, buy ONE high-conviction alternative: best sharpe, no imminent earnings, price ≤ $400.
+3. With the freed cash, buy ONE high-conviction alternative: best momentum, no imminent earnings, price ≤ $400.
 4. Emit PORTFOLIO_SNAPSHOT as usual.
 Do NOT do a full portfolio rebalance. Only exit the earnings risk and redeploy into one name.
 

@@ -125,7 +125,7 @@ INSTRUCTIONS — deviate from standard process:
 1. SELL every position listed above immediately — both stop-loss and take-profit exits.
 2. Keep ALL other positions UNCHANGED.
 3. With the freed cash, either:
-   a. Buy ONE high-conviction alternative (best sharpe, no imminent earnings, within the per-position cap), OR
+   a. Buy ONE high-conviction alternative (best momentum, no imminent earnings, within the per-position cap), OR
    b. Hold cash if SPY is also broadly down (>1.5% today) — capital preservation takes priority.
    c. For a STOP-LOSS only: if it's clearly sympathy selling (broad market down, fundamentals unchanged), you may use judgment and hold. A TAKE-PROFIT exit is NOT optional — always lock the gain.
 4. Emit PORTFOLIO_SNAPSHOT as usual.
