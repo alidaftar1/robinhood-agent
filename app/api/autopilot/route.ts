@@ -303,7 +303,18 @@ export async function GET(request: Request) {
   let reviewConcerns: ReviewConcern[] = [];
   if (todayRun) {
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const review = await reviewRun(anthropic, todayRun, runs);
+    // Hand the reviewer verify's reconciliation so it doesn't re-flag (or hallucinate)
+    // cash/position/composition mismatches the deterministic layer already confirmed.
+    const verifyContext = verifyResult
+      ? {
+          status: verifyResult.status,
+          cashDiff: verifyResult.diff?.cashDiff ?? null,
+          valueDiff: verifyResult.diff?.valueDiff ?? null,
+          positionIssues: (verifyResult.diff?.positionIssues ?? []).length,
+          uncapturedOrders: (verifyResult.diff?.uncapturedOrders ?? []).length,
+        }
+      : null;
+    const review = await reviewRun(anthropic, todayRun, runs, verifyContext);
     reviewConcerns = review.concerns;
     if (review.error) {
       autoFixed.push(`Skeptical-reviewer pass could not run (${review.error}).`);

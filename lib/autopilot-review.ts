@@ -77,6 +77,10 @@ You will be given a registry of past misses — explicitly check the current run
 
 Be precise and quantitative; cite the actual numbers/tickers from the data. Do not invent data you weren't given. If nothing is wrong, return an empty concerns array — do not manufacture concerns to seem useful.
 
+GROUNDING — never hallucinate absence or mismatch. The TODAY'S RUN JSON gives you the COMPLETE positions and trades arrays. A symbol is held if and only if it appears in the positions array — never claim a position is "missing" or "dropped" unless you have confirmed it is absent from that array; if it is present, it is held. Before asserting any number is wrong, quote the exact field you are citing. A hallucinated "missing position / equity mismatch" concern on data that is actually present is worse than staying silent — it erodes trust in every other concern.
+
+DEFER TO RECONCILIATION — a separate /api/verify pass has already reconciled the stored run against LIVE Robinhood (cash, positions, orders) this morning, and you are given its result below. When verify status is "ok" (or cashDiff ≈ 0 with no position issues), treat stored cash, positions, holdings, and totalValue composition as CONFIRMED CORRECT — do NOT raise cash-reconciliation, missing-position, or composition-mismatch concerns; that is verify's job, not yours. Your job is the JUDGMENT reconciliation cannot make: bad entries, falling-knife buys, concentration drift, a silently self-healed morning, a thesis that contradicts the trades.
+
 INSTRUMENT IDENTITY: every symbol here is a U.S.-listed EQUITY or ETF (the S&P 500 plus an expanded universe of liquid stocks/ETFs, including a few influencer picks). NONE are crypto, futures, forex, or indices. Do NOT assume a ticker is its famous namesake and then call a price "wrong" — e.g. "ES" is Eversource Energy (a ~$70 utility stock), NOT E-mini S&P 500 futures; "BTC" here is a Bitcoin ETF trading at ~$26, NOT bitcoin itself. A low or unfamiliar share price is normal for an equity/ETF; only flag a price as a data error if it's internally inconsistent (e.g. contradicts the same symbol's other figures in this run), never just because it doesn't match a crypto/futures instrument that shares the ticker.
 
 Respond with ONLY a JSON object, no prose, in this exact shape:
@@ -84,13 +88,42 @@ Respond with ONLY a JSON object, no prose, in this exact shape:
 
 Severity: high = likely real money/data error or bad trade needing action today; medium = probable issue worth a look; low = FYI / minor.`;
 
-function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[]): string {
+/** Compact reconciliation result from /api/verify, fed to the reviewer so it
+ *  doesn't re-flag (or hallucinate) cash/position/composition mismatches that
+ *  the deterministic layer already confirmed against live Robinhood. */
+export interface VerifyContext {
+  status: string; // "ok" | "discrepancy" | "partial" | "skipped"
+  cashDiff: number | null;
+  valueDiff: number | null;
+  positionIssues: number;
+  uncapturedOrders: number;
+}
+
+function formatVerify(v?: VerifyContext | null): string {
+  if (!v || v.status === "skipped") {
+    return `LIVE ROBINHOOD RECONCILIATION: not available this run — you have no live confirmation, so reason from the stored data alone (but still do not invent absences/mismatches).`;
+  }
+  const reconciled = v.status === "ok" || (v.cashDiff != null && Math.abs(v.cashDiff) < 1 && v.positionIssues === 0);
+  return `LIVE ROBINHOOD RECONCILIATION (/api/verify, already run against live Robinhood this morning):
+- status: ${v.status}
+- cash diff vs live: ${v.cashDiff == null ? "n/a" : `$${v.cashDiff.toFixed(2)}`}
+- value diff: ${v.valueDiff == null ? "n/a" : `$${v.valueDiff.toFixed(2)}`} (intraday price drift — informational)
+- position issues: ${v.positionIssues}
+- uncaptured orders: ${v.uncapturedOrders}
+${reconciled
+  ? "→ Stored cash, positions, holdings and totalValue composition are CONFIRMED CORRECT against live Robinhood. Do NOT raise cash-reconciliation, missing-position, or composition-mismatch concerns."
+  : "→ Reconciliation flagged the discrepancies above; the deterministic layer already patches these — only corroborate, don't duplicate."}`;
+}
+
+function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[], verify?: VerifyContext | null): string {
   const history = recentRuns
     .filter((r) => r.date !== todayRun.date)
     .slice(0, 7)
     .map(compactRun);
 
   return `SCHEDULED trade cron time: ${SCHEDULED_TRADE_CRON_UTC}. A today timestamp materially later than that implies the morning failed at least once and silently recovered.
+
+${formatVerify(verify)}
 
 TODAY'S RUN:
 ${JSON.stringify(compactRun(todayRun), null, 2)}
@@ -136,6 +169,7 @@ export async function reviewRun(
   anthropic: Anthropic,
   todayRun: TradeRun,
   recentRuns: TradeRun[],
+  verify?: VerifyContext | null,
 ): Promise<ReviewResult> {
   try {
     const resp = await (anthropic.messages as any).create(
@@ -143,7 +177,7 @@ export async function reviewRun(
         model: "claude-sonnet-4-6",
         max_tokens: 1500,
         system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: buildUserPrompt(todayRun, recentRuns) }],
+        messages: [{ role: "user", content: buildUserPrompt(todayRun, recentRuns, verify) }],
       },
       { timeout: 45_000 },
     );
