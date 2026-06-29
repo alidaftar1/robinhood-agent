@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "check:secrets": "bash scripts/check-secrets.sh",
     "eval": "bun --env-file=.env.local test evals/eval.test.ts --timeout 120000",
     "eval:braintrust": "bun --env-file=.env.local evals/braintrust.eval.ts",
     "eval:integration": "bun test evals/integration.test.ts --timeout 15000"

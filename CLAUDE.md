@@ -149,7 +149,24 @@ If the run summary mentions errors or the trade count is wrong:
 2. Identify root cause from logs
 3. Fix the code
 4. Run evals if `lib/strategy.ts` changed: `bun --env-file=.env.local test evals/eval.test.ts`
-5. Deploy (gated): run `/code-review` first, fix findings, then `REVIEWED=1 /Users/ali/.bun/bin/vercel deploy --prod`
+5. **Secret/PII scan: `bun run check:secrets`** (must exit 0 — see "Secret/PII gate" below)
+6. Deploy (gated): run `/code-review` first, fix findings, then `REVIEWED=1 /Users/ali/.bun/bin/vercel deploy --prod`
+
+### Secret/PII gate (repo is shared/collaborative)
+
+`scripts/check-secrets.sh` (`bun run check:secrets`) is a deterministic scanner
+that greps every tracked file for credential- and personal-info-shaped strings
+(API keys, tokens, credentialed URLs, personal emails, account numbers). It is
+enforced as a hard PreToolUse gate (`.claude/settings.json`, `scripts/secret-gate.py`)
+on **`git push`** and **prod deploy** — either is blocked if the scan fails.
+
+- **Never put a secret or personal value in a tracked file.** Reference it via an
+  env var instead: `$AGENTIC_ACCOUNT_ID`, `$PERSONAL_ACCOUNT_ID`, `process.env.*`,
+  CI `${{ secrets.* }}`. The scanner reads the real account IDs from
+  `$PERSONAL_ACCOUNT_ID` / `$AGENTIC_ACCOUNT_ID` (loaded from `.env.local`) so it
+  catches them even where the generic patterns wouldn't.
+- If the scan flags a false positive, refine the patterns in
+  `scripts/check-secrets.sh` — don't bypass the gate.
 
 ---
 
@@ -178,7 +195,7 @@ curl -s -X POST https://api.resend.com/emails \
 ## Pre-Authorized Actions
 
 - Read, edit, write any file in this codebase
-- Run evals, deploy to Vercel
+- Run evals, deploy to Vercel, run `bun run check:secrets`
 - Call any `$APP_URL/api/*` endpoint with `Bearer $CRON_SECRET`
 - Use `mcp__robinhood__get_portfolio`, `mcp__robinhood__get_equity_positions`, `mcp__robinhood__get_equity_orders` (read-only)
 - Send email via Resend

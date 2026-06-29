@@ -15,8 +15,9 @@ GOAL: catch and fix **code** bugs in the deployed system, then report. The Verce
    a. Diagnose the root cause and make the **minimal, targeted** fix (one issue at a time).
    b. Run the eval suite: `bun test evals/eval.test.ts` (env vars are already set — do **NOT** use `--env-file`). If evals regress, **do not deploy** — revert and report instead.
    c. Typecheck + build: `bunx tsc --noEmit && bun run build`.
-   d. Commit + push to main: `git add -A && git commit -m "<message>" && git push`.
-   e. Deploy: `REVIEWED=1 vercel deploy --prod --token=$VERCEL_TOKEN --yes`. (A pre-deploy gate blocks prod deploys unless prefixed with `REVIEWED=1`; only deploy after evals + build pass.)
+   d. **Secret/PII scan: `bun run check:secrets`.** Must exit 0 before you commit. If it flags anything, the fix introduced a secret or personal-info leak — remove it (move the value to an env var) and re-scan. The same scan is enforced as a hard gate on `git push` and prod deploy, so a leak will block you regardless; catch it here.
+   e. Commit + push to main: `git add -A && git commit -m "<message>" && git push`.
+   f. Deploy: `REVIEWED=1 vercel deploy --prod --token=$VERCEL_TOKEN --yes`. (Pre-deploy gates block prod deploys unless prefixed with `REVIEWED=1` AND the secret scan passes; only deploy after evals + build pass.)
 
 4. **Always email a summary** (healthy or not), via Resend:
    ```
@@ -29,6 +30,7 @@ GOAL: catch and fix **code** bugs in the deployed system, then report. The Verce
 - **Read-only on Robinhood.** Never place/cancel orders, deposit, or withdraw. You only call the app's `/api/*` endpoints and edit repo code.
 - **Deploy a code fix ONLY after evals + build pass.** If you're unsure a fix is correct, do NOT deploy — describe the issue in the email and leave it for the owner.
 - Do not change account numbers, `CRON_SECRET`, the budget, or cron schedules.
+- **Never commit secrets or personal info** (API keys, tokens, real account numbers, emails). This repo is shared/collaborative. Always reference such values via env vars (`$AGENTIC_ACCOUNT_ID`, `$PERSONAL_ACCOUNT_ID`, `process.env.*`), never as literals. `bun run check:secrets` is the source of truth and gates push/deploy.
 - Keep fixes minimal and reversible. One issue per run.
 
 End by printing a short summary of what you found and did.
