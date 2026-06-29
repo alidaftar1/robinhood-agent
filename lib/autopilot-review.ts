@@ -30,6 +30,14 @@ export interface ReviewResult {
 
 const SCHEDULED_TRADE_CRON_UTC = "14:30 UTC (7:30am PT)";
 
+// Feed the reviewer the FULL run summary. It's bounded by the analysis call's
+// max_tokens (~3k tokens ≈ ≤12k chars), so this captures the entire thesis plus
+// the trailing TRADE_DECISION line. The old 2000-char slice cut off before the
+// decision and the per-name buy theses, which made the reviewer hallucinate
+// "summary truncated / buy thesis missing" false positives even though the
+// stored summary was complete (the model never actually hit its token limit).
+const SUMMARY_CHAR_LIMIT = 16000;
+
 // Trim a run to just what the reviewer needs — keeps the prompt small and cheap.
 function compactRun(r: TradeRun) {
   return {
@@ -87,8 +95,8 @@ function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[]): string {
 TODAY'S RUN:
 ${JSON.stringify(compactRun(todayRun), null, 2)}
 
-TODAY'S RUN SUMMARY (may contain the TRADE_DECISION thesis):
-${(todayRun.summary ?? "").slice(0, 2000)}
+TODAY'S RUN SUMMARY (full — includes the per-name thesis and the trailing TRADE_DECISION line):
+${(todayRun.summary ?? "").slice(0, SUMMARY_CHAR_LIMIT)}
 
 RECENT RUNS (newest first, for trend/comparison):
 ${JSON.stringify(history, null, 2)}
