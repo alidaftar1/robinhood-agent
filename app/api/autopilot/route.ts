@@ -40,6 +40,35 @@ async function sendEmail(subject: string, html: string): Promise<boolean> {
   return res.ok;
 }
 
+// Fire the GitHub Actions cloud autopilot NOW instead of waiting for its own
+// schedule. GitHub delays cron-triggered runs by up to ~1.5h; triggering it here
+// — right after today's report email goes out — makes the code-fixer run as soon
+// as the data is ready (~8:01am PT). The 8:45am workflow cron stays as a fallback.
+// Non-fatal: a dispatch failure never breaks the autopilot response.
+async function dispatchCloudAgent(): Promise<{ ok: boolean; detail: string }> {
+  const token = process.env.GH_DISPATCH_TOKEN;
+  if (!token) return { ok: false, detail: "no GH_DISPATCH_TOKEN" };
+  try {
+    const res = await fetch(
+      "https://api.github.com/repos/alidaftar1/robinhood-agent/actions/workflows/autopilot.yml/dispatches",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "robinhood-agent-autopilot",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ref: "main" }),
+      },
+    );
+    return { ok: res.status === 204, detail: `HTTP ${res.status}` }; // 204 = dispatched
+  } catch (e) {
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -373,6 +402,17 @@ export async function GET(request: Request) {
     if (emailSent && !force) await markAutopilotSent(today);
   }
 
+  // Trigger the cloud code-fixer immediately, but ONLY on the scheduled cron run
+  // (vercel.json sets ?cloudDispatch=1) and ONLY when a fresh email just went out.
+  // The once-per-day email dedup makes this fire at most once/day, and the cloud
+  // agent's own bare-path reads of this endpoint never re-trigger it (no loop).
+  const cloudDispatch = new URL(request.url).searchParams.get("cloudDispatch") === "1";
+  let cloudDispatched: { ok: boolean; detail: string } | null = null;
+  if (cloudDispatch && emailSent) {
+    cloudDispatched = await dispatchCloudAgent();
+    console.log("CLOUD_DISPATCH", cloudDispatched);
+  }
+
   return Response.json({
     date: today,
     status: statusLabel,
@@ -387,5 +427,6 @@ export async function GET(request: Request) {
     reviewConcerns,
     verifyStatus: verifyResult?.status ?? "skipped",
     emailSent,
+    cloudDispatched,
   });
 }
