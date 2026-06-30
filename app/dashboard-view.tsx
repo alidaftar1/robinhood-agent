@@ -1,5 +1,5 @@
 import React from "react";
-import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate, computeDailyReturn, type TradeRun } from "@/lib/run-store";
 import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
@@ -31,13 +31,31 @@ interface ReturnPoint {
   agentic: number | null;
   spy: number | null;
   influencer: number | null;
+  main: number | null;
+}
+
+// Main-book (S&P sleeve) daily return: the account with the influencer positions
+// stripped out, computed transfer-aware (so rebalancing churn isn't counted as gain) —
+// mirrors how the influencer slice is measured. Derived on the fly from the stored
+// position snapshots, so it needs no new stored field.
+function mainDailyReturnOf(run: TradeRun, prev: TradeRun): number | null {
+  const infNow = new Set((run.influencerPositions ?? []).map(p => p.symbol));
+  const infPrev = new Set((prev.influencerPositions ?? []).map(p => p.symbol));
+  const mainNow = (run.positions ?? []).filter(p => !infNow.has(p.symbol));
+  const mainPrev = (prev.positions ?? []).filter(p => !infPrev.has(p.symbol));
+  if (mainNow.length === 0 || mainPrev.length === 0) return null;
+  const val = (ps: typeof mainNow) => ps.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
+  const mainTrades = (run.trades ?? []).filter(t => t.strategy !== "influencer");
+  return computeDailyReturn(val(mainNow), val(mainPrev), mainNow, mainPrev, mainTrades)?.dailyReturn ?? null;
 }
 
 function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
   const chronological = [...runs].reverse();
   let agentIdx = 100;
+  let mainIdx = 100;
   let influencerIdx = 100;
   let hasReturn = false;
+  let hasMain = false;
   let hasInfluencer = false;
   const points: ReturnPoint[] = [];
 
@@ -50,7 +68,8 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
       ? (chronological[0].spyPrice ?? null)
       : null;
 
-  for (const run of chronological) {
+  for (let i = 0; i < chronological.length; i++) {
+    const run = chronological[i];
     if (run.agenticDailyReturn != null) {
       agentIdx *= (1 + run.agenticDailyReturn);
       hasReturn = true;
@@ -58,6 +77,11 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
     if (run.influencerDailyReturn != null) {
       influencerIdx *= (1 + run.influencerDailyReturn);
       hasInfluencer = true;
+    }
+    // Main book = account minus the influencer sleeve, aligned to the agentic series start.
+    if (hasReturn && i > 0) {
+      const mr = mainDailyReturnOf(run, chronological[i - 1]);
+      if (mr != null) { mainIdx *= (1 + mr); hasMain = true; }
     }
     const spy = run.spyPrice && spyBase != null
       ? (run.spyPrice / spyBase) * 100
@@ -67,6 +91,7 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
       agentic: hasReturn ? agentIdx : null,
       spy,
       influencer: hasInfluencer ? influencerIdx : null,
+      main: hasMain ? mainIdx : null,
     });
   }
   return points;
@@ -285,6 +310,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const returnSeries = buildReturnSeries(runs);
   const latestSeries = returnSeries[returnSeries.length - 1];
   const agenticCumReturn = latestSeries?.agentic != null ? latestSeries.agentic - 100 : null;
+  const mainCumReturn = latestSeries?.main != null ? latestSeries.main - 100 : null;
 
   const agentReturn = agenticCumReturn;
   const alpha = agentReturn != null && spyReturn != null ? agentReturn - spyReturn : null;
@@ -344,6 +370,13 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               {agentReturn != null ? fmtPct(agentReturn) : "—"}
             </span>
             <span style={s.perfSince}>the AI, since {perfBaseline?.date ?? inception!.date}</span>
+          </div>
+          <div style={s.perfStat}>
+            <Tip style={s.perfLabel} label="Main Book Return" def="The core S&P 500 strategy on its own — the AI's return with the higher-risk YouTube-influencer sleeve stripped out." />
+            <span style={{ ...s.perfValue, color: returnColor(mainCumReturn) }}>
+              {mainCumReturn != null ? fmtPct(mainCumReturn) : "—"}
+            </span>
+            <span style={s.perfSince}>S&P sleeve only · no influencer</span>
           </div>
           <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="S&P 500 Return" def="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'" />
