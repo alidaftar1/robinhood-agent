@@ -47,6 +47,10 @@ export interface TradeRun {
   personalDailyReturn?: number | null;
   agenticImpliedTransfer?: number | null;
   personalImpliedTransfer?: number | null;
+  /** Set when a return was deliberately cleared as a known artifact (e.g. a thin
+   *  intraday run / deposit-window day). Blocks auto-recompute so patchDate /
+   *  patchTrades can't resurrect a bogus number. (2026-06-30) */
+  returnLocked?: boolean;
   // Influencer sub-portfolio (added 2026-06-18)
   influencerPositions?: PositionSnapshot[];
   influencerDailyReturn?: number | null;

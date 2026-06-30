@@ -57,7 +57,9 @@ export async function GET(request: Request) {
       const runs = await getRuns(10);
       const latest = runs[0];
       const prevDay = runs.find(r => r.date < (latest?.date ?? ""));
-      if (latest && prevDay?.portfolioAfter) {
+      if (latest?.returnLocked) {
+        results.patchTrades = `skipped — return for ${latest.date} is locked (known artifact)`;
+      } else if (latest && prevDay?.portfolioAfter) {
         const todaySymbols = new Set(latest.positions.map(p => p.symbol));
         // Strip any previously inferred sells so we can re-derive them with the corrected formula
         const realTrades = (latest.trades ?? []).filter(t => t.state !== "inferred");
@@ -103,7 +105,9 @@ export async function GET(request: Request) {
       const runs = await getRuns(30);
       const run = runs.find(r => r.date === date);
       const prevRun = runs.find(r => r.date < date);
-      if (!run || !run.portfolioAfter || !prevRun?.portfolioAfter) {
+      if (run?.returnLocked) {
+        results.patchDate = `${date}: skipped — return is locked (known artifact, won't recompute)`;
+      } else if (!run || !run.portfolioAfter || !prevRun?.portfolioAfter) {
         results.patchDate = `run or prev not found for ${date}`;
       } else {
         const result = computeDailyReturn(
@@ -143,8 +147,8 @@ export async function GET(request: Request) {
   if (url.searchParams.get("clearReturnForDate")) {
     const date = url.searchParams.get("clearReturnForDate")!;
     try {
-      const patched = await updateRunByDate(date, r => ({ ...r, agenticDailyReturn: null, agenticImpliedTransfer: null }));
-      results.clearReturnForDate = patched ? `cleared return for ${date}` : `no run found for ${date}`;
+      const patched = await updateRunByDate(date, r => ({ ...r, agenticDailyReturn: null, agenticImpliedTransfer: null, returnLocked: true }));
+      results.clearReturnForDate = patched ? `cleared + locked return for ${date}` : `no run found for ${date}`;
     } catch (e) {
       results.clearReturnForDate = `error: ${e}`;
     }
