@@ -31,14 +31,17 @@ interface ReturnPoint {
   agentic: number | null;
   spy: number | null;
   influencer: number | null;
+  main: number | null;
 }
 
 function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
   const chronological = [...runs].reverse();
   let agentIdx = 100;
   let influencerIdx = 100;
+  let mainIdx = 100;
   let hasReturn = false;
   let hasInfluencer = false;
+  let hasMain = false;
   const points: ReturnPoint[] = [];
 
   // Anchor SPY to the run just before the first agent return so both series
@@ -59,6 +62,11 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
       influencerIdx *= (1 + run.influencerDailyReturn);
       hasInfluencer = true;
     }
+    // Main book (core S&P sleeve) — stored at trade time; null on older runs.
+    if (run.mainDailyReturn != null) {
+      mainIdx *= (1 + run.mainDailyReturn);
+      hasMain = true;
+    }
     const spy = run.spyPrice && spyBase != null
       ? (run.spyPrice / spyBase) * 100
       : null;
@@ -67,6 +75,7 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
       agentic: hasReturn ? agentIdx : null,
       spy,
       influencer: hasInfluencer ? influencerIdx : null,
+      main: hasMain ? mainIdx : null,
     });
   }
   return points;
@@ -285,6 +294,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const returnSeries = buildReturnSeries(runs);
   const latestSeries = returnSeries[returnSeries.length - 1];
   const agenticCumReturn = latestSeries?.agentic != null ? latestSeries.agentic - 100 : null;
+  const mainCumReturn = latestSeries?.main != null ? latestSeries.main - 100 : null;
 
   const agentReturn = agenticCumReturn;
   const alpha = agentReturn != null && spyReturn != null ? agentReturn - spyReturn : null;
@@ -345,6 +355,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </span>
             <span style={s.perfSince}>the AI, since {perfBaseline?.date ?? inception!.date}</span>
           </div>
+          {mainCumReturn != null && (
+            <div style={s.perfStat}>
+              <Tip style={s.perfLabel} label="Main Book Return" def="The core S&P 500 strategy on its own — the AI's return with the higher-risk YouTube-influencer sleeve stripped out." />
+              <span style={{ ...s.perfValue, color: returnColor(mainCumReturn) }}>
+                {fmtPct(mainCumReturn)}
+              </span>
+              <span style={s.perfSince}>S&P sleeve only · no influencer</span>
+            </div>
+          )}
           <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="S&P 500 Return" def="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'" />
             <span style={{ ...s.perfValue, color: returnColor(spyReturn) }}>

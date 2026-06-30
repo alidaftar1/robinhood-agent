@@ -51,6 +51,10 @@ export interface TradeRun {
    *  intraday run / deposit-window day). Blocks auto-recompute so patchDate /
    *  patchTrades can't resurrect a bogus number. (2026-06-30) */
   returnLocked?: boolean;
+  /** Core S&P-sleeve daily return (account minus the influencer slice), stored at
+   *  trade time. Lets the dashboard show the core strategy isolated from the influencer
+   *  drag. From 2026-06-30; null on older runs (no reliable backfill). */
+  mainDailyReturn?: number | null;
   // Influencer sub-portfolio (added 2026-06-18)
   influencerPositions?: PositionSnapshot[];
   influencerDailyReturn?: number | null;

@@ -630,6 +630,22 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
         )
       : null;
 
+    // Main book = the core S&P sleeve (positions NOT in the influencer set). Stored here
+    // in the clean trade-time context so the dashboard can show the core strategy isolated
+    // from the influencer drag — reconstructing it later from repaired snapshots is unreliable.
+    const mainPositions = positions.filter(p => !influencerSymbols.has(p.symbol));
+    const prevDayInfluencerSyms = new Set((previousDayRun?.influencerPositions ?? []).map(p => p.symbol));
+    const prevMainPositions = (previousDayRun?.positions ?? []).filter(p => !prevDayInfluencerSyms.has(p.symbol));
+    const mainResult = mainPositions.length > 0 && prevMainPositions.length > 0
+      ? computeDailyReturn(
+          mainPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0),
+          prevMainPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0),
+          mainPositions,
+          prevMainPositions,
+          trades.filter(t => !influencerSymbols.has(t.symbol))
+        )
+      : null;
+
     // Patch the run already saved at index 0 with return metrics.
     await updateLatestRun({
       ...baseRun,
@@ -641,6 +657,7 @@ Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. 
       agenticDailyReturn: agenticResult?.dailyReturn ?? null,
       agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null,
       influencerDailyReturn: influencerResult?.dailyReturn ?? null,
+      mainDailyReturn: mainResult?.dailyReturn ?? null,
     });
 
     console.log("TRADE_RUN_COMPLETE", { date: today, summary: textContent.slice(0, 300) });
