@@ -167,16 +167,27 @@ function annualizedVol(closes: number[]): number {
   return Math.sqrt(variance) * Math.sqrt(252) * 100;
 }
 
-// Risk-adjusted momentum score: annualized N-day return ÷ a stable annualized
-// volatility. Annualizing the return (× 252/tradingDays) puts the 5d/14d/30d scores
-// on the SAME scale, so the blended rank (0.6×mom5 + 0.4×mom14) weights them as
-// intended — previously the un-annualized 14-day return was ~2–3× larger and silently
-// dominated the "primary" 5-day signal. Using one stable full-window vol as the
-// denominator (not a noisy ~5-point estimate) keeps the risk adjustment meaningful on
-// short windows. Shared with the eval fixtures so tests track production.
+// Risk-adjusted momentum score: annualized N-day return ÷ volatility^VOL_PENALTY_EXP.
+// Annualizing the return (× 252/tradingDays) puts the 5d/14d/30d scores on the SAME
+// scale, so the blended rank (0.6×mom5 + 0.4×mom14) weights them as intended — previously
+// the un-annualized 14-day return was ~2–3× larger and silently dominated the "primary"
+// 5-day signal. Using one stable full-window vol as the denominator (not a noisy ~5-point
+// estimate) keeps the risk adjustment meaningful on short windows. Shared with the eval
+// fixtures so tests track production.
+//
+// VOL_PENALTY_EXP controls how hard volatility is penalized in the rank:
+//   1.0 = full Sharpe-like adjustment (favors steady low-vol/low-beta names — the book
+//         ran beta<1 and went flat on the market's up days)
+//   0.5 = HALF penalty (current) — a deliberate tilt toward higher-beta names so the book
+//         captures more of the market's green days, while keeping some risk adjustment
+//   0.0 = pure raw-momentum (chases the biggest movers; highest beta, riskiest)
+// Tune toward 1.0 to calm it down, toward 0.0 to get more aggressive. Watch the dashboard
+// beta tile — aim for ~0.9–1.0, not >1.2. (2026-06-30: lowered 1.0→0.5 per owner.)
+export const VOL_PENALTY_EXP = 0.5;
+
 export function momentumScore(changePct: number, tradingDays: number, annualizedVolPct: number): number {
   if (annualizedVolPct <= 0 || tradingDays <= 0) return 0;
-  return (changePct * (252 / tradingDays)) / annualizedVolPct;
+  return (changePct * (252 / tradingDays)) / Math.pow(annualizedVolPct, VOL_PENALTY_EXP);
 }
 
 async function fetchQuote(symbol: string): Promise<StockData | null> {
