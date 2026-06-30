@@ -363,7 +363,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <div style={s.perfStat}>
               <Tip style={s.perfLabel} label="Account Value" def="Total value of the AI's trading account: cash plus the current value of everything it holds." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
-                ${parseFloat(current.portfolioAfter.totalValue).toFixed(2)}
+                ${parseFloat(current.portfolioAfter.totalValue).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
               <span style={s.perfSince}>cash + holdings · {runs.length} days tracked</span>
             </div>
