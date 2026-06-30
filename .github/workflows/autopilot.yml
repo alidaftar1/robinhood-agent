@@ -3,10 +3,12 @@ name: autopilot
 # Cloud replacement for the local 8:30am macOS autopilot. Runs the autonomous
 # code-fixer off the owner's Mac, with full power via repo secrets.
 on:
-  schedule:
-    # 8:45am PT (PDT, UTC-7) — after the Vercel 8:00am /api/autopilot cron.
-    # GitHub cron is UTC with no DST; in PST (winter) this fires at 7:45am PT.
-    - cron: "45 15 * * 1-5"
+  # Triggered by the Vercel 8am /api/autopilot cron (workflow_dispatch via the GitHub
+  # API) right after the morning report — so the code-fixer runs ~8:05am PT with no
+  # GitHub scheduler lag. The old `schedule:` cron was removed 2026-06-30: it fired a
+  # redundant 2nd run ~10:30am PT (GitHub delays scheduled jobs ~1.5h). If a dispatch
+  # ever fails, the morning report email still goes out (separate path); worst case is
+  # one missed code-fix pass. Re-add a `schedule:` block here to restore a fallback.
   workflow_dispatch: {}
 
 permissions:
