@@ -4,6 +4,8 @@ import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
+import { computeStockBeta } from "@/lib/market-data";
+import { computeBookBeta, formatBookBeta } from "@/lib/risk-metrics";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -255,4 +257,93 @@ describe("llm-eval: insider signal awareness", () => {
 
     expect(result.score).toBeGreaterThanOrEqual(0.5);
   }, 120_000);
+});
+
+// ─── Deterministic: benchmark-awareness (per-stock β + book β + prompt wiring) ──
+// No LLM — pure math + prompt-content assertions, so these never flake.
+
+describe("benchmark-awareness: beta math", () => {
+  it("computeStockBeta ≈ 2 when the stock moves 2× SPY each day", () => {
+    const spy = [100, 102, 101, 104, 103, 106, 105, 108];
+    const spyR = spy.slice(1).map((c, i) => c / spy[i] - 1);
+    let px = 100;
+    const stock = [px];
+    for (const r of spyR) { px = px * (1 + 2 * r); stock.push(px); }
+    const beta = computeStockBeta(stock, spy);
+    expect(beta).toBeGreaterThan(1.9);
+    expect(beta).toBeLessThan(2.1);
+  });
+
+  it("computeStockBeta returns null (unknown) with insufficient history", () => {
+    expect(computeStockBeta([100, 101], [100, 101])).toBeNull();
+  });
+
+  it("computeStockBeta returns null when the two series lengths disagree (misaligned bars)", () => {
+    const spy = [100, 102, 101, 104, 103, 106, 105, 108];
+    const stock = [50, 51, 50.5, 52, 51.5, 53, 52.5]; // one fewer close → can't trust positional pairing
+    expect(computeStockBeta(stock, spy)).toBeNull();
+  });
+
+  it("computeStockBeta preserves a real negative (inverse) beta", () => {
+    const spy = [100, 102, 101, 104, 103, 106, 105, 108];
+    const spyR = spy.slice(1).map((c, i) => c / spy[i] - 1);
+    let px = 100;
+    const stock = [px];
+    for (const r of spyR) { px = px * (1 - r); stock.push(px); } // moves opposite SPY
+    const beta = computeStockBeta(stock, spy);
+    expect(beta).not.toBeNull();
+    expect(beta!).toBeLessThan(0); // inverse correlation → negative β, must NOT be nulled
+  });
+
+  it("computeBookBeta counts a real negative β as known (not defaulted to 1.0)", () => {
+    const book = computeBookBeta(
+      [{ symbol: "A", value: 100 }, { symbol: "D", value: 100 }],
+      (s) => ({ A: 1.4, D: -0.4 } as Record<string, number>)[s],
+    );
+    expect(book!.beta).toBeCloseTo(0.5, 3);   // (1.4·100 + −0.4·100) / 200, NOT (1.4+1.0)/2
+    expect(book!.coveragePct).toBe(100);      // negative β is covered, not "unknown"
+  });
+
+  it("computeBookBeta is value-weighted and covers 100% when all β known", () => {
+    const book = computeBookBeta(
+      [{ symbol: "A", value: 100 }, { symbol: "B", value: 300 }],
+      (s) => ({ A: 1.0, B: 1.5 } as Record<string, number>)[s],
+    );
+    expect(book).not.toBeNull();
+    expect(book!.beta).toBeCloseTo(1.375, 3); // (1.0·100 + 1.5·300) / 400
+    expect(book!.coveragePct).toBe(100);
+  });
+
+  it("computeBookBeta defaults uncovered names to market β (1.0) and reports partial coverage", () => {
+    const book = computeBookBeta(
+      [{ symbol: "A", value: 100 }, { symbol: "C", value: 100 }],
+      (s) => ({ A: 2.0 } as Record<string, number>)[s], // C unknown → 1.0
+    );
+    expect(book!.beta).toBeCloseTo(1.5, 3); // (2.0·100 + 1.0·100) / 200
+    expect(book!.coveragePct).toBe(50);
+  });
+
+  it("formatBookBeta renders the CURRENT BOOK β line", () => {
+    expect(formatBookBeta({ beta: 1.375, coveragePct: 100 })).toContain("CURRENT BOOK β vs SPY: 1.38");
+    expect(formatBookBeta(null)).toBe("");
+  });
+});
+
+describe("benchmark-awareness: prompt wiring", () => {
+  it("market data table exposes a β column", () => {
+    const table = formatFixtureMarketData("default", {}, {}, {}, {});
+    expect(table).toContain("β");
+  });
+
+  it("buildAnalysisPrompt injects the marginal-impact guidance + β reading key", () => {
+    const prompt = buildAnalysisPrompt(
+      TODAY, "TABLE",
+      { buyingPower: "$1000.00", totalValue: "$1000.00", positions: [] },
+      undefined,
+      "\nSECTOR EXPOSURE (current holdings, by value):\n  • Financials: 50%\n",
+    );
+    expect(prompt).toContain("MARGINAL BENCHMARK IMPACT");
+    expect(prompt).toContain("β = beta vs SPY");
+    expect(prompt).toContain("marginal impact vs SPY"); // thesis requirement (gated on sector section)
+  });
 });

@@ -109,6 +109,40 @@ export function computeBeatRate(runs: TradeRun[]): { rate: number; n: number } |
   return { rate: wins / n, n };
 }
 
+// Weighted-average β of the CURRENT book vs SPY, using each holding's β from today's
+// market data (betaOf). Names not covered — rare, a holding that dropped out of the
+// fetched universe — default to 1.0 (market-like) so the estimate stays honest instead
+// of silently dropping weight. Returns coverage so a low-confidence estimate can be
+// flagged. This is the "how much beta am I already carrying" number the buy decision
+// weighs a new position against.
+export function computeBookBeta(
+  positions: Array<{ symbol: string; value: number }>,
+  betaOf: (symbol: string) => number | null | undefined
+): { beta: number; coveragePct: number } | null {
+  let wSum = 0, bSum = 0, covered = 0;
+  for (const p of positions) {
+    if (!isFinite(p.value) || p.value <= 0) continue;
+    const raw = betaOf(p.symbol);
+    // A real β of 0 (uncorrelated) or negative (inverse) is KNOWN and must count as-is;
+    // only null/undefined/non-finite (unmeasured) falls back to 1.0 (market-like).
+    const known = raw != null && isFinite(raw);
+    const b = known ? raw : 1.0;
+    if (known) covered += p.value;
+    wSum += p.value;
+    bSum += b * p.value;
+  }
+  if (wSum <= 0) return null;
+  return { beta: bSum / wSum, coveragePct: (covered / wSum) * 100 };
+}
+
+// One-line book-β summary prepended to the risk section of the buy prompt. Empty when
+// there are no priced holdings (nothing to compare a new buy against yet).
+export function formatBookBeta(book: { beta: number; coveragePct: number } | null): string {
+  if (!book) return "";
+  const conf = book.coveragePct < 70 ? ` (partial — β known for ${book.coveragePct.toFixed(0)}% of the book)` : "";
+  return `\nCURRENT BOOK β vs SPY: ${book.beta.toFixed(2)} — ${betaDescription(book.beta)}${conf}\n`;
+}
+
 export function betaDescription(beta: number): string {
   if (beta > 1.1) return "swings more than the market";
   if (beta < 0.9) return "swings less than the market";

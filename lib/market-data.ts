@@ -120,6 +120,7 @@ export interface StockData {
   sharpe5d: number;        // momentumScore(change5d, 5, vol) — annualized 5d return ÷ full-window vol; PRIMARY sort signal (labeled "mom5")
   sharpe14d: number;       // momentumScore(change14d, 10, vol) — annualized 14d(≈10td) return ÷ full-window vol; confirmation ("mom14")
   sharpe30d: number;       // momentumScore(change30d, 21, vol) — annualized 30d(≈21td) return ÷ full-window vol
+  beta: number | null;     // β vs SPY over the ~1mo daily window: cov(stock,spy)/var(spy). >1 swings more than the market, <1 less, negative = inverse. null = insufficient/untrustworthy data.
   earningsDate: string | null;
   relStrength1d: number;   // change1d minus SPY's change1d
   relStrength5d: number;   // change5d minus SPY's change5d (near-term alpha)
@@ -157,14 +158,42 @@ export async function getMarketData(): Promise<MarketData> {
 
 function annualizedVol(closes: number[]): number {
   if (closes.length < 3) return 0;
-  const returns: number[] = [];
-  for (let i = 1; i < closes.length; i++) {
-    if (closes[i - 1] > 0) returns.push((closes[i] - closes[i - 1]) / closes[i - 1]);
-  }
+  const returns = dailyReturns(closes);
   if (returns.length < 2) return 0;
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
   const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length;
   return Math.sqrt(variance) * Math.sqrt(252) * 100;
+}
+
+// Simple daily returns from a close series (r_t = close_t / close_{t-1} − 1).
+function dailyReturns(closes: number[]): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i - 1] > 0) out.push(closes[i] / closes[i - 1] - 1);
+  }
+  return out;
+}
+
+// β vs SPY = cov(stock, spy) / var(spy) over daily returns aligned by trading day.
+// Returns null when β can't be trusted — too little history, SPY has no variance, OR
+// the two return series differ in length (a dropped/halted bar in one but not the other
+// would make positional pairing mix non-contemporaneous days and corrupt the covariance).
+// null means "unknown", distinct from a real reading of 0 or a negative (inverse) β, both
+// of which are legitimate and must flow through to the caller.
+export function computeStockBeta(stockCloses: number[], spyCloses: number[]): number | null {
+  const s = dailyReturns(stockCloses);
+  const m = dailyReturns(spyCloses);
+  if (s.length !== m.length || s.length < 5) return null;
+  const n = s.length;
+  const meanS = s.reduce((a, b) => a + b, 0) / n;
+  const meanM = m.reduce((a, b) => a + b, 0) / n;
+  let cov = 0, varM = 0;
+  for (let i = 0; i < n; i++) {
+    cov += (s[i] - meanS) * (m[i] - meanM);
+    varM += (m[i] - meanM) ** 2;
+  }
+  if (varM === 0) return null;
+  return cov / varM;
 }
 
 // Risk-adjusted momentum score: annualized N-day return ÷ volatility^VOL_PENALTY_EXP.
@@ -190,7 +219,7 @@ export function momentumScore(changePct: number, tradingDays: number, annualized
   return (changePct * (252 / tradingDays)) / Math.pow(annualizedVolPct, VOL_PENALTY_EXP);
 }
 
-async function fetchQuote(symbol: string): Promise<StockData | null> {
+async function fetchQuote(symbol: string): Promise<(StockData & { _closes: number[] }) | null> {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
     const res = await fetch(url, {
@@ -262,6 +291,8 @@ async function fetchQuote(symbol: string): Promise<StockData | null> {
       sharpe5d,
       sharpe14d,
       sharpe30d: momentumScore(change30d, 21, vol),
+      beta: null,         // set below in getPriceData once SPY closes are known
+      _closes: validCloses, // retained only to compute beta vs SPY; stripped before return
       earningsDate,
       relStrength1d: 0,   // set below after SPY fetch
       relStrength5d: 0,   // set below after SPY fetch
@@ -294,13 +325,15 @@ async function getPriceData(): Promise<{
   const spyChange5d = spy?.change5d ?? 0;
   const spyChange14d = spy?.change14d ?? 0;
   const spyChange30d = spy?.change30d ?? 0;
+  const spyCloses = spy?._closes ?? [];
 
   const stocks = stockResults
-    .filter((r): r is PromiseFulfilledResult<StockData> => r.status === "fulfilled" && r.value !== null)
+    .filter((r): r is PromiseFulfilledResult<StockData & { _closes: number[] }> => r.status === "fulfilled" && r.value !== null)
     .map((r) => {
-      const s = r.value!;
+      const { _closes, ...s } = r.value!;
       return {
         ...s,
+        beta: computeStockBeta(_closes, spyCloses),
         relStrength1d: s.change1d - spyChange1d,
         relStrength5d: s.change5d - spyChange5d,
         relStrength14d: s.change14d - spyChange14d,
@@ -479,10 +512,11 @@ export function formatMarketDataForPrompt(data: MarketData): string {
       const alpha14 = (s.relStrength14d >= 0 ? "+" : "") + s.relStrength14d.toFixed(1) + "%";
       const d30 = (s.change30d >= 0 ? "+" : "") + s.change30d.toFixed(1) + "%";
       const fromHigh = s.distFrom52wHigh.toFixed(1) + "%";
+      const beta = s.beta != null ? s.beta.toFixed(2) : "  —"; // — = unknown; a real 0/negative β still renders (it's a diversifier signal)
       const earnFlag = s.earningsDate ? ` ⚠EARN ${s.earningsDate.slice(5)}` : "";
       const insFlag = hasInsider(s) ? " ★INS" : "";
       const sect = STOCK_SECTOR[s.symbol] ?? "?";
-      return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 1d: ${d1.padStart(7)} | 5d: ${d5.padStart(7)} | α5d: ${alpha5.padStart(7)} | mom5: ${sharpe5.padStart(5)} | 14d:${d14.padStart(8)} | α14d: ${alpha14.padStart(7)} | 30d: ${d30.padStart(8)} | vs52wHigh: ${fromHigh} | ${sect}${earnFlag}${insFlag}${analystFlag(s)}`;
+      return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 1d: ${d1.padStart(7)} | 5d: ${d5.padStart(7)} | α5d: ${alpha5.padStart(7)} | mom5: ${sharpe5.padStart(5)} | 14d:${d14.padStart(8)} | α14d: ${alpha14.padStart(7)} | 30d: ${d30.padStart(8)} | vs52wHigh: ${fromHigh} | β${beta.padStart(5)} | ${sect}${earnFlag}${insFlag}${analystFlag(s)}`;
     })
     .join("\n");
 

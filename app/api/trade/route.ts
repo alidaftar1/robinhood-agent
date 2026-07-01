@@ -4,12 +4,29 @@ import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioC
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchMomentum } from "@/lib/market-data";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, type MomentumSignal } from "@/lib/influencer-signals";
-import { computeSectorSlices, formatSectorExposure } from "@/lib/risk-metrics";
+import { computeSectorSlices, formatSectorExposure, computeBookBeta, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
+
+// Risk section injected into the buy prompt: current book β vs SPY + sector exposure.
+// Gives the agent the "how much beta / sector risk am I already carrying" baseline so
+// it can weigh each new buy's MARGINAL impact (see buildAnalysisPrompt) instead of
+// picking names in isolation. Beta per holding is looked up from today's market data.
+function buildRiskSection(
+  positions: Array<{ symbol: string; quantity: string; avgCost: string }>,
+  priceMap: Map<string, number>,
+  stocks: Array<{ symbol: string; beta: number | null }>,
+): string {
+  const betaMap = new Map<string, number | null>(stocks.map(s => [s.symbol, s.beta]));
+  const valued = positions.map(p => ({
+    symbol: p.symbol,
+    value: parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost)),
+  }));
+  return formatBookBeta(computeBookBeta(valued, (s) => betaMap.get(s))) + formatSectorExposure(computeSectorSlices(valued));
+}
 
 const ACCOUNT = process.env.AGENTIC_ACCOUNT_ID ?? "";
 const sp500Set = new Set(SP500_UNIVERSE);
@@ -129,9 +146,7 @@ export async function GET(request: Request) {
         totalValue: `$${previousRun?.portfolioAfter?.totalValue ?? "0"} (estimated)`,
         positions: (previousRun?.positions ?? []).map(p => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost })),
       };
-      const sectorSection = formatSectorExposure(computeSectorSlices(
-        (previousRun?.positions ?? []).map(p => ({ symbol: p.symbol, value: parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost)) }))
-      ));
+      const sectorSection = buildRiskSection(previousRun?.positions ?? [], priceMap, marketData.stocks);
 
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
@@ -239,10 +254,9 @@ export async function GET(request: Request) {
       };
     }
 
-    // Current sector exposure → fed into the prompt so the agent can respect the 40% soft cap
-    const sectorSection = formatSectorExposure(computeSectorSlices(
-      (portfolioCtx?.positions ?? []).map(p => ({ symbol: p.symbol, value: parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost)) }))
-    ));
+    // Current book β + sector exposure → fed into the prompt so the agent can weigh each
+    // buy's marginal risk impact and respect the 40% soft cap.
+    const sectorSection = buildRiskSection(portfolioCtx?.positions ?? [], priceMap, marketData.stocks);
 
     const runTimestamp = new Date().toISOString();
     let textContent = "";
