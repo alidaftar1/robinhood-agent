@@ -427,101 +427,90 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       }
     }
 
-    // ── SESSION 3: Execute buys (Haiku, MCP) ─────────────────────────────────
-    let buysAttempted = false;
-    let buysSessionSucceeded = false;
-    if (decision.buys.length > 0) {
-      buysAttempted = true;
-      const buyLines = decision.buys.map(b => `- buy ${b.symbol} ${b.quantity} shares`).join("\n");
-      const buyController = new AbortController();
-      const buyKillTimer = setTimeout(() => buyController.abort(), 120_000);
+    // ── SESSION 3: Execute buys (Haiku, MCP) — sequential + verify + retry ────
+    // Mirrors the sell flow: place one at a time, verify each decided buy actually hit
+    // Robinhood, retry any that didn't ONCE, then record ONLY confirmed buys with real
+    // fill data. A buy that never confirms (insufficient buying power, or a dropped
+    // order) is left unrecorded + alerted. The buy-sizing pre-flight already prevents
+    // most buying-power rejections; this catches dropped orders (the buy-side BAX case).
+    type VerifiedBuy = { symbol: string; quantity: string; avgPrice: string; state: string };
+    async function runBuySession(buys: typeof decision.buys, timeoutMs: number): Promise<boolean> {
+      if (buys.length === 0) return true;
+      const lines = buys.map(b => `- buy ${b.symbol} ${b.quantity} shares`).join("\n");
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        const buyResp = await (anthropic.beta.messages as any).create({
+        const resp = await (anthropic.beta.messages as any).create({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 1024,
-          system: `Place these market buy orders one at a time for account ${ACCOUNT} using place_equity_order. Use type=market, time_in_force=gfd. Place each order sequentially and wait for confirmation before the next. Do not analyze — just execute.\n${buyLines}\nOutput: BUYS_DONE`,
-          messages: [{ role: "user", content: "Execute the buys now." }],
+          system: `Place these market buy orders one at a time for account ${ACCOUNT} using place_equity_order. Use type=market, time_in_force=gfd. Place each order sequentially and wait for confirmation before the next. Do not skip any. Do not analyze — just execute.\n${lines}\nOutput: BUYS_DONE`,
+          messages: [{ role: "user", content: "Execute the buys now, one at a time." }],
           mcp_servers: [mcpServer],
           betas: ["mcp-client-2025-04-04"],
-        }, { signal: buyController.signal });
-        const buyText = buyResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-        console.log("BUYS_DONE", { result: buyText.slice(0, 100) });
-        buysSessionSucceeded = true;
-        // Temporarily populate with planned prices — verification step below overwrites with real fill data.
-        // Guard: any non-S&P 500 ticker (expanded universe) can ONLY belong to the influencer bucket.
-        for (const b of decision.buys) {
-          const isSP500 = sp500Set.has(b.symbol);
-          const strategy: "main" | "influencer" =
-            (b.strategy === "influencer" || !isSP500) ? "influencer" : "main";
-          trades.push({ symbol: b.symbol, side: "buy", quantity: String(b.quantity), avgPrice: String(b.price), state: "unconfirmed", strategy });
-        }
+        }, { signal: ctrl.signal });
+        const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        console.log("BUYS_DONE", { count: buys.length, result: txt.slice(0, 100) });
+        return true;
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn("BUYS_FAILED", msg);
-        await sendAlert(
-          `⚠️ Buy session failed — ${today}`,
-          `The buy execution session threw an error and no orders were placed.\n\nError: ${msg}\n\nPlanned buys:\n${buyLines}\n\nPlace these manually in Robinhood if needed.`
-        );
+        console.warn("BUYS_FAILED", e instanceof Error ? e.message : String(e));
+        return false;
       } finally {
-        clearTimeout(buyKillTimer);
+        clearTimeout(timer);
       }
     }
-
-    // ── SESSION 4: Verify buys (Haiku, MCP) ──────────────────────────────────
-    // Confirms orders actually exist in Robinhood and replaces planned prices with real fill prices.
-    // Non-blocking: on timeout or parse failure, keeps unconfirmed placeholder data and logs a warning.
-    if (buysAttempted && buysSessionSucceeded) {
-      const verifyController = new AbortController();
-      const verifyKillTimer = setTimeout(() => verifyController.abort(), 25_000);
+    async function verifyBuys(): Promise<Map<string, VerifiedBuy>> {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25_000);
       try {
-        const verifyResp = await (anthropic.beta.messages as any).create({
+        const resp = await (anthropic.beta.messages as any).create({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 512,
           system: `Call get_equity_orders for account ${ACCOUNT} filtered to today (${today}). Output exactly one line:
-VERIFIED_ORDERS:[{"symbol":"XX","side":"buy","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
-Include only buy orders placed today. If none found, output VERIFIED_ORDERS:[]. Output nothing else.`,
+VERIFIED_BUYS:[{"symbol":"XX","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
+Include only BUY orders placed today that are filled or pending (not cancelled/rejected). If none, output VERIFIED_BUYS:[]. Output nothing else.`,
           messages: [{ role: "user", content: "Verify today's buy orders." }],
           mcp_servers: [mcpServer],
           betas: ["mcp-client-2025-04-04"],
-        }, { signal: verifyController.signal });
-        clearTimeout(verifyKillTimer);
-
-        const verifyText = verifyResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-        const verifyMatch = verifyText.match(/^VERIFIED_ORDERS:(.+)$/m);
-        if (verifyMatch) {
-          type VerifiedOrder = { symbol: string; side: string; quantity: string; avgPrice: string; state: string };
-          const verifiedOrders = JSON.parse(verifyMatch[1]) as VerifiedOrder[];
-          const verifiedMap = new Map(verifiedOrders.map(o => [o.symbol, o]));
-          console.log("VERIFY_OK", { verified: verifiedOrders.length, planned: decision.buys.length });
-
-          // Replace unconfirmed placeholders with real fill data (preserve strategy tag).
-          const strategyBySymbol = new Map(trades.filter(t => t.side === "buy").map(t => [t.symbol, t.strategy]));
-          trades = trades.filter(t => t.side !== "buy");
-          const missing: string[] = [];
-          for (const b of decision.buys) {
-            const real = verifiedMap.get(b.symbol);
-            if (real) {
-              trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state, strategy: strategyBySymbol.get(b.symbol) });
-            } else {
-              missing.push(b.symbol);
-            }
-          }
-
-          if (missing.length > 0) {
-            console.warn("BUY_VERIFY_MISSING", { missing });
-            const buyLines = decision.buys.map(b => `- buy ${b.symbol} ${b.quantity} shares`).join("\n");
-            await sendAlert(
-              `⚠️ Buy orders not confirmed — ${today}`,
-              `Verification found these planned buys missing from Robinhood:\n\nMissing: ${missing.join(", ")}\nAll planned:\n${buyLines}\n\nPlace missing orders manually if needed.`
-            );
-          }
-        } else {
-          console.warn("VERIFY_PARSE_FAILED — keeping unconfirmed placeholder data");
-        }
+        }, { signal: ctrl.signal });
+        const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        const m = txt.match(/^VERIFIED_BUYS:(.+)$/m);
+        if (!m) return new Map();
+        const orders = JSON.parse(m[1]) as VerifiedBuy[];
+        return new Map(orders.map(o => [o.symbol, o]));
       } catch {
-        console.warn("VERIFY_TIMED_OUT — keeping unconfirmed placeholder data");
+        return new Map();
       } finally {
-        clearTimeout(verifyKillTimer);
+        clearTimeout(timer);
+      }
+    }
+
+    if (decision.buys.length > 0) {
+      const ok = await runBuySession(decision.buys, 120_000);
+      if (ok) {
+        let verified = await verifyBuys();
+        let missing = decision.buys.filter(b => !verified.has(b.symbol));
+        if (missing.length > 0) {
+          console.warn("BUY_VERIFY_MISSING — retrying", { missing: missing.map(b => b.symbol) });
+          await runBuySession(missing, 90_000); // retry only the dropped/unconfirmed buys
+          verified = await verifyBuys();
+          missing = decision.buys.filter(b => !verified.has(b.symbol));
+        }
+        // Record ONLY confirmed buys with real fill data (preserve strategy tag).
+        // Any non-S&P 500 ticker (expanded universe) can ONLY belong to the influencer bucket.
+        for (const b of decision.buys) {
+          const real = verified.get(b.symbol);
+          if (!real) continue;
+          const strategy: "main" | "influencer" =
+            (b.strategy === "influencer" || !sp500Set.has(b.symbol)) ? "influencer" : "main";
+          trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state, strategy });
+        }
+        if (missing.length > 0) {
+          console.warn("BUY_STILL_MISSING_AFTER_RETRY", { missing: missing.map(b => b.symbol) });
+          await sendAlert(
+            `⚠️ Buy orders not confirmed — ${today}`,
+            `These decided buys did NOT execute even after a retry: ${missing.map(b => b.symbol).join(", ")}.\nLikely insufficient buying power (today's sells settle T+1) or a dropped order. Place manually if still wanted; the next run re-evaluates.`,
+          );
+        }
       }
     }
 
