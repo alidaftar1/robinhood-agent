@@ -321,8 +321,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const agenticCumReturn = latestSeries?.agentic != null ? latestSeries.agentic - 100 : null;
   const mainCumReturn = latestSeries?.main != null ? latestSeries.main - 100 : null;
 
-  const agentReturn = agenticCumReturn;
-  const alpha = agentReturn != null && spyReturn != null ? agentReturn - spyReturn : null;
+  // Top section reports the MAIN book (core S&P strategy) on its own — the influencer sleeve is a
+  // different strategy shown separately below, so blending them into one "AI return" hid how the
+  // core book actually tracks the market. Main and agentic share the same inception baseline, so
+  // spyReturn already covers the main window; the alpha is main − SPY over that period.
+  const mainAlpha = mainCumReturn != null && spyReturn != null ? mainCumReturn - spyReturn : null;
   const hasComparison = returnSeries.some(p => p.agentic != null);
 
   const latestInfluencer = returnSeries[returnSeries.length - 1]?.influencer;
@@ -359,9 +362,9 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const agentDrawdown = computeMaxDrawdown(ddPoints.map(p => p.agentic!) as number[]);
   const spyDrawdown = computeMaxDrawdown(ddPoints.filter(p => p.spy != null).map(p => p.spy!) as number[]);
 
-  // "% of days beating SPY" — daily alpha win rate. Isolates the agent's contribution
-  // instead of measuring the market's up-day frequency (the old % of up days did the latter).
-  const beatRate = computeBeatRate(runs);
+  // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
+  // blended book). Isolates skill instead of measuring the market's own up-day frequency.
+  const mainBeatRate = computeBeatRate(runs, r => r.mainDailyReturn);
 
   const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
   const returnColor = (v: number | null) => v == null ? "#888" : v >= 0 ? "#7dba7d" : "#e06c6c";
@@ -387,21 +390,12 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
       {runs.length >= 2 && (
         <div style={s.perfCard}>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="AI Return" def="How much the AI's trading account has gained or lost since it started." />
-            <span style={{ ...s.perfValue, color: returnColor(agentReturn) }}>
-              {agentReturn != null ? fmtPct(agentReturn) : "—"}
+            <Tip style={s.perfLabel} label="Main Book Return" def="The core S&P 500 momentum strategy on its own, since it started — the higher-risk YouTube-influencer sleeve is a separate strategy, tracked in its own card below." />
+            <span style={{ ...s.perfValue, color: returnColor(mainCumReturn) }}>
+              {mainCumReturn != null ? fmtPct(mainCumReturn) : "—"}
             </span>
-            <span style={s.perfSince}>the AI, since {perfBaseline?.date ?? inception!.date}</span>
+            <span style={s.perfSince}>core S&P strategy · since {seriesSince.main ?? "—"}</span>
           </div>
-          {mainCumReturn != null && (
-            <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Main Book Return" def="The core S&P 500 strategy on its own — the AI's return with the higher-risk YouTube-influencer sleeve stripped out." />
-              <span style={{ ...s.perfValue, color: returnColor(mainCumReturn) }}>
-                {fmtPct(mainCumReturn)}
-              </span>
-              <span style={s.perfSince}>S&P sleeve · since {seriesSince.main ?? "—"}</span>
-            </div>
-          )}
           <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="S&P 500 Return" def="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'" />
             <span style={{ ...s.perfValue, color: returnColor(spyReturn) }}>
@@ -410,28 +404,28 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={s.perfSince}>the market, same period</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="Beating the Market" def="Alpha: the AI's return minus the S&P 500's return over the same period. Positive = it's beating the market." />
-            <span style={{ ...s.perfValue, color: returnColor(alpha) }}>
-              {alpha != null ? fmtPct(alpha) : "—"}
+            <Tip style={s.perfLabel} label="Main Book vs S&P 500" def="Alpha: the core strategy's return minus the S&P 500's over the same period. Positive = the core book is beating the market." />
+            <span style={{ ...s.perfValue, color: returnColor(mainAlpha) }}>
+              {mainAlpha != null ? fmtPct(mainAlpha) : "—"}
             </span>
-            <span style={s.perfSince}>vs. the S&P 500 (a.k.a. "alpha")</span>
+            <span style={s.perfSince}>core book vs. the S&P 500 (alpha)</span>
           </div>
           {current?.portfolioAfter && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Account Value" def="Total value of the AI's trading account: cash plus the current value of everything it holds." />
+              <Tip style={s.perfLabel} label="Account Value" def="Total value of the AI's trading account: cash plus the current value of everything it holds (both sleeves)." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
                 ${parseFloat(current.portfolioAfter.totalValue).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
               <span style={s.perfSince}>cash + holdings · {runs.length} days tracked</span>
             </div>
           )}
-          {beatRate != null && (
+          {mainBeatRate != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Days Beating the Market" def="The share of trading days the AI's daily return was higher than the S&P 500's." />
-              <span style={{ ...s.perfValue, color: returnColor(beatRate.rate * 100 - 50) }}>
-                {(beatRate.rate * 100).toFixed(0)}%
+              <Tip style={s.perfLabel} label="Days Main Book Beat S&P" def="The share of trading days the core strategy's daily return was higher than the S&P 500's." />
+              <span style={{ ...s.perfValue, color: returnColor(mainBeatRate.rate * 100 - 50) }}>
+                {(mainBeatRate.rate * 100).toFixed(0)}%
               </span>
-              <span style={s.perfSince}>of {beatRate.n} trading days</span>
+              <span style={s.perfSince}>of {mainBeatRate.n} trading days</span>
             </div>
           )}
         </div>

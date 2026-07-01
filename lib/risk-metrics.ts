@@ -93,17 +93,22 @@ export function computeBeta(runs: TradeRun[]): { beta: number; n: number } | nul
 // SPY-benchmarked agent this is far more meaningful than "% of up days", which at
 // daily granularity mostly tracks the market's own up-day frequency rather than any
 // skill. Uses the same aligned daily-return pairs as computeBeta (ties = not a win).
-export function computeBeatRate(runs: TradeRun[]): { rate: number; n: number } | null {
+// getReturn selects which sleeve's daily return to score against SPY — defaults to the whole
+// agentic book; pass r => r.mainDailyReturn for the core S&P book alone.
+export function computeBeatRate(
+  runs: TradeRun[],
+  getReturn: (r: TradeRun) => number | null | undefined = (r) => r.agenticDailyReturn,
+): { rate: number; n: number } | null {
   const chron = [...runs].reverse(); // oldest → newest
   let wins = 0, n = 0;
   for (let i = 1; i < chron.length; i++) {
-    const agent = chron[i].agenticDailyReturn;
+    const ret = getReturn(chron[i]);
     const spyNow = chron[i].spyPrice;
     const spyPrev = chron[i - 1].spyPrice;
-    if (agent == null || !spyNow || !spyPrev) continue;
+    if (ret == null || !spyNow || !spyPrev) continue;
     const spy = spyNow / spyPrev - 1;
     n++;
-    if (agent > spy) wins++;
+    if (ret > spy) wins++;
   }
   if (n < 3) return null;
   return { rate: wins / n, n };
