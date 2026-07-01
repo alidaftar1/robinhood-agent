@@ -89,6 +89,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "From the current positions, does any single sector look like it exceeds ~40% of equity? Flag concentration drift even though the cap is 'soft'.",
   },
+  {
+    date: "2026-07-01",
+    title: "Decided buy dropped by T+1 rotation squeeze (idle cash)",
+    lesson:
+      "On a rotation day the run decided MOH×2 + GPN×4 ($758) against the ~$761 it read as buying power, but today's sells settle T+1 so their proceeds weren't spendable. MOH filled first and consumed the settled cash; GPN×4 was then rejected for insufficient buying power and silently dropped, leaving ~$302 (≈12% of equity) idle. fitBuysToBudget (added the same day, commit bc9a4a6) now pre-shrinks the marginal buy to fit live settled buying power with a buffer + price cushion — but it only reached main AFTER the 7:30am run and still awaited deploy, so the drop recurred once uncaught.",
+    check:
+      "Compare the parsed TRADE_DECISION.buys against the run's executed buy trades: was any decided buy fully dropped or filled at a LOWER quantity than decided? On a rotation day (same-day sells whose proceeds settle T+1), does settled cash sit materially idle afterward (> ~$100 or > ~5% of equity)? fitBuysToBudget should pre-shrink marginal buys to fit live settled buying power — flag any decided buy that still vanished with no sizing note, or any large idle settled balance, as a sign the guardrail isn't deployed or isn't sizing correctly.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */
