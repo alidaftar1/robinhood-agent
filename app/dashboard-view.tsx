@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeInfluencerPnL } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -113,7 +113,7 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
   const W = 760, H = 140, PL = 44, PR = 12, PT = 8, PB = 28;
   const cw = W - PL - PR, ch = H - PT - PB;
 
-  const allVals = valid.flatMap(p => [p.agentic, p.spy].filter(v => v != null) as number[]);
+  const allVals = valid.flatMap(p => [p.agentic, p.spy, p.influencer].filter(v => v != null) as number[]);
   const minV = Math.min(...allVals), maxV = Math.max(...allVals);
   const pad = Math.max((maxV - minV) * 0.1, 1);
   const lo = minV - pad, hi = maxV + pad;
@@ -147,6 +147,7 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
       {/* Lines */}
       {polyline(p => p.spy, "#444")}
       {polyline(p => p.agentic, "#7dba7d")}
+      {polyline(p => p.influencer, "#e8943a")}
       {/* Y-axis labels */}
       {ticks.map((t, i) => (
         <text key={i} x={PL - 4} y={yOf(t) + 4} textAnchor="end" fill="#555" fontSize="10">
@@ -324,11 +325,23 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const alpha = agentReturn != null && spyReturn != null ? agentReturn - spyReturn : null;
   const hasComparison = returnSeries.some(p => p.agentic != null);
 
-  // Influencer sleeve shown as realized+unrealized DOLLARS (not a compounded %): the % index
-  // starts only once the sleeve held across a day boundary, so it silently drops the SPCX
-  // same-day round-trip loss. The $ ledger includes every influencer trade (SPCX included).
-  const influencerPnL = computeInfluencerPnL(runs);
-  const hasInfluencerData = influencerPnL != null || returnSeries.some(p => p.influencer != null);
+  const latestInfluencer = returnSeries[returnSeries.length - 1]?.influencer;
+  const influencerCumReturn = latestInfluencer != null ? latestInfluencer - 100 : null;
+  // Influencer alpha must use SPY over the INFLUENCER window, not the AI-window spyReturn —
+  // otherwise it compares mismatched periods. Match BOTH ends: start at the sleeve's baseline
+  // and end on the last day the sleeve return actually moved (once fully exited the influencer
+  // cumulative freezes there, so ending SPY at `latest` would skew the alpha).
+  const influencerBaselineRun = runsChronological.find(r => r.date === seriesSince.influencer);
+  const lastInfluencerReturnRun = [...runsChronological].reverse().find(r => r.influencerDailyReturn != null);
+  const spyReturnInfluencerWindow = (() => {
+    const ls = lastInfluencerReturnRun?.spyPrice;
+    const bs = influencerBaselineRun?.spyPrice;
+    if (!ls || !bs) return null;
+    return ((ls - bs) / bs) * 100;
+  })();
+  const influencerAlpha = influencerCumReturn != null && spyReturnInfluencerWindow != null
+    ? influencerCumReturn - spyReturnInfluencerWindow : null;
+  const hasInfluencerData = returnSeries.some(p => p.influencer != null);
 
   // Current-state snapshot metrics read `current` (the latest self-consistent run a
   // route stored atomically), NOT the merged `latest` — a merged two-run day can carry
@@ -351,7 +364,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const beatRate = computeBeatRate(runs);
 
   const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
-  const fmtDollar = (v: number) => `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`;
   const returnColor = (v: number | null) => v == null ? "#888" : v >= 0 ? "#7dba7d" : "#e06c6c";
 
   return (
@@ -429,21 +441,19 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
       {(hasInfluencerData || influencerPositions.length > 0) && (
         <div style={{ ...s.perfCard, borderColor: "#2a1f0d" }}>
           <div style={{ ...s.perfStat }}>
-            <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="📺 YouTube-Picks P&L" def="Total dollars made or lost on the ~25% slice that buys stocks talked up by YouTube finance creators — realized (closed trades, including the SPCX loss) plus unrealized (open positions). Shown in dollars because the sleeve rotates fast, which makes a single % misleading." />
-            <span style={{ ...s.perfValue, color: returnColor(influencerPnL?.total ?? null) }}>
-              {influencerPnL != null ? fmtDollar(influencerPnL.total) : "—"}
+            <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="📺 YouTube-Picks Return" def="A separate ~25% slice of the account that buys stocks talked up by YouTube finance creators — higher risk, higher reward." />
+            <span style={{ ...s.perfValue, color: returnColor(influencerCumReturn) }}>
+              {influencerCumReturn != null ? fmtPct(influencerCumReturn) : "—"}
             </span>
-            <span style={s.perfSince}>net since inception · incl. SPCX exit</span>
+            <span style={s.perfSince}>the influencer slice · since {seriesSince.influencer ?? "—"}</span>
           </div>
-          {influencerPnL != null && (
-            <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Realized / Unrealized" def="Realized = locked-in gains and losses from closed trades (e.g. the SPCX stop-out). Unrealized = paper gain/loss on positions still held." />
-              <span style={{ fontSize: 14, fontWeight: 600, color: "#e8943a", marginTop: 4 }}>
-                {fmtDollar(influencerPnL.realized)} <span style={{ color: "#7a5a2a" }}>/</span> {fmtDollar(influencerPnL.unrealized)}
-              </span>
-              <span style={s.perfSince}>closed trades / open positions</span>
-            </div>
-          )}
+          <div style={s.perfStat}>
+            <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="vs. the Market" def="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period." />
+            <span style={{ ...s.perfValue, color: returnColor(influencerAlpha) }}>
+              {influencerAlpha != null ? fmtPct(influencerAlpha) : "—"}
+            </span>
+            <span style={s.perfSince}>YouTube picks vs. S&P 500</span>
+          </div>
           {influencerPositions.length > 0 && (
             <div style={s.perfStat}>
               <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>Holding Now</span>
@@ -465,6 +475,12 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#7dba7d" strokeWidth="2" /></svg>
               The AI {agenticCumReturn != null ? `(${fmtPct(agenticCumReturn)})` : ""}
             </div>
+            {hasInfluencerData && (
+              <div style={s.legendItem}>
+                <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#e8943a" strokeWidth="2" /></svg>
+                YouTube picks {influencerCumReturn != null ? `(${fmtPct(influencerCumReturn)})` : ""}
+              </div>
+            )}
             <div style={s.legendItem}>
               <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#444" strokeWidth="2" /></svg>
               S&P 500 (the market)

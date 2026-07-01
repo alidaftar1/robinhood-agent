@@ -167,6 +167,26 @@ export async function GET(request: Request) {
     }
   }
 
+  // Set the influencer daily return for a date, e.g. ?setInfluencerReturn=2026-06-22&value=-0.0686
+  // For a SAME-DAY round trip the position-based framework can't reconstruct (an influencer name
+  // bought and stopped out the same day, its buy record since lost) — so the sleeve return is
+  // supplied from the real trade prices. SPCX 2026-06-22: (154.61−166)/166 = −6.86%. Non-canonical
+  // days like this are skipped by recomputeSleeves, so this value persists.
+  if (url.searchParams.get("setInfluencerReturn")) {
+    const date = url.searchParams.get("setInfluencerReturn")!;
+    const value = parseFloat(url.searchParams.get("value") ?? "");
+    if (!isFinite(value)) {
+      results.setInfluencerReturn = "error: missing or invalid &value";
+    } else {
+      try {
+        const patched = await updateRunByDate(date, r => ({ ...r, influencerDailyReturn: value }));
+        results.setInfluencerReturn = patched ? `set ${date} influencerDailyReturn = ${(value * 100).toFixed(2)}%` : `no run found for ${date}`;
+      } catch (e) {
+        results.setInfluencerReturn = `error: ${e}`;
+      }
+    }
+  }
+
   // Correct a recorded transfer figure for a date, e.g. ?setTransfer=2026-06-23&amount=300
   // (used to fix a known deposit amount when the old/new totalValue format inflated it).
   if (url.searchParams.get("setTransfer")) {
