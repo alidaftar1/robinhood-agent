@@ -18,6 +18,41 @@ const sp500Set = new Set(SP500_UNIVERSE);
 // shared with drop-check/earnings-exit via lib/robinhood-balance.
 const fetchAgenticBuyingPower = fetchAgenticBalance;
 
+// ── Pre-flight buy sizing ────────────────────────────────────────────────────
+// The model sizes buys against an estimated budget, but (a) today's sells settle T+1
+// so they DON'T add to today's buying power, (b) the live price ticks above the 7:30am
+// thesis estimate, and (c) the broker keeps a small buffer — so a marginal buy gets
+// REJECTED and its cash sits idle (GPN squeezed out 07-01, ~$302 left unspent).
+// Fix deterministically BEFORE placing orders: reserve a BUFFER, cost each buy with a
+// price CUSHION, keep what fits in priority order, and SHRINK the marginal buy's qty to
+// fit rather than losing it — so settled cash deploys fully and nothing gets rejected.
+const BUY_BUFFER_PCT = 0.03;   // leave 3% of settled buying power unspent (broker buffer)
+const BUY_PRICE_CUSHION = 1.02; // budget each buy 2% above the thesis price (live tick)
+function fitBuysToBudget<T extends { symbol: string; quantity: number; price: number }>(
+  buys: T[],
+  settledBuyingPower: number,
+): { sized: T[]; adjustments: string[] } {
+  let budget = settledBuyingPower * (1 - BUY_BUFFER_PCT);
+  const sized: T[] = [];
+  const adjustments: string[] = [];
+  for (const b of buys) {
+    const unit = b.price * BUY_PRICE_CUSHION;
+    if (!(unit > 0)) { sized.push(b); continue; } // no price → let the session try as-is
+    const maxQty = Math.floor(budget / unit);
+    if (maxQty >= b.quantity) {
+      sized.push(b);
+      budget -= b.quantity * unit;
+    } else if (maxQty >= 1) {
+      sized.push({ ...b, quantity: maxQty });
+      adjustments.push(`${b.symbol} ${b.quantity}→${maxQty} (fit budget)`);
+      budget -= maxQty * unit;
+    } else {
+      adjustments.push(`${b.symbol} dropped (needs ~$${Math.round(b.quantity * unit)}, $${Math.round(budget)} left)`);
+    }
+  }
+  return { sized, adjustments };
+}
+
 async function fetchAgenticPositions(
   anthropic: Anthropic,
   accessToken: string
@@ -121,6 +156,8 @@ export async function GET(request: Request) {
       });
       const influencerBuys = annotatedBuys.filter(b => b.resolvedStrategy === "influencer");
       const allowedNew = Math.max(0, 2 - keptInfluencer);
+      // Preview the pre-flight buy sizing the real run now applies.
+      const { sized: sizedBuys, adjustments: sizingAdjustments } = fitBuysToBudget(decision.buys, buyingPower);
 
       return Response.json({
         dryRun: true,
@@ -130,6 +167,7 @@ export async function GET(request: Request) {
         influencerSectionInjected: influencerSection.length > 0,
         decision: { thesis: decision.thesis, sells: decision.sells, buys: annotatedBuys },
         influencerCap: { keptInfluencer, allowedNew, influencerBuysRequested: influencerBuys.length, wouldTrim: Math.max(0, influencerBuys.length - allowedNew) },
+        buySizing: { settledBuyingPower: buyingPower, adjustments: sizingAdjustments, sizedBuys: sizedBuys.map(b => ({ symbol: b.symbol, quantity: b.quantity, price: b.price })) },
         thesisPreview: analysisText.slice(0, 1200),
       });
     }
@@ -287,6 +325,16 @@ export async function GET(request: Request) {
       if (rejected.length > 0) {
         console.log("INFLUENCER_DOWNTREND_REJECTED", { rejected });
       }
+    }
+
+    // ── Pre-flight buy sizing: fit buys into live settled buying power ────────────
+    // (sells today settle T+1 → they don't fund today's buys; size against real BP)
+    if (decision.buys.length > 0 && agenticBalance) {
+      const { sized, adjustments } = fitBuysToBudget(decision.buys, agenticBalance.buyingPower);
+      if (adjustments.length > 0) {
+        console.log("BUY_SIZING_ADJUSTED", { settledBuyingPower: agenticBalance.buyingPower, adjustments });
+      }
+      decision.buys = sized;
     }
 
     const mcpServer = { type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken };
