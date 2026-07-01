@@ -1,7 +1,10 @@
 name: autopilot
 
-# Cloud replacement for the local 8:30am macOS autopilot. Runs the autonomous
-# code-fixer off the owner's Mac, with full power via repo secrets.
+# Cloud autopilot in PROPOSE MODE (2026-07-01): the owner's stand-in engineer.
+# Reviews each morning's run like the owner would, and when it finds a real recurring
+# issue it diagnoses the root cause and opens a PR proposing a guardrail — it does NOT
+# deploy or push to main. No Vercel token/CLI here, so deploying is impossible by design;
+# the owner reviews + merges. See .github/autopilot-prompt.md.
 on:
   # Triggered by the Vercel 8am /api/autopilot cron (workflow_dispatch via the GitHub
   # API) right after the morning report — so the code-fixer runs ~8:05am PT with no
@@ -12,7 +15,8 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write # commit/push autonomous fixes
+  contents: write        # push the proposal branch
+  pull-requests: write   # open the proposal PR
 
 concurrency:
   group: autopilot
@@ -26,18 +30,17 @@ jobs:
       APP_URL: https://robinhood-agent.vercel.app
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+      GH_TOKEN: ${{ github.token }}   # gh pr create + branch push
+      # No VERCEL_* here on purpose — propose mode cannot deploy.
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - name: Install deps
         run: bun install
-      - name: Install Claude Code + Vercel CLI
-        run: npm i -g @anthropic-ai/claude-code vercel
+      - name: Install Claude Code
+        run: npm i -g @anthropic-ai/claude-code
       - name: Configure git for autonomous commits
         run: |
           git config user.name "robinhood-autopilot[bot]"
