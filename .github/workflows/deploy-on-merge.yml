@@ -1,0 +1,46 @@
+name: deploy-on-merge
+
+# Auto-deploy to Vercel production when a PR is MERGED into main (2026-07-01).
+# This makes the propose→approve loop seamless: the cloud autopilot opens a PR, the
+# owner reviews + merges, and this ships it — no manual deploy step.
+#
+# SAFETY: fires ONLY on a merged PR (a human approved it). It deliberately does NOT
+# trigger on direct pushes to main — those (e.g. Claude's in-session pushes) stay on
+# the manual, review-gated `REVIEWED=1 vercel deploy --prod` flow. A secret scan + build
+# gate run before the deploy, so a bad/leaky merge can't reach production.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: oven-sh/setup-bun@v2
+      - name: Install deps
+        run: bun install
+      - name: Secret/PII scan (gate)
+        run: bun run check:secrets
+      - name: Typecheck + build (gate)
+        run: bunx tsc --noEmit && bun run build
+      - name: Install Vercel CLI
+        run: npm i -g vercel
+      - name: Deploy to production
+        run: vercel deploy --prod --token="$VERCEL_TOKEN" --yes
