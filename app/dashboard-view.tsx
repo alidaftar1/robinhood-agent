@@ -352,6 +352,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // full series (it's historical, not a snapshot).
   const influencerPositions = current?.influencerPositions ?? [];
 
+  // Split the account value into the two strategies. The influencer sleeve is exactly its held
+  // positions' market value; the main book is everything else (core holdings + ALL cash, settled
+  // and unsettled) — i.e. the remainder — so the two always sum to the account total and we avoid
+  // any per-sleeve cash / T+1 accounting. main + influencer = total, by construction.
+  const accountTotal = current?.portfolioAfter ? parseFloat(current.portfolioAfter.totalValue) : null;
+  const influencerValue = influencerPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
+  const mainBookValue = accountTotal != null ? accountTotal - influencerValue : null;
+  const usd = (v: number) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   const cashPct = current ? computeCashPct(current) : null;
   const sectorBreakdown = current ? computeSectorBreakdown(current) : [];
   const beta = computeBeta(runs);
@@ -410,13 +419,13 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </span>
             <span style={s.perfSince}>core book vs. the S&P 500 (alpha)</span>
           </div>
-          {current?.portfolioAfter && (
+          {mainBookValue != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Account Value" def="Total value of the AI's trading account: cash plus the current value of everything it holds (both sleeves)." />
+              <Tip style={s.perfLabel} label="Main Book Value" def="Dollars in the core S&P strategy: its holdings plus all cash (settled and unsettled). It's the account total minus the influencer sleeve, so the two sleeves sum to the whole account." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
-                ${parseFloat(current.portfolioAfter.totalValue).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                ${usd(mainBookValue)}
               </span>
-              <span style={s.perfSince}>cash + holdings · {runs.length} days tracked</span>
+              <span style={s.perfSince}>core holdings + cash{accountTotal != null ? ` · $${accountTotal.toLocaleString("en-US", { maximumFractionDigits: 0 })} total` : ""}</span>
             </div>
           )}
           {mainBeatRate != null && (
@@ -450,11 +459,20 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           </div>
           {influencerPositions.length > 0 && (
             <div style={s.perfStat}>
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Influencer Value" def="Current market value of the YouTube-picks holdings. The rest of the account (core holdings + cash) sits in the main book." />
+              <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
+                ${usd(influencerValue)}
+              </span>
+              <span style={s.perfSince}>{accountTotal ? `${(influencerValue / accountTotal * 100).toFixed(0)}% of the account` : "held positions"}</span>
+            </div>
+          )}
+          {influencerPositions.length > 0 && (
+            <div style={s.perfStat}>
               <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>Holding Now</span>
               <span style={{ fontSize: 14, fontWeight: 600, color: "#e8943a", marginTop: 4 }}>
                 {influencerPositions.map(p => p.symbol).join(", ")}
               </span>
-              <span style={s.perfSince}>~25% of the budget</span>
+              <span style={s.perfSince}>YouTube-creator picks</span>
             </div>
           )}
         </div>
