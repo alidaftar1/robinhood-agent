@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchMomentum } from "@/lib/market-data";
-import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, type MomentumSignal } from "@/lib/influencer-signals";
 import { computeSectorSlices, formatSectorExposure, computeBookBeta, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
@@ -669,33 +669,18 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     ]);
     const influencerPositions = positions.filter(p => influencerSymbols.has(p.symbol));
 
-    // Influencer daily return: P&L of influencer positions vs previous day
+    // Influencer + main sleeve daily returns — one shared definition (computeSleeveReturns)
+    // so the sell of a position leaving the sleeve is reconciled in the right book instead of
+    // booking as a phantom loss. Stored at trade time in the clean context; the same helper
+    // backfills history via /api/debug?recomputeSleeves.
     const prevInfluencerPositions = previousDayRun?.influencerPositions ?? [];
-    const influencerResult = influencerPositions.length > 0 && prevInfluencerPositions.length > 0
-      ? computeDailyReturn(
-          influencerPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0),
-          prevInfluencerPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0),
-          influencerPositions,
-          prevInfluencerPositions,
-          trades.filter(t => influencerSymbols.has(t.symbol))
-        )
-      : null;
-
-    // Main book = the core S&P sleeve (positions NOT in the influencer set). Stored here
-    // in the clean trade-time context so the dashboard can show the core strategy isolated
-    // from the influencer drag — reconstructing it later from repaired snapshots is unreliable.
-    const mainPositions = positions.filter(p => !influencerSymbols.has(p.symbol));
-    const prevDayInfluencerSyms = new Set((previousDayRun?.influencerPositions ?? []).map(p => p.symbol));
-    const prevMainPositions = (previousDayRun?.positions ?? []).filter(p => !prevDayInfluencerSyms.has(p.symbol));
-    const mainResult = mainPositions.length > 0 && prevMainPositions.length > 0
-      ? computeDailyReturn(
-          mainPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0),
-          prevMainPositions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0),
-          mainPositions,
-          prevMainPositions,
-          trades.filter(t => !influencerSymbols.has(t.symbol))
-        )
-      : null;
+    const { influencerDailyReturn, mainDailyReturn } = computeSleeveReturns(
+      positions,
+      trades,
+      influencerPositions,
+      prevInfluencerPositions,
+      previousDayRun?.positions ?? [],
+    );
 
     // Patch the run already saved at index 0 with return metrics.
     await updateLatestRun({
@@ -707,8 +692,8 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       influencerPositions,
       agenticDailyReturn: agenticResult?.dailyReturn ?? null,
       agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null,
-      influencerDailyReturn: influencerResult?.dailyReturn ?? null,
-      mainDailyReturn: mainResult?.dailyReturn ?? null,
+      influencerDailyReturn,
+      mainDailyReturn,
     });
 
     console.log("TRADE_RUN_COMPLETE", { date: today, summary: textContent.slice(0, 300) });

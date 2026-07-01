@@ -1,4 +1,4 @@
-import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, computeDailyReturn } from "@/lib/run-store";
+import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, computeDailyReturn, backfillSleeveReturns } from "@/lib/run-store";
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -140,6 +140,19 @@ export async function GET(request: Request) {
       }
     } catch (e) {
       results.clearReturn = `error: ${e}`;
+    }
+  }
+
+  // Backfill/correct influencer + main sleeve returns across all history with the fixed
+  // sleeve-trade attribution. Corrects artifacts where a position sold OUT of the influencer
+  // sleeve booked its prior value as a phantom loss (e.g. BTC 2026-06-30 → bogus −14.13%),
+  // and gives the main book a full history instead of a single day.
+  if (url.searchParams.get("recomputeSleeves")) {
+    try {
+      const changes = await backfillSleeveReturns();
+      results.recomputeSleeves = changes.length ? `patched ${changes.length}: ${changes.join(" | ")}` : "no changes";
+    } catch (e) {
+      results.recomputeSleeves = `error: ${e}`;
     }
   }
 

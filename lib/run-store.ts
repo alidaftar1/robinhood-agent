@@ -313,6 +313,112 @@ export function computeDailyReturn(
   return { dailyReturn: pnl / yesterdayValue, impliedTransfer };
 }
 
+// Splits a run into influencer-sleeve vs main-sleeve daily returns from a SINGLE definition
+// of which trades belong to which sleeve — so the trade route and the recompute/backfill path
+// can't drift. A symbol belongs to the influencer sleeve's P&L if it was influencer YESTERDAY
+// OR today. That union is the fix for a real bug: influencerSymbols excludes anything sold
+// today, so a position sold OUT of the sleeve lost its sell trade from the reconciliation and
+// its whole prior value booked as a phantom loss (BTC on 2026-06-30 → bogus −14.13%; the same
+// sell also leaked into the main book). Callers pass the already-derived sleeve membership;
+// this only computes the two returns given that membership.
+export function computeSleeveReturns(
+  positions: PositionSnapshot[],
+  trades: TradeSnapshot[],
+  influencerPositions: PositionSnapshot[],
+  prevInfluencerPositions: PositionSnapshot[],
+  prevPositions: PositionSnapshot[],
+): { influencerDailyReturn: number | null; mainDailyReturn: number | null } {
+  const priceOf = (p: PositionSnapshot) => parseFloat(p.price) > 0 ? parseFloat(p.price) : (parseFloat(p.avgCost) || 0);
+  const value = (ps: PositionSnapshot[]) => ps.reduce((s, p) => s + parseFloat(p.quantity) * priceOf(p), 0);
+
+  // A symbol belongs to the influencer sleeve if it was influencer YESTERDAY or TODAY. Partition
+  // BOTH days' positions AND the trades by this same set, so every symbol lives in exactly one
+  // sleeve across the two compared days. This keeps the day-over-day P&L self-consistent through
+  // a sleeve change: a name SOLD out of the sleeve keeps its sell (BTC 06-30), and a name that
+  // MIGRATES in via a partial influencer buy (e.g. PLTR — both S&P and an influencer pick) carries
+  // its prior-day value into the influencer base instead of booking a phantom loss in main.
+  const influencerUniverse = new Set([
+    ...influencerPositions.map(p => p.symbol),
+    ...prevInfluencerPositions.map(p => p.symbol),
+  ]);
+  const isInfluencer = (sym: string) => influencerUniverse.has(sym);
+
+  const influToday = positions.filter(p => isInfluencer(p.symbol));
+  const influYesterday = prevPositions.filter(p => isInfluencer(p.symbol));
+  const mainToday = positions.filter(p => !isInfluencer(p.symbol));
+  const mainYesterday = prevPositions.filter(p => !isInfluencer(p.symbol));
+
+  const influencer = influToday.length > 0 && influYesterday.length > 0
+    ? computeDailyReturn(value(influToday), value(influYesterday), influToday, influYesterday,
+        trades.filter(t => isInfluencer(t.symbol)))
+    : null;
+  const main = mainToday.length > 0 && mainYesterday.length > 0
+    ? computeDailyReturn(value(mainToday), value(mainYesterday), mainToday, mainYesterday,
+        trades.filter(t => !isInfluencer(t.symbol)))
+    : null;
+
+  return {
+    influencerDailyReturn: influencer?.dailyReturn ?? null,
+    mainDailyReturn: main?.dailyReturn ?? null,
+  };
+}
+
+// Backfill / correct influencer + main sleeve daily returns across ALL stored history using
+// the corrected computeSleeveReturns attribution. Only the canonical daily run per date (the
+// one carrying agenticDailyReturn — the run mergeRunsByDate/preferRun surfaces) gets a sleeve
+// return, so the dashboard's per-date compounding stays one-point-per-date. Each canonical run
+// is recomputed against the previous canonical run's snapshots (matching production's day-over-
+// day baseline). Returns a human-readable change log; writes the full list atomically.
+export async function backfillSleeveReturns(): Promise<string[]> {
+  const all = await getRuns(MAX_RUNS); // newest-first
+  const changes: string[] = [];
+  const fmt = (x: number | null | undefined) => x == null ? "null" : (x * 100).toFixed(2) + "%";
+  const approxEq = (a: number | null, b: number | null) =>
+    (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 1e-9);
+  // A single-day sleeve move beyond this is almost certainly a residual data artifact, not a real
+  // return (the sleeves are small/volatile but not THIS volatile). Drop to null rather than stamp
+  // a number that would distort the compounded track record — mirrors the autopilot's return-sanity clear.
+  const EXTREME = 0.5;
+  const sane = (x: number | null): number | null => x != null && Math.abs(x) > EXTREME ? null : x;
+
+  const patched = all.map(run => {
+    if (run.agenticDailyReturn == null) return run; // non-canonical (thin intraday) run — leave untouched
+    // Same baseline agenticDailyReturn used at trade time: the newest run of any earlier DATE
+    // (getPreviousDayRun semantics) — NOT the previous canonical run — so sleeve + agentic returns
+    // share one baseline. `all` is newest-first, so find() returns that run.
+    const prev = all.find(r => r.date < run.date);
+    if (!prev) return run; // first return-bearing run has no prior baseline
+    const raw = computeSleeveReturns(
+      run.positions ?? [],
+      run.trades ?? [],
+      run.influencerPositions ?? [],
+      prev.influencerPositions ?? [],
+      prev.positions ?? [],
+    );
+    const influencerDailyReturn = sane(raw.influencerDailyReturn);
+    const mainDailyReturn = sane(raw.mainDailyReturn);
+    const oldI = run.influencerDailyReturn ?? null;
+    const oldM = run.mainDailyReturn ?? null;
+    if (!approxEq(oldI, influencerDailyReturn) || !approxEq(oldM, mainDailyReturn)) {
+      changes.push(`${run.date}: infl ${fmt(oldI)}→${fmt(influencerDailyReturn)}, main ${fmt(oldM)}→${fmt(mainDailyReturn)}`);
+    }
+    return { ...run, influencerDailyReturn, mainDailyReturn };
+  });
+
+  // Safety before the DEL+RPUSH rewrite: refuse to write unless every original run is still
+  // present and well-formed (guards a future map→filter slip or a dropped/undefined entry).
+  const ok = all.length > 0 && patched.length === all.length && patched.every(r => r && typeof r.date === "string" && r.timestamp);
+  if (changes.length > 0) {
+    if (!ok) throw new Error("backfillSleeveReturns: integrity check failed — refusing to rewrite history");
+    const pipeline = [
+      ["DEL", RUNS_KEY],
+      ...patched.map(r => ["RPUSH", RUNS_KEY, JSON.stringify(r)]),
+    ];
+    await redisPost("pipeline", pipeline);
+  }
+  return changes;
+}
+
 // Updates a specific run by date, applying an updater function. Rewrites the full list.
 export async function updateRunByDate(date: string, updater: (run: TradeRun) => TradeRun): Promise<boolean> {
   const all = await getRuns(90);

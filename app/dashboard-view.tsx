@@ -34,7 +34,17 @@ interface ReturnPoint {
   main: number | null;
 }
 
-function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
+interface ReturnSeries {
+  points: ReturnPoint[];
+  // The 100-anchor (baseline) date for each series — the day BEFORE its first daily
+  // return. Each sleeve starts on a different day (agentic from inception, influencer
+  // only once the sleeve existed, main from its first tracked day), so each cumulative
+  // covers a DIFFERENT window. Surfacing the per-series since-date stops the cards from
+  // being read as one shared window (the "AI flat vs influencer −13%" confusion).
+  since: { agentic: string | null; influencer: string | null; main: string | null };
+}
+
+function buildReturnSeries(runs: TradeRun[]): ReturnSeries {
   const chronological = [...runs].reverse();
   let agentIdx = 100;
   let influencerIdx = 100;
@@ -44,9 +54,17 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
   let hasMain = false;
   const points: ReturnPoint[] = [];
 
+  // The 100-anchor for a series is the run just before its first daily return (or that
+  // run itself if it's the very first). Used both to co-index SPY to the AI window and
+  // to label each card's real start date.
+  const anchorDate = (firstIdx: number): string | null =>
+    firstIdx < 0 ? null : (chronological[firstIdx - 1]?.date ?? chronological[firstIdx]?.date ?? null);
+  const firstReturnIdx = chronological.findIndex(r => r.agenticDailyReturn != null);
+  const firstInfluencerIdx = chronological.findIndex(r => r.influencerDailyReturn != null);
+  const firstMainIdx = chronological.findIndex(r => r.mainDailyReturn != null);
+
   // Anchor SPY to the run just before the first agent return so both series
   // share the same start point and the comparison is fair.
-  const firstReturnIdx = chronological.findIndex(r => r.agenticDailyReturn != null);
   const spyBase: number | null = firstReturnIdx > 0
     ? (chronological[firstReturnIdx - 1].spyPrice ?? null)
     : firstReturnIdx === 0
@@ -78,7 +96,14 @@ function buildReturnSeries(runs: TradeRun[]): ReturnPoint[] {
       main: hasMain ? mainIdx : null,
     });
   }
-  return points;
+  return {
+    points,
+    since: {
+      agentic: anchorDate(firstReturnIdx),
+      influencer: anchorDate(firstInfluencerIdx),
+      main: anchorDate(firstMainIdx),
+    },
+  };
 }
 
 function ReturnChart({ points }: { points: ReturnPoint[] }) {
@@ -291,7 +316,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   })();
 
   // Transfer-adjusted cumulative return from stored daily returns (null until enough data)
-  const returnSeries = buildReturnSeries(runs);
+  const { points: returnSeries, since: seriesSince } = buildReturnSeries(runs);
   const latestSeries = returnSeries[returnSeries.length - 1];
   const agenticCumReturn = latestSeries?.agentic != null ? latestSeries.agentic - 100 : null;
   const mainCumReturn = latestSeries?.main != null ? latestSeries.main - 100 : null;
@@ -302,7 +327,20 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
 
   const latestInfluencer = returnSeries[returnSeries.length - 1]?.influencer;
   const influencerCumReturn = latestInfluencer != null ? latestInfluencer - 100 : null;
-  const influencerAlpha = influencerCumReturn != null && spyReturn != null ? influencerCumReturn - spyReturn : null;
+  // Influencer alpha must use SPY over the INFLUENCER window, not the AI-window spyReturn —
+  // otherwise it compares mismatched periods. Match BOTH ends: start at the sleeve's baseline
+  // and end on the last day the sleeve return actually moved (once fully exited the influencer
+  // cumulative freezes there, so ending SPY at `latest` would skew the alpha).
+  const influencerBaselineRun = runsChronological.find(r => r.date === seriesSince.influencer);
+  const lastInfluencerReturnRun = [...runsChronological].reverse().find(r => r.influencerDailyReturn != null);
+  const spyReturnInfluencerWindow = (() => {
+    const ls = lastInfluencerReturnRun?.spyPrice;
+    const bs = influencerBaselineRun?.spyPrice;
+    if (!ls || !bs) return null;
+    return ((ls - bs) / bs) * 100;
+  })();
+  const influencerAlpha = influencerCumReturn != null && spyReturnInfluencerWindow != null
+    ? influencerCumReturn - spyReturnInfluencerWindow : null;
   const hasInfluencerData = returnSeries.some(p => p.influencer != null);
 
   // Current-state snapshot metrics read `current` (the latest self-consistent run a
@@ -361,7 +399,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={{ ...s.perfValue, color: returnColor(mainCumReturn) }}>
                 {fmtPct(mainCumReturn)}
               </span>
-              <span style={s.perfSince}>S&P sleeve only · no influencer</span>
+              <span style={s.perfSince}>S&P sleeve · since {seriesSince.main ?? "—"}</span>
             </div>
           )}
           <div style={s.perfStat}>
@@ -407,7 +445,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={{ ...s.perfValue, color: returnColor(influencerCumReturn) }}>
               {influencerCumReturn != null ? fmtPct(influencerCumReturn) : "—"}
             </span>
-            <span style={s.perfSince}>the YouTube-influencer slice</span>
+            <span style={s.perfSince}>the influencer slice · since {seriesSince.influencer ?? "—"}</span>
           </div>
           <div style={s.perfStat}>
             <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="vs. the Market" def="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period." />

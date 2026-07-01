@@ -6,6 +6,7 @@ import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
 import { computeStockBeta } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta } from "@/lib/risk-metrics";
+import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -326,6 +327,48 @@ describe("benchmark-awareness: beta math", () => {
   it("formatBookBeta renders the CURRENT BOOK β line", () => {
     expect(formatBookBeta({ beta: 1.375, coveragePct: 100 })).toContain("CURRENT BOOK β vs SPY: 1.38");
     expect(formatBookBeta(null)).toBe("");
+  });
+});
+
+describe("sleeve returns: sold-out position is reconciled, not booked as a phantom loss", () => {
+  // The real 2026-06-30 case: BTC was sold out of the influencer sleeve. The old code
+  // filtered the sell out of the sleeve's trades → BTC's prior value booked as a ~−14% loss.
+  const pos = (symbol: string, quantity: string, price: string): PositionSnapshot => ({ symbol, quantity, avgCost: price, price });
+  const trade = (side: string, symbol: string, quantity: string, avgPrice: string, strategy: "main" | "influencer"): TradeSnapshot =>
+    ({ side, symbol, quantity, avgPrice, state: "filled", strategy });
+
+  const prevInfluencer = [pos("AAPL", "1", "280.77"), pos("BTC", "2", "26.26")];
+  const todayInfluencer = [pos("AAPL", "1", "286.215"), pos("PLTR", "1", "116.24")];
+  const prevPositions = [...prevInfluencer, pos("MSFT", "1", "400")];
+  const todayPositions = [...todayInfluencer, pos("MSFT", "1", "400")];
+  const trades = [trade("buy", "PLTR", "1", "116.26", "influencer"), trade("sell", "BTC", "2", "26.04", "influencer")];
+
+  const { influencerDailyReturn, mainDailyReturn } = computeSleeveReturns(
+    todayPositions, trades, todayInfluencer, prevInfluencer, prevPositions,
+  );
+
+  it("influencer return reflects the real ~+1.5% (AAPL gain), not the −14% BTC artifact", () => {
+    expect(influencerDailyReturn).not.toBeNull();
+    expect(influencerDailyReturn! * 100).toBeGreaterThan(1.0);
+    expect(influencerDailyReturn! * 100).toBeLessThan(2.0); // ≈ +1.50%
+  });
+
+  it("the sold BTC does NOT leak into the main book (MSFT unchanged → ~0%)", () => {
+    expect(mainDailyReturn).not.toBeNull();
+    expect(Math.abs(mainDailyReturn!)).toBeLessThan(1e-6); // MSFT flat, BTC sell correctly excluded from main
+  });
+
+  it("a name MIGRATING main→influencer via a partial influencer buy books no phantom P&L", () => {
+    // PLTR held in main yesterday; today an influencer-tagged buy moves the whole position to the
+    // sleeve. Prices flat → both sleeves must read ~0% (old asymmetric partition gave infl +50% / main −11%).
+    const prevInf = [pos("MEET", "1", "100")];
+    const todayInf = [pos("MEET", "1", "100"), pos("PLTR", "2", "50")];
+    const prevPos = [...prevInf, pos("PLTR", "1", "50"), pos("MSFT", "1", "400")];
+    const todayPos = [...todayInf, pos("MSFT", "1", "400")];
+    const tr = [trade("buy", "PLTR", "1", "50", "influencer")];
+    const r = computeSleeveReturns(todayPos, tr, todayInf, prevInf, prevPos);
+    expect(Math.abs(r.influencerDailyReturn!)).toBeLessThan(1e-6);
+    expect(Math.abs(r.mainDailyReturn!)).toBeLessThan(1e-6);
   });
 });
 
