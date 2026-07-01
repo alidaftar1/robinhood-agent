@@ -5,8 +5,8 @@ import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
 import { computeStockBeta } from "@/lib/market-data";
-import { computeBookBeta, formatBookBeta } from "@/lib/risk-metrics";
-import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { computeBookBeta, formatBookBeta, computeInfluencerPnL } from "@/lib/risk-metrics";
+import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -369,6 +369,47 @@ describe("sleeve returns: sold-out position is reconciled, not booked as a phant
     const r = computeSleeveReturns(todayPos, tr, todayInf, prevInf, prevPos);
     expect(Math.abs(r.influencerDailyReturn!)).toBeLessThan(1e-6);
     expect(Math.abs(r.mainDailyReturn!)).toBeLessThan(1e-6);
+  });
+});
+
+describe("influencer P&L: realized+unrealized dollars incl. the SPCX same-day round trip", () => {
+  const pos = (symbol: string, quantity: string, price: string): PositionSnapshot => ({ symbol, quantity, avgCost: price, price });
+  const trade = (side: string, symbol: string, quantity: string, avgPrice: string, strategy?: "main" | "influencer"): TradeSnapshot =>
+    ({ side, symbol, quantity, avgPrice, state: "filled", ...(strategy ? { strategy } : {}) });
+  const mkRun = (date: string, trades: TradeSnapshot[], influencerPositions: PositionSnapshot[] = []): TradeRun => ({
+    timestamp: `${date}T14:30:00Z`, date, summary: "", portfolioAfter: null, positions: [],
+    market: { stocksLoaded: 0, headlinesLoaded: 0 }, trades, influencerPositions,
+  });
+
+  // Mirrors the real sleeve: SPCX sell has NO stored buy (correction supplies @166); MSFT & BTC
+  // round-trip ~flat; AAPL & PLTR are still held and up. Newest-first order (as the dashboard passes).
+  const runsNewestFirst = [
+    // latest holdings carry their real avgCost (buy price) vs current price → snapshot-native unrealized
+    mkRun("2026-07-01", [], [
+      { symbol: "AAPL", quantity: "1", avgCost: "278.13", price: "293.3" },
+      { symbol: "PLTR", quantity: "1", avgCost: "116.26", price: "124.815" },
+    ]),
+    mkRun("2026-06-30", [trade("buy", "PLTR", "1", "116.26", "influencer"), trade("sell", "BTC", "2", "26.04")]),
+    mkRun("2026-06-26", [trade("buy", "AAPL", "1", "278.13", "influencer")]),
+    mkRun("2026-06-25", [trade("buy", "BTC", "2", "26.13", "influencer"), trade("sell", "MSFT", "1", "374.50")]),
+    mkRun("2026-06-23", [trade("buy", "MSFT", "1", "374.50", "influencer")]),
+    mkRun("2026-06-22", [trade("sell", "SPCX", "1", "154.61")]), // buy @166 supplied by the correction
+  ];
+
+  const pnl = computeInfluencerPnL(runsNewestFirst)!;
+
+  it("realized loss is dominated by SPCX (−$11.39), MSFT/BTC ~flat → ≈ −$11.57", () => {
+    expect(pnl).not.toBeNull();
+    expect(pnl.realized).toBeCloseTo(-11.57, 1);
+  });
+
+  it("unrealized is the AAPL + PLTR paper gain ≈ +$23.73", () => {
+    expect(pnl.unrealized).toBeCloseTo(23.73, 1);
+    expect(pnl.holdings.map(h => h.symbol).sort()).toEqual(["AAPL", "PLTR"]); // SPCX fully closed, not held
+  });
+
+  it("net total includes the SPCX loss → ≈ +$12.16 (not the +7.52% the % index showed)", () => {
+    expect(pnl.total).toBeCloseTo(12.16, 1);
   });
 });
 
