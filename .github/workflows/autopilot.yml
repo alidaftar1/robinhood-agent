@@ -17,6 +17,7 @@ on:
 permissions:
   contents: write        # push the proposal branch
   pull-requests: write   # open the proposal PR
+  issues: write          # maintain the "Autopilot Journal" issue (persistent memory)
 
 concurrency:
   group: autopilot
