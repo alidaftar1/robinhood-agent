@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Analytics } from "@vercel/analytics/next";
 
 export const metadata: Metadata = {
   title: "Robinhood Agent",
@@ -15,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           a { color: inherit; text-decoration: none; }
         `}</style>
       </head>
-      <body>{children}</body>
+      <body>{children}<Analytics /></body>
     </html>
   );
 }
