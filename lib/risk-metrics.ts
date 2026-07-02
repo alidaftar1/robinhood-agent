@@ -157,13 +157,9 @@ export function formatBookBeta(book: { beta: number; coveragePct: number } | nul
 export const SUSTAINED_TRAILING_DAYS = 10;
 
 export interface BenchmarkVerdict {
-  mainReturn: number;    // main book cumulative % over its tracked window
-  spyReturn: number;     // SPY cumulative % over the SAME window
-  alpha: number;         // mainReturn − spyReturn (>0 = beating buy-and-hold)
-  daysTracked: number;
-  daysTrailing: number;  // consecutive most-recent trading days cumulative alpha < 0
-  sustained: boolean;    // daysTrailing ≥ SUSTAINED_TRAILING_DAYS
-  verdict: string;
+  alpha: number;         // main book cumulative alpha vs SPY (>0 = beating buy-and-hold) — same figure as the "Main Book vs S&P" card
+  daysTrailing: number;  // consecutive most-recent trading days cumulative alpha < 0 (0 = currently ahead)
+  sustained: boolean;    // daysTrailing ≥ SUSTAINED_TRAILING_DAYS → the "kill-switch" warning fires
 }
 
 export function computeBenchmarkVerdict(runsNewestFirst: TradeRun[]): BenchmarkVerdict | null {
@@ -192,21 +188,9 @@ export function computeBenchmarkVerdict(runsNewestFirst: TradeRun[]): BenchmarkV
   for (let i = cumAlpha.length - 1; i >= 0; i--) {
     if (cumAlpha[i] < 0) daysTrailing++; else break;
   }
-  const mainReturn = mainIdx - 100;
-  const spyReturn = (lastSpy / spyBase) * 100 - 100;
-  const alpha = mainReturn - spyReturn;
+  const alpha = (mainIdx - 100) - ((lastSpy / spyBase) * 100 - 100);
   const sustained = daysTrailing >= SUSTAINED_TRAILING_DAYS;
-
-  // The callout does NOT restate the alpha number — that lives in the "Main Book vs S&P" card
-  // right above it (restating a separately-computed number risks two contradictory figures). The
-  // verdict's unique contribution is the beating/trailing SIGN and the day-streak.
-  const verdict = alpha >= 0
-    ? `Beating buy-and-hold SPY over ${cumAlpha.length} trading days — active trading is earning its risk.`
-    : sustained
-      ? `⚠ Sustained underperformance: the active book has trailed just holding SPY for ${daysTrailing} straight trading days. Reconsider whether active trading is earning its risk vs simply indexing.`
-      : `Trailing buy-and-hold SPY for ${daysTrailing} day${daysTrailing === 1 ? "" : "s"} — within normal noise, watch it.`;
-
-  return { mainReturn, spyReturn, alpha, daysTracked: cumAlpha.length, daysTrailing, sustained, verdict };
+  return { alpha, daysTrailing, sustained };
 }
 
 export function betaDescription(beta: number): string {

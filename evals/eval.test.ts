@@ -390,8 +390,8 @@ describe("benchmark verdict: is the active book beating buy-and-hold SPY", () =>
       mkRun("2026-06-17", 0.01, 101.0),
     ]))!;
     expect(v.alpha).toBeGreaterThan(0);
-    expect(v.daysTrailing).toBe(0);
-    expect(v.verdict).toContain("Beating");
+    expect(v.daysTrailing).toBe(0); // ahead → no trailing flag on the card
+    expect(v.sustained).toBe(false);
   });
 
   it("flags SUSTAINED underperformance after ≥10 straight trailing days", () => {
@@ -403,8 +403,7 @@ describe("benchmark verdict: is the active book beating buy-and-hold SPY", () =>
     const v = computeBenchmarkVerdict(newestFirst(runs))!;
     expect(v.alpha).toBeLessThan(0);
     expect(v.daysTrailing).toBeGreaterThanOrEqual(10);
-    expect(v.sustained).toBe(true);
-    expect(v.verdict).toContain("Sustained");
+    expect(v.sustained).toBe(true); // ⚠ flag fires
   });
 
   it("calls a short trailing streak normal noise, not sustained", () => {
@@ -414,8 +413,8 @@ describe("benchmark verdict: is the active book beating buy-and-hold SPY", () =>
       mkRun("2026-06-17", -0.001, 101.0),
     ]))!;
     expect(v.alpha).toBeLessThan(0);
+    expect(v.daysTrailing).toBeGreaterThan(0); // trailing, but short → muted flag, not the ⚠
     expect(v.sustained).toBe(false);
-    expect(v.verdict).toContain("noise");
   });
 });
 
