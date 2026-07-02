@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
+import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
 
 interface VerifyResult {
   status: string;
@@ -329,9 +330,17 @@ export async function GET(request: Request) {
   // high/medium concerns are actionable → they flip the status; low are FYI only.
   const seriousConcerns = reviewConcerns.filter((c) => c.severity !== "low");
 
+  // Deterministic audit of the dashboard's derived numbers — the presentation layer no other
+  // reviewer checks (sleeve-return artifacts, stale sleeve membership, gaps, the influencer squat).
+  // Wrapped so a bad record can never break the daily report.
+  let reconcileFindings: ReconcileFinding[] = [];
+  try { reconcileFindings = reconcileDashboard(runs); }
+  catch (e) { autoFixed.push(`Dashboard reconciliation could not run (${e}).`); }
+  const seriousReconcile = reconcileFindings.filter((f) => f.severity !== "low");
+
   // ─── Email ────────────────────────────────────────────────────────────────────
 
-  const needsAttention = issues.length > 0 || seriousConcerns.length > 0;
+  const needsAttention = issues.length > 0 || seriousConcerns.length > 0 || seriousReconcile.length > 0;
   const statusLabel = needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";
   const statusColor = needsAttention ? "#f59e0b" : "#10b981";
 
@@ -385,6 +394,18 @@ export async function GET(request: Request) {
       .map((c) => {
         const tag = c.severity === "high" ? "🔴" : c.severity === "medium" ? "🟠" : "⚪";
         return `<li><strong>${tag} ${c.title}</strong> — ${c.detail}</li>`;
+      })
+      .join("")}</ul>
+  </div>`
+    : ""}
+
+  ${reconcileFindings.length > 0
+    ? `<div style="background:#f5f3ff;border-left:4px solid #8b5cf6;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>📊 Dashboard reconciliation:</strong>
+    <ul style="margin:8px 0 0;padding-left:20px">${reconcileFindings
+      .map((f) => {
+        const tag = f.severity === "high" ? "🔴" : f.severity === "medium" ? "🟠" : "⚪";
+        return `<li><strong>${tag} ${f.title}</strong> — ${f.detail}</li>`;
       })
       .join("")}</ul>
   </div>`

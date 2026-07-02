@@ -7,6 +7,7 @@ import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
 import { computeStockBeta } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
+import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -415,6 +416,44 @@ describe("benchmark verdict: is the active book beating buy-and-hold SPY", () =>
     expect(v.alpha).toBeLessThan(0);
     expect(v.daysTrailing).toBeGreaterThan(0); // trailing, but short → muted flag, not the ⚠
     expect(v.sustained).toBe(false);
+  });
+});
+
+describe("dashboard reconciliation: deterministic audit of derived numbers", () => {
+  const rpos = (symbol: string, qty: string, price: string): PositionSnapshot => ({ symbol, quantity: qty, avgCost: price, price });
+  const rRun = (date: string, o: {
+    positions?: PositionSnapshot[]; infl?: PositionSnapshot[]; trades?: TradeSnapshot[]; total?: string;
+    spy?: number; agentic?: number | null; main?: number | null; infR?: number | null;
+  }): TradeRun => ({
+    timestamp: `${date}T14:30:00Z`, date, summary: "",
+    portfolioAfter: { totalValue: o.total ?? "1000", cash: "0", equity: o.total ?? "1000" },
+    positions: o.positions ?? [], influencerPositions: o.infl ?? [], trades: o.trades ?? [],
+    market: { stocksLoaded: 0, headlinesLoaded: 0 }, spyPrice: o.spy ?? 100,
+    agenticDailyReturn: o.agentic ?? null, mainDailyReturn: o.main ?? null, influencerDailyReturn: o.infR ?? null,
+  });
+  const titles = (rs: TradeRun[]) => reconcileDashboard(rs).map(f => f.title);
+
+  it("flags the influencer-slot squat (sleeve 2/2 with S&P names) — the AAPL case", () => {
+    const t = titles([rRun("2026-07-02", {
+      infl: [rpos("AAPL", "1", "110"), rpos("PLTR", "1", "110")],
+      positions: [rpos("AAPL", "1", "110"), rpos("PLTR", "1", "110")], agentic: 0.01,
+    })]);
+    expect(t.some(x => x.includes("at capacity"))).toBe(true);
+  });
+
+  it("flags an influencer position not actually held (stale sleeve membership)", () => {
+    const t = titles([rRun("2026-07-02", {
+      infl: [rpos("ZZZZ", "1", "10")], positions: [rpos("MSFT", "1", "100")], agentic: 0.01,
+    })]);
+    expect(t.some(x => x.includes("not in the account"))).toBe(true);
+  });
+
+  it("stays quiet on a clean sleeve (held names, no squat, no orphan)", () => {
+    const t = titles([rRun("2026-07-02", {
+      infl: [rpos("AAPL", "1", "110")], // 1 slot used → no squat; AAPL is held → no orphan
+      positions: [rpos("AAPL", "1", "110"), rpos("MSFT", "1", "100")], agentic: 0.01,
+    })]);
+    expect(t).toEqual([]);
   });
 });
 
