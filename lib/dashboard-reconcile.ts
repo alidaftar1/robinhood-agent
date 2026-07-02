@@ -37,17 +37,20 @@ export function reconcileDashboard(runsNewestFirst: TradeRun[]): ReconcileFindin
     });
   }
 
-  // 2. Influencer-slot squat: sleeve at capacity while holding an S&P name that likely now stands on
-  //    a main thesis — silently blocks new influencer buys (the AAPL case the owner caught by hand).
-  //    LOW by design: it persists day-after-day until a slot frees, so it's an FYI nudge and must
-  //    NOT flip the email to "needs attention" daily (that would desensitize the owner).
+  // 2. Influencer sleeve at capacity with dual-nature (S&P) holdings. An S&P name shows up in BOTH
+  //    the momentum table and the influencer sleeve, so it's easy to misread which bucket it's in.
+  //    Flag it NEUTRALLY: a full sleeve blocks new influencer buys, but that's often the cap correctly
+  //    holding a winner (e.g. AAPL entered on an influencer signal while DOWN 7% on 5d — a name main
+  //    would never have bought — then rallied; its gain is a real influencer win, NOT a "main" name to
+  //    reclassify). Do NOT prescribe reclassifying — that would mis-credit the main book. LOW by design
+  //    (persists daily until a slot frees, so it must not flip the email to "needs attention").
   const infl = latest.influencerPositions ?? [];
   const sp500Infl = infl.filter(p => sp500.has(p.symbol));
   if (infl.length >= MAX_INFLUENCER && sp500Infl.length > 0) {
     findings.push({
       severity: "low",
       title: "Influencer sleeve at capacity holding an S&P name",
-      detail: `${sp500Infl.map(p => p.symbol).join(", ")} occupy influencer slot(s) (sleeve ${infl.length}/${MAX_INFLUENCER}) but are S&P 500 names that may now stand on a main thesis. New influencer buys are blocked until a slot frees — consider reclassifying to main.`,
+      detail: `${sp500Infl.map(p => p.symbol).join(", ")} fill influencer slot(s) (sleeve ${infl.length}/${MAX_INFLUENCER}) — S&P names, so they appear in both the momentum table and the sleeve. No new influencer pick can be bought until a slot frees. Often fine (the cap holding a winner) — only worth acting on if it's blocking a stronger signal.`,
     });
   }
 
