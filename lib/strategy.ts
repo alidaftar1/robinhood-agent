@@ -77,8 +77,15 @@ export const SP100_UNIVERSE = SP500_UNIVERSE;
 export interface PortfolioContext {
   buyingPower: string | null;
   totalValue: string | null;
-  positions?: Array<{ symbol: string; quantity: string; avgCost: string }>;
+  // heldDays / price are optional enrichments (live path only) that power the staleness time-stop.
+  positions?: Array<{ symbol: string; quantity: string; avgCost: string; heldDays?: number; price?: number }>;
 }
+
+// Staleness time-stop (adapted from a mean-reversion time-stop to fit a MOMENTUM book):
+// a position held this long that's still roughly flat is dead money — free it — UNLESS it's a
+// genuine winner or still has strong momentum (let winners run). Soft rule, model applies judgment.
+export const STALE_DAYS = 15;        // ~3 trading weeks
+export const STALE_RETURN_PCT = 3;   // "flat" = up less than this since entry
 
 // Per-position dollar cap: a $400 floor that scales to 20% of the portfolio as the
 // account grows, so larger deposits get larger positions instead of forcing dozens
@@ -185,8 +192,15 @@ Rules for each field:
 
 export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string): string {
   const maxPos = maxPositionDollars(portfolio.totalValue);
+  const hasAges = !!portfolio.positions?.some(p => p.heldDays != null);
   const positionsLines = portfolio.positions?.length
-    ? portfolio.positions.map(p => `  ${p.symbol} × ${p.quantity} @ $${parseFloat(p.avgCost).toFixed(2)} avg`).join("\n")
+    ? portfolio.positions.map(p => {
+        const avg = parseFloat(p.avgCost);
+        const ret = p.price && avg > 0 ? ((p.price - avg) / avg) * 100 : null;
+        const age = p.heldDays != null ? `, held ${p.heldDays}d` : "";
+        const retStr = ret != null ? `, ${ret >= 0 ? "+" : ""}${ret.toFixed(1)}% since entry` : "";
+        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${age}${retStr}`;
+      }).join("\n")
     : "  (none — full cash)";
 
   return `You are an autonomous equity trading agent. Analyze the portfolio and market data and decide what trades to make. Do NOT place any orders — output only a structured decision.
@@ -218,7 +232,8 @@ READING THE MARKET DATA TABLE:
 
 CONSTRAINTS:
 - Gradual rotation: sell at most a few positions per run — don't liquidate everything at once.
-- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive mom5 or mom14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis. For every current holding not in the top table, explicitly state in your thesis why it's being kept or sold.
+- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive mom5 or mom14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis. For every current holding not in the top table, explicitly state in your thesis why it's being kept or sold.${hasAges ? `
+- TIME-STOP (staleness — free dead capital): each holding shows "held Nd, ±X% since entry". A position held ≥ ${STALE_DAYS} trading days that is still roughly flat (up less than +${STALE_RETURN_PCT}% since entry) is dead money — the thesis has had weeks to work and the capital is earning nothing. Sell it and redeploy, UNLESS it currently shows strong momentum (high mom5/mom14 in the table) or a fresh ★INS/⚡↑ signal worth waiting on — let genuine winners run, cut the stale flat ones. State the time-stop decision in your thesis for any holding at or past ${STALE_DAYS} days.` : ""}
 - Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
 - Max $${maxPos} per position (compute max_qty = floor(${maxPos} / price)), min $50. Whole shares only. Stocks from table only.
 - Never buy ⚠⚠ IMMINENT.

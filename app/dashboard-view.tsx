@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -375,6 +375,9 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
   const mainBeatRate = computeBeatRate(runs, r => r.mainDailyReturn);
 
+  // Honest "is the active book beating just-holding-SPY, and for how long has it trailed?" verdict.
+  const benchmarkVerdict = computeBenchmarkVerdict(runs);
+
   const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
   const returnColor = (v: number | null) => v == null ? "#888" : v >= 0 ? "#7dba7d" : "#e06c6c";
 
@@ -437,6 +440,19 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={s.perfSince}>of {mainBeatRate.n} trading days</span>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Benchmark "kill-switch" verdict — is the active book earning its risk vs just holding SPY? */}
+      {benchmarkVerdict && (
+        <div style={{
+          margin: "10px 0", padding: "10px 14px", borderRadius: 8, fontSize: 13, lineHeight: 1.5,
+          border: `1px solid ${benchmarkVerdict.sustained ? "#5c3a1a" : benchmarkVerdict.alpha >= 0 ? "#1f3d1f" : "#333"}`,
+          background: benchmarkVerdict.sustained ? "#241708" : benchmarkVerdict.alpha >= 0 ? "#0f1a0f" : "#141414",
+          color: benchmarkVerdict.sustained ? "#e8a04a" : benchmarkVerdict.alpha >= 0 ? "#9ccf9c" : "#b8b8b8",
+        }}>
+          <Tip style={{ fontWeight: 600, color: "inherit" }} label="Active vs. just holding SPY" def="A discipline check: is the actively-traded main book actually beating a simple buy-and-hold of SPY over the same period? If it trails for many days in a row, the active strategy may not be earning the extra risk — consider whether to keep trading it or just index." />
+          <div style={{ marginTop: 4 }}>{benchmarkVerdict.verdict}</div>
         </div>
       )}
 

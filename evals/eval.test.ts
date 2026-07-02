@@ -5,8 +5,8 @@ import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
 import { computeStockBeta } from "@/lib/market-data";
-import { computeBookBeta, formatBookBeta } from "@/lib/risk-metrics";
-import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
+import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -369,6 +369,74 @@ describe("sleeve returns: sold-out position is reconciled, not booked as a phant
     const r = computeSleeveReturns(todayPos, tr, todayInf, prevInf, prevPos);
     expect(Math.abs(r.influencerDailyReturn!)).toBeLessThan(1e-6);
     expect(Math.abs(r.mainDailyReturn!)).toBeLessThan(1e-6);
+  });
+});
+
+describe("benchmark verdict: is the active book beating buy-and-hold SPY", () => {
+  // agenticDailyReturn mirrors main here so the SPY baseline (keyed off first agentic return,
+  // matching the dashboard) lands on the same run as the first main return.
+  const mkRun = (date: string, mainDailyReturn: number | null, spyPrice: number): TradeRun => ({
+    timestamp: `${date}T14:30:00Z`, date, summary: "", portfolioAfter: null, positions: [],
+    market: { stocksLoaded: 0, headlinesLoaded: 0 }, spyPrice, mainDailyReturn,
+    agenticDailyReturn: mainDailyReturn,
+  });
+  // Helper builds runs oldest→newest then reverses to newest-first (as the dashboard passes).
+  const newestFirst = (runs: TradeRun[]) => [...runs].reverse();
+
+  it("reports beating when the book outruns SPY", () => {
+    const v = computeBenchmarkVerdict(newestFirst([
+      mkRun("2026-06-15", null, 100),   // baseline (no main return yet)
+      mkRun("2026-06-16", 0.02, 100.5),
+      mkRun("2026-06-17", 0.01, 101.0),
+    ]))!;
+    expect(v.alpha).toBeGreaterThan(0);
+    expect(v.daysTrailing).toBe(0);
+    expect(v.verdict).toContain("Beating");
+  });
+
+  it("flags SUSTAINED underperformance after ≥10 straight trailing days", () => {
+    const runs: TradeRun[] = [mkRun("2026-06-01", null, 100)];
+    for (let i = 1; i <= 12; i++) {
+      // main loses a touch daily while SPY climbs → cumulative alpha negative every day
+      runs.push(mkRun(`2026-06-${String(i + 1).padStart(2, "0")}`, -0.001, 100 + i * 0.3));
+    }
+    const v = computeBenchmarkVerdict(newestFirst(runs))!;
+    expect(v.alpha).toBeLessThan(0);
+    expect(v.daysTrailing).toBeGreaterThanOrEqual(10);
+    expect(v.sustained).toBe(true);
+    expect(v.verdict).toContain("Sustained");
+  });
+
+  it("calls a short trailing streak normal noise, not sustained", () => {
+    const v = computeBenchmarkVerdict(newestFirst([
+      mkRun("2026-06-15", null, 100),
+      mkRun("2026-06-16", -0.002, 100.5),
+      mkRun("2026-06-17", -0.001, 101.0),
+    ]))!;
+    expect(v.alpha).toBeLessThan(0);
+    expect(v.sustained).toBe(false);
+    expect(v.verdict).toContain("noise");
+  });
+});
+
+describe("time-stop: staleness rule wiring in the buy prompt", () => {
+  const build = (positions: PortfolioContextPositions) => buildAnalysisPrompt(
+    TODAY, "TABLE",
+    { buyingPower: "$1000.00", totalValue: "$5000.00", positions },
+    undefined, "\nSECTOR EXPOSURE...\n",
+  );
+  type PortfolioContextPositions = { symbol: string; quantity: string; avgCost: string; heldDays?: number; price?: number }[];
+
+  it("shows holding age + return and injects the TIME-STOP rule when heldDays is present", () => {
+    const prompt = build([{ symbol: "MKC", quantity: "2", avgCost: "50.00", heldDays: 20, price: 50.5 }]);
+    expect(prompt).toContain("held 20d");
+    expect(prompt).toContain("+1.0% since entry");
+    expect(prompt).toContain("TIME-STOP");
+  });
+
+  it("omits the TIME-STOP rule when positions carry no holding age (fallback path)", () => {
+    const prompt = build([{ symbol: "MKC", quantity: "2", avgCost: "50.00" }]);
+    expect(prompt).not.toContain("TIME-STOP");
   });
 });
 

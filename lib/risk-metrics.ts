@@ -148,6 +148,67 @@ export function formatBookBeta(book: { beta: number; coveragePct: number } | nul
   return `\nCURRENT BOOK β vs SPY: ${book.beta.toFixed(2)} — ${betaDescription(book.beta)}${conf}\n`;
 }
 
+// ─── Benchmark "kill-switch" verdict ─────────────────────────────────────────
+// Honest check on whether the ACTIVE main book is actually earning its risk vs just
+// buying-and-holding SPY. Idea adapted from a competitor's quarterly kill-switch
+// ("beating buy-and-hold? if not for 2 quarters, pause"). For a daily agent we track
+// how many consecutive recent trading days the book's CUMULATIVE alpha has been negative,
+// and escalate the verdict once that persists — surfacing "maybe active isn't worth it."
+export const SUSTAINED_TRAILING_DAYS = 10;
+
+export interface BenchmarkVerdict {
+  mainReturn: number;    // main book cumulative % over its tracked window
+  spyReturn: number;     // SPY cumulative % over the SAME window
+  alpha: number;         // mainReturn − spyReturn (>0 = beating buy-and-hold)
+  daysTracked: number;
+  daysTrailing: number;  // consecutive most-recent trading days cumulative alpha < 0
+  sustained: boolean;    // daysTrailing ≥ SUSTAINED_TRAILING_DAYS
+  verdict: string;
+}
+
+export function computeBenchmarkVerdict(runsNewestFirst: TradeRun[]): BenchmarkVerdict | null {
+  const chron = [...runsNewestFirst].reverse(); // oldest → newest
+  // Anchor SPY to the SAME baseline the dashboard's "Main Book vs S&P" card uses (the run before
+  // the first agentic return), so the verdict's beating/trailing sign can never contradict that card.
+  const firstReturnIdx = chron.findIndex(r => r.agenticDailyReturn != null);
+  if (firstReturnIdx < 0) return null;
+  const spyBase = firstReturnIdx > 0 ? chron[firstReturnIdx - 1].spyPrice : chron[firstReturnIdx].spyPrice;
+  if (!spyBase || spyBase <= 0) return null;
+
+  let mainIdx = 100;
+  let lastSpy = spyBase;
+  const cumAlpha: number[] = []; // cumulative alpha (%) at each run carrying both main return + SPY
+  for (const run of chron) {
+    if (run.mainDailyReturn != null) mainIdx *= (1 + run.mainDailyReturn);
+    if (run.spyPrice) lastSpy = run.spyPrice;
+    if (run.mainDailyReturn != null && run.spyPrice) {
+      const spyIdx = (run.spyPrice / spyBase) * 100;
+      cumAlpha.push(mainIdx - spyIdx); // both indexed from 100 → the gap IS cumulative alpha in %
+    }
+  }
+  if (cumAlpha.length < 2) return null;
+
+  let daysTrailing = 0;
+  for (let i = cumAlpha.length - 1; i >= 0; i--) {
+    if (cumAlpha[i] < 0) daysTrailing++; else break;
+  }
+  const mainReturn = mainIdx - 100;
+  const spyReturn = (lastSpy / spyBase) * 100 - 100;
+  const alpha = mainReturn - spyReturn;
+  const sustained = daysTrailing >= SUSTAINED_TRAILING_DAYS;
+
+  // The callout does NOT restate the alpha number — that lives in the "Main Book vs S&P" card
+  // right above it (restating a separately-computed number risks two contradictory figures). The
+  // verdict's unique contribution is the beating/trailing SIGN and the day-streak.
+  const verdict = alpha >= 0
+    ? `Beating buy-and-hold SPY over ${cumAlpha.length} trading days — active trading is earning its risk.`
+    : sustained
+      ? `⚠ Sustained underperformance: the active book has trailed just holding SPY for ${daysTrailing} straight trading days. Reconsider whether active trading is earning its risk vs simply indexing.`
+      : `Trailing buy-and-hold SPY for ${daysTrailing} day${daysTrailing === 1 ? "" : "s"} — within normal noise, watch it.`;
+
+  return { mainReturn, spyReturn, alpha, daysTracked: cumAlpha.length, daysTrailing, sustained, verdict };
+}
+
 export function betaDescription(beta: number): string {
   if (beta > 1.1) return "swings more than the market";
   if (beta < 0.9) return "swings less than the market";
