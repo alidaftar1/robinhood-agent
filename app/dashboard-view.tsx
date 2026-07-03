@@ -49,9 +49,6 @@ function buildReturnSeries(runs: TradeRun[]): ReturnSeries {
   let agentIdx = 100;
   let influencerIdx = 100;
   let mainIdx = 100;
-  let hasReturn = false;
-  let hasInfluencer = false;
-  let hasMain = false;
   const points: ReturnPoint[] = [];
 
   // The 100-anchor for a series is the run just before its first daily return (or that
@@ -71,31 +68,26 @@ function buildReturnSeries(runs: TradeRun[]): ReturnSeries {
       ? (chronological[0].spyPrice ?? null)
       : null;
 
-  for (const run of chronological) {
-    if (run.agenticDailyReturn != null) {
-      agentIdx *= (1 + run.agenticDailyReturn);
-      hasReturn = true;
-    }
-    if (run.influencerDailyReturn != null) {
-      influencerIdx *= (1 + run.influencerDailyReturn);
-      hasInfluencer = true;
-    }
-    // Main book (core S&P sleeve) — stored at trade time; null on older runs.
-    if (run.mainDailyReturn != null) {
-      mainIdx *= (1 + run.mainDailyReturn);
-      hasMain = true;
-    }
-    const spy = run.spyPrice && spyBase != null
-      ? (run.spyPrice / spyBase) * 100
-      : null;
+  // Each series is indexed to 100 at its BASELINE — the run just before its first daily return —
+  // so every line genuinely starts at 100 and its first day's move shows as the first segment
+  // (previously the first plotted point was already one day off 100, which was invisible for the
+  // low-move AI/main lines but landed the volatile influencer line at ~93, contradicting the label).
+  const startEmit = (firstIdx: number) => firstIdx < 0 ? Infinity : Math.max(0, firstIdx - 1);
+  const aStart = startEmit(firstReturnIdx), iStart = startEmit(firstInfluencerIdx), mStart = startEmit(firstMainIdx);
+
+  chronological.forEach((run, i) => {
+    if (run.agenticDailyReturn != null) agentIdx *= (1 + run.agenticDailyReturn);
+    if (run.influencerDailyReturn != null) influencerIdx *= (1 + run.influencerDailyReturn);
+    if (run.mainDailyReturn != null) mainIdx *= (1 + run.mainDailyReturn); // core S&P sleeve; null on older runs
+    const spy = run.spyPrice && spyBase != null ? (run.spyPrice / spyBase) * 100 : null;
     points.push({
       date: run.date,
-      agentic: hasReturn ? agentIdx : null,
+      agentic: i >= aStart ? agentIdx : null,
       spy,
-      influencer: hasInfluencer ? influencerIdx : null,
-      main: hasMain ? mainIdx : null,
+      influencer: i >= iStart ? influencerIdx : null,
+      main: i >= mStart ? mainIdx : null,
     });
-  }
+  });
   return {
     points,
     since: {
