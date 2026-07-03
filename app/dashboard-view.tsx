@@ -113,7 +113,7 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
   const W = 760, H = 140, PL = 44, PR = 12, PT = 8, PB = 28;
   const cw = W - PL - PR, ch = H - PT - PB;
 
-  const allVals = valid.flatMap(p => [p.agentic, p.spy, p.influencer].filter(v => v != null) as number[]);
+  const allVals = valid.flatMap(p => [p.main, p.spy, p.influencer].filter(v => v != null) as number[]);
   const minV = Math.min(...allVals), maxV = Math.max(...allVals);
   const pad = Math.max((maxV - minV) * 0.1, 1);
   const lo = minV - pad, hi = maxV + pad;
@@ -146,7 +146,7 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
       <line x1={PL} x2={W - PR} y1={yOf(100)} y2={yOf(100)} stroke="#333" strokeWidth="1" strokeDasharray="4 3" />
       {/* Lines */}
       {polyline(p => p.spy, "#444")}
-      {polyline(p => p.agentic, "#7dba7d")}
+      {polyline(p => p.main, "#7dba7d")}
       {polyline(p => p.influencer, "#e8943a")}
       {/* Y-axis labels */}
       {ticks.map((t, i) => (
@@ -318,7 +318,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // Transfer-adjusted cumulative return from stored daily returns (null until enough data)
   const { points: returnSeries, since: seriesSince } = buildReturnSeries(runs);
   const latestSeries = returnSeries[returnSeries.length - 1];
-  const agenticCumReturn = latestSeries?.agentic != null ? latestSeries.agentic - 100 : null;
   const mainCumReturn = latestSeries?.main != null ? latestSeries.main - 100 : null;
 
   // Top section reports the MAIN book (core S&P strategy) on its own — the influencer sleeve is a
@@ -494,7 +493,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           <div style={s.chartLegend}>
             <div style={s.legendItem}>
               <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#7dba7d" strokeWidth="2" /></svg>
-              The AI {agenticCumReturn != null ? `(${fmtPct(agenticCumReturn)})` : ""}
+              Main book {mainCumReturn != null ? `(${fmtPct(mainCumReturn)})` : ""}
             </div>
             {hasInfluencerData && (
               <div style={s.legendItem}>
