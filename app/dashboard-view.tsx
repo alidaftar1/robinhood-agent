@@ -407,7 +407,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={s.perfSince}>the market, same period</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="Main Book vs S&P 500" def="Alpha: the core strategy's return minus the S&P 500's over the same period. Positive = the core book is beating the market. A 'trailing N days' flag warns when the book has stayed behind buy-and-hold SPY for a sustained stretch — a nudge to reconsider whether active trading is earning its risk." />
+            <Tip style={s.perfLabel} label="Main Book vs S&P 500" def="The core strategy's return minus the S&P 500's over the same period. Positive = the core book is beating the market. A 'trailing N days' flag warns when the book has stayed behind buy-and-hold SPY for a sustained stretch — a nudge to reconsider whether active trading is earning its risk." />
             <span style={{ ...s.perfValue, color: returnColor(mainAlpha) }}>
               {mainAlpha != null ? fmtPct(mainAlpha) : "—"}
             </span>
@@ -416,7 +416,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 {benchmarkVerdict.sustained ? "⚠ " : ""}trailing SPY {benchmarkVerdict.daysTrailing} day{benchmarkVerdict.daysTrailing === 1 ? "" : "s"}
               </span>
             ) : (
-              <span style={s.perfSince}>core book vs. the S&P 500 (alpha)</span>
+              <span style={s.perfSince}>core book vs. the S&P 500</span>
             )}
           </div>
           {mainBookValue != null && (
