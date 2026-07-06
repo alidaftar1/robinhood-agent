@@ -62,6 +62,12 @@ export interface TradeRun {
    *  history accrue and (for a daily-rebalanced book) blends names no longer held. coveragePct
    *  = share of book value with a known β. null on older runs / when no priced holdings. (2026-07-04) */
   bookBeta?: { beta: number; coveragePct: number } | null;
+  /** Human-readable notes from the pre-flight buy-sizing step (fitBuysToBudget) when it shrank
+   *  or DROPPED a decided buy to fit settled buying power — e.g. "TSLA DROPPED — whole share
+   *  needs ~$413 but only $40 left; ~$413 stays idle". Persisted so a dropped buy is never
+   *  silent: the skeptical-reviewer and 8am email can cite the exact sizing reason instead of
+   *  inferring it from idle cash. Absent when no sizing adjustment was needed. (2026-07-06) */
+  buySizingAdjustments?: string[];
   // Influencer sub-portfolio (added 2026-06-18)
   influencerPositions?: PositionSnapshot[];
   influencerDailyReturn?: number | null;
@@ -242,6 +248,12 @@ export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
     // is raw). Keeps mergeRunsByDate pure, as its docstring promises.
     const base = winner === existing ? winner : { ...winner, trades: [...(winner.trades ?? [])] };
     base.trades = unionTrades(base.trades ?? [], other.trades ?? []);
+    // Buy-sizing notes are per-run EVENTS (a drop/shrink happened when THAT run placed buys), so
+    // UNION them across same-date runs rather than letting preferRun pick one — otherwise a drop
+    // note on the losing run vanishes and the "a drop is never silent" guarantee breaks on a
+    // two-full-run day. Deduped so re-merging an already-merged run can't accumulate copies.
+    const mergedSizing = [...new Set([...(base.buySizingAdjustments ?? []), ...(other.buySizingAdjustments ?? [])])];
+    if (mergedSizing.length > 0) base.buySizingAdjustments = mergedSizing;
     byDate.set(run.date, base);
   }
   // Position snapshot: when BOTH same-date runs are full runs (e.g. the 7:30

@@ -66,6 +66,10 @@ function compactRun(r: TradeRun) {
       price: p.price,
     })),
     influencerPositions: (r.influencerPositions ?? []).map((p) => p.symbol),
+    // Pre-flight sizing notes: present when a decided buy was shrunk or DROPPED to fit settled
+    // buying power. Lets the reviewer cite the exact sizing reason for a missing buy / idle cash
+    // instead of inferring "the guardrail isn't deployed" (which mis-reads a working guardrail).
+    buySizingAdjustments: r.buySizingAdjustments ?? [],
   };
 }
 

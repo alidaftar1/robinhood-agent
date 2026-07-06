@@ -8,6 +8,7 @@ import { computeStockBeta } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
+import { fitBuysToBudget } from "@/lib/buy-sizing";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -328,6 +329,46 @@ describe("benchmark-awareness: beta math", () => {
   it("formatBookBeta renders the CURRENT BOOK β line", () => {
     expect(formatBookBeta({ beta: 1.375, coveragePct: 100 })).toContain("CURRENT BOOK β vs SPY: 1.38");
     expect(formatBookBeta(null)).toBe("");
+  });
+
+  it("fitBuysToBudget fits the priciest-per-share buy first so a cheap buy can't strand an expensive whole-share buy (TSLA-07-06)", () => {
+    // The 07-06 squeeze: the model emitted the CHEAP buy FIRST — DXC×6 @ $10 then TSLA×1 @ $405,
+    // ~$467 settled buying power. Order-preserving (the old bug) let DXC eat the budget and DROP
+    // the whole-share TSLA (→ ~$405 idle). Cheap-first input here so this test FAILS unless the
+    // per-share-descending sort actually runs.
+    const { sized, adjustments } = fitBuysToBudget(
+      [{ symbol: "DXC", quantity: 6, price: 10 }, { symbol: "TSLA", quantity: 1, price: 405.22 }],
+      467.6,
+    );
+    const bySym = Object.fromEntries(sized.map(b => [b.symbol, b.quantity]));
+    expect(bySym.TSLA).toBe(1);                       // the expensive whole-share is kept, not stranded
+    expect(bySym.DXC ?? 0).toBeLessThan(6);           // the cheap marginal buy absorbs the shrink
+    expect(adjustments.some(a => a.includes("DXC"))).toBe(true);
+    expect(adjustments.some(a => a.includes("TSLA"))).toBe(false); // TSLA untouched → no strand
+    // Deploys nearly all buying power (budget after 3% buffer), not ~$405 idle.
+    const spent = sized.reduce((s, b) => s + b.quantity * b.price * 1.02, 0);
+    expect(spent).toBeGreaterThan(467.6 * 0.9);
+  });
+
+  it("fitBuysToBudget prioritizes by PER-SHARE price, not total value, so a shrinkable multi-share buy can't starve a whole-share buy", () => {
+    // ~$600 BP: AAPL 5@$100 (total $500) vs TSLA 1@$405 (total $405). Sorting by TOTAL value would
+    // fund AAPL first and DROP the whole-share TSLA; per-share ordering keeps the indivisible TSLA
+    // and shrinks the divisible AAPL. This is the case that distinguishes the two sort keys.
+    const { sized } = fitBuysToBudget(
+      [{ symbol: "AAPL", quantity: 5, price: 100 }, { symbol: "TSLA", quantity: 1, price: 405.22 }],
+      600,
+    );
+    const bySym = Object.fromEntries(sized.map(b => [b.symbol, b.quantity]));
+    expect(bySym.TSLA).toBe(1);              // whole-share protected
+    expect(bySym.AAPL ?? 0).toBeLessThan(5); // the shrinkable buy yields instead
+  });
+
+  it("fitBuysToBudget drops a whole-share buy that truly can't fit and records a non-silent note", () => {
+    // Only $300 buying power; TSLA's 1 whole share (~$413 cushioned) genuinely can't fit → it is
+    // DROPPED (can't shrink below 1 share) but the drop is recorded so it's never silent.
+    const { sized, adjustments } = fitBuysToBudget([{ symbol: "TSLA", quantity: 1, price: 405.22 }], 300);
+    expect(sized.find(b => b.symbol === "TSLA")).toBeUndefined();
+    expect(adjustments.some(a => a.includes("TSLA") && a.includes("DROPPED"))).toBe(true);
   });
 
   it("dashboard 'Swings vs. Market' reads the CURRENT run's stored book β (holdings-based, aligned with the holdings shown beside it)", () => {
