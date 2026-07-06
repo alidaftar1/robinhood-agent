@@ -1,4 +1,6 @@
 import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, computeDailyReturn, backfillSleeveReturns } from "@/lib/run-store";
+import { getMarketData } from "@/lib/market-data";
+import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -153,6 +155,30 @@ export async function GET(request: Request) {
       results.recomputeSleeves = changes.length ? `patched ${changes.length}: ${changes.join(" | ")}` : "no changes";
     } catch (e) {
       results.recomputeSleeves = `error: ${e}`;
+    }
+  }
+
+  // Recompute the holdings-based book β on the LATEST run and store it, so the dashboard's
+  // "Swings vs. Market" card shows a meaningful number today without waiting for tomorrow's
+  // trade run (which stores it natively). Read-only: fetches fresh betas, places no orders.
+  if (url.searchParams.get("recomputeBookBeta")) {
+    try {
+      const latest = await getLatestRun();
+      if (!latest || !latest.positions?.length) {
+        results.recomputeBookBeta = "no latest run with positions";
+      } else {
+        const md = await getMarketData();
+        const bookBeta = computeBookBetaForPositions(
+          md.stocks,
+          latest.positions.map(p => ({ symbol: p.symbol, value: parseFloat(p.quantity) * parseFloat(p.price) })),
+        );
+        await updateLatestRun({ ...latest, bookBeta });
+        results.recomputeBookBeta = bookBeta
+          ? `set ${latest.date} bookBeta = ${bookBeta.beta.toFixed(2)} (β known for ${bookBeta.coveragePct.toFixed(0)}% of book)`
+          : "no priced holdings";
+      }
+    } catch (e) {
+      results.recomputeBookBeta = `error: ${e}`;
     }
   }
 

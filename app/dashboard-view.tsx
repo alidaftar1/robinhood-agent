@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBeta, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -354,7 +354,13 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
 
   const cashPct = current ? computeCashPct(current) : null;
   const sectorBreakdown = current ? computeSectorBreakdown(current) : [];
-  const beta = computeBeta(runs);
+  // "Swings vs. Market" = holdings-based book β stored on `current` — the SAME run that drives
+  // the cash/sector stats on this card, so β always matches the holdings shown beside it (no
+  // stale-β-vs-fresh-positions mismatch). Meaningful from day one; the realized-regression β
+  // (computeBeta) is kept in risk-metrics for a possible future "realized so far" secondary,
+  // but is too noisy over a handful of days to headline — see 2026-07-04 discussion. Shows
+  // "—" until a run carries one (older runs predate the field); never falls back to a stale day.
+  const bookBeta = current?.bookBeta ?? null;
   const t1Settling = current ? computeT1Settling(current) : null;
   const concentration = current ? computeConcentration(current) : null;
   // Max drawdown over the same co-indexed window for both series
@@ -508,7 +514,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
         </div>
       )}
 
-      {latest && (cashPct != null || sectorBreakdown.length > 0 || beta) && (
+      {latest && (cashPct != null || sectorBreakdown.length > 0 || bookBeta) && (
         <div style={s.chartCard}>
           <div style={s.chartTitle}>How risky is it? — a look under the hood</div>
           <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginBottom: sectorBreakdown.length > 0 ? 20 : 0 }}>
@@ -531,12 +537,12 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 170 }}>
-              <Tip style={s.perfLabel} label="Swings vs. Market" def="Beta: how much the account moves compared to the market. 1.0 = moves with the market; above 1 = bigger swings; below 1 = smaller swings." />
+              <Tip style={s.perfLabel} label="Swings vs. Market" def="Beta: how much the account tends to move with the market, based on what it currently holds. 1.0 = moves with the market; above 1 = bigger swings; below 1 = smaller swings." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
-                {beta ? `${beta.beta.toFixed(2)}×` : "—"}
+                {bookBeta ? `${bookBeta.beta.toFixed(2)}×` : "—"}
               </span>
               <span style={s.perfSince}>
-                {beta ? `${betaDescription(beta.beta)}${beta.n < 5 ? " · still early" : ""}` : "need a few more trading days"}
+                {bookBeta ? `${betaDescription(bookBeta.beta)}${bookBeta.coveragePct < 70 ? " · partial data" : ""}` : "need current holdings"}
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>

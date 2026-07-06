@@ -55,6 +55,13 @@ export interface TradeRun {
    *  trade time. Lets the dashboard show the core strategy isolated from the influencer
    *  drag. From 2026-06-30; null on older runs (no reliable backfill). */
   mainDailyReturn?: number | null;
+  /** Value-weighted book β vs SPY of the post-trade holdings, computed at trade time from
+   *  each holding's β (fresh market data) × position value. This is the dashboard's "Swings
+   *  vs. Market" number: a HOLDINGS-based estimate that's meaningful from day one — unlike a
+   *  realized regression over a handful of daily returns, which is noise until months of
+   *  history accrue and (for a daily-rebalanced book) blends names no longer held. coveragePct
+   *  = share of book value with a known β. null on older runs / when no priced holdings. (2026-07-04) */
+  bookBeta?: { beta: number; coveragePct: number } | null;
   // Influencer sub-portfolio (added 2026-06-18)
   influencerPositions?: PositionSnapshot[];
   influencerDailyReturn?: number | null;
@@ -251,6 +258,9 @@ export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
     if (src && src !== base) {
       base.positions = [...src.positions];
       if (src.influencerPositions) base.influencerPositions = [...src.influencerPositions];
+      // Book β is computed against a specific holdings snapshot — carry it from whichever run
+      // supplies the positions above, so the merged run's β always describes the book it shows.
+      if (src.bookBeta !== undefined) base.bookBeta = src.bookBeta;
     }
   }
   return [...byDate.values()]

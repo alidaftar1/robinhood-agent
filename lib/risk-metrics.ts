@@ -140,6 +140,19 @@ export function computeBookBeta(
   return { beta: bSum / wSum, coveragePct: (covered / wSum) * 100 };
 }
 
+// Book β for a set of holdings, looking each name's β up from a market-data stock list.
+// Wraps computeBookBeta with the betaMap build so the (stocks → β source) convention lives
+// in ONE place — the trade route, the debug backfill, and the risk prompt all call this
+// instead of re-building the map (which risks drifting apart). `value` is caller-derived
+// (live price × qty, or avgCost fallback) since only the caller knows which price to trust.
+export function computeBookBetaForPositions(
+  stocks: Array<{ symbol: string; beta: number | null }>,
+  positions: Array<{ symbol: string; value: number }>,
+): { beta: number; coveragePct: number } | null {
+  const betaOf = new Map<string, number | null>(stocks.map(s => [s.symbol, s.beta]));
+  return computeBookBeta(positions, (s) => betaOf.get(s));
+}
+
 // One-line book-β summary prepended to the risk section of the buy prompt. Empty when
 // there are no priced holdings (nothing to compare a new buy against yet).
 export function formatBookBeta(book: { beta: number; coveragePct: number } | null): string {

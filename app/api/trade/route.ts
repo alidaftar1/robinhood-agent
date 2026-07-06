@@ -4,7 +4,7 @@ import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioC
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchMomentum } from "@/lib/market-data";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, type MomentumSignal } from "@/lib/influencer-signals";
-import { computeSectorSlices, formatSectorExposure, computeBookBeta, formatBookBeta } from "@/lib/risk-metrics";
+import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
@@ -20,12 +20,11 @@ function buildRiskSection(
   priceMap: Map<string, number>,
   stocks: Array<{ symbol: string; beta: number | null }>,
 ): string {
-  const betaMap = new Map<string, number | null>(stocks.map(s => [s.symbol, s.beta]));
   const valued = positions.map(p => ({
     symbol: p.symbol,
     value: parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost)),
   }));
-  return formatBookBeta(computeBookBeta(valued, (s) => betaMap.get(s))) + formatSectorExposure(computeSectorSlices(valued));
+  return formatBookBeta(computeBookBetaForPositions(stocks, valued)) + formatSectorExposure(computeSectorSlices(valued));
 }
 
 const ACCOUNT = process.env.AGENTIC_ACCOUNT_ID ?? "";
@@ -640,6 +639,16 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     };
     console.log("SNAPSHOT_BUILT", { cash: cashAfter, unsettled: unsettledAfter, positions: positions.length, trades: trades.length });
 
+    // Holdings-based book β vs SPY of the FINAL (post-trade) positions — put on baseRun so
+    // BOTH the initial saveRun and the later updateLatestRun (which each spread baseRun and
+    // overwrite index 0 wholesale) persist it. Gives the dashboard's "Swings vs. Market" card
+    // a meaningful-day-one number instead of a noisy realized regression. Same β source
+    // (marketData.stocks) buildRiskSection uses.
+    const bookBeta = computeBookBetaForPositions(
+      marketData.stocks,
+      positions.map(p => ({ symbol: p.symbol, value: parseFloat(p.quantity) * parseFloat(p.price) })),
+    );
+
     const baseRun = {
       timestamp: runTimestamp,
       date: today,
@@ -648,6 +657,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
         stocksLoaded: marketData.stocks.length,
         headlinesLoaded: marketData.headlines.length,
       },
+      bookBeta,
       ...(spyPrice != null ? { spyPrice } : {}),
     };
 

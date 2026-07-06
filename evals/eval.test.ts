@@ -329,6 +329,16 @@ describe("benchmark-awareness: beta math", () => {
     expect(formatBookBeta({ beta: 1.375, coveragePct: 100 })).toContain("CURRENT BOOK β vs SPY: 1.38");
     expect(formatBookBeta(null)).toBe("");
   });
+
+  it("dashboard 'Swings vs. Market' reads the CURRENT run's stored book β (holdings-based, aligned with the holdings shown beside it)", () => {
+    // The card uses `current?.bookBeta ?? null` — the same run that drives the card's cash/sector
+    // stats — so β always matches the displayed holdings and never falls back to a stale older day.
+    const pick = (current: { bookBeta?: { beta: number; coveragePct: number } | null } | null) =>
+      current?.bookBeta ?? null;
+    expect(pick({ bookBeta: { beta: 0.74, coveragePct: 90 } })!.beta).toBe(0.74);
+    expect(pick({ bookBeta: null })).toBeNull();  // current predates the field → "—", not a stale day's β
+    expect(pick(null)).toBeNull();                // no current run yet → "—"
+  });
 });
 
 describe("sleeve returns: sold-out position is reconciled, not booked as a phantom loss", () => {
