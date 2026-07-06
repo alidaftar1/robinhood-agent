@@ -70,6 +70,10 @@ function compactRun(r: TradeRun) {
     // buying power. Lets the reviewer cite the exact sizing reason for a missing buy / idle cash
     // instead of inferring "the guardrail isn't deployed" (which mis-reads a working guardrail).
     buySizingAdjustments: r.buySizingAdjustments ?? [],
+    // Market regime (β-overlay trial): risk-on wants book β ~1.0–1.3, risk-off ~0.4. Pair with
+    // bookBeta above so the reviewer can flag a day where the book β ignored the regime target.
+    regime: r.regime ? { riskOn: r.regime.riskOn } : null,
+    bookBeta: r.bookBeta ? { beta: Number(r.bookBeta.beta.toFixed(2)), coveragePct: Math.round(r.bookBeta.coveragePct) } : null,
   };
 }
 

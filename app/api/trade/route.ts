@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
-import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchMomentum } from "@/lib/market-data";
+import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchMomentum, fetchSpyRegime } from "@/lib/market-data";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, type MomentumSignal } from "@/lib/influencer-signals";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
@@ -89,10 +89,11 @@ export async function GET(request: Request) {
     // signals flow into Sonnet's decision (and the influencer cap) without real trades.
     if (dryRun) {
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const [marketData, previousRun, influencerCache] = await Promise.all([
+      const [marketData, previousRun, influencerCache, spyRegime] = await Promise.all([
         getMarketData(),
         getLatestRun(),
         getInfluencerSignals(),
+        fetchSpyRegime(),
       ]);
       const priceMap = new Map<string, number>(marketData.stocks.map(s => [s.symbol, s.price]));
 
@@ -118,7 +119,7 @@ export async function GET(request: Request) {
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 3000,
-        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx, influencerSection, sectorSection),
+        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx, influencerSection, sectorSection, spyRegime),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -160,7 +161,7 @@ export async function GET(request: Request) {
     const accessToken = await getValidAccessToken();
     console.log("TOKEN_OK");
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache] = await Promise.all([
+    const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache, spyRegime] = await Promise.all([
       getMarketData(),
       fetchCurrentPrice("SPY"),
       getLatestRun(),
@@ -168,7 +169,9 @@ export async function GET(request: Request) {
       fetchAgenticBuyingPower(anthropic, accessToken),
       fetchAgenticPositions(anthropic, accessToken),
       getInfluencerSignals(),
+      fetchSpyRegime(),
     ]);
+    console.log("SPY_REGIME", spyRegime ? { riskOn: spyRegime.riskOn, spy: spyRegime.spy.toFixed(2), ma: spyRegime.ma.toFixed(2) } : "unavailable");
     console.log("MARKET_DATA_OK", { stocks: marketData.stocks.length });
     if (agenticBalance) {
       console.log("AGENTIC_BALANCE_OK", { buyingPower: agenticBalance.buyingPower, totalValue: agenticBalance.totalValue });
@@ -263,7 +266,7 @@ export async function GET(request: Request) {
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 3000,
-        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx!, influencerSection, sectorSection),
+        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx!, influencerSection, sectorSection, spyRegime),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       }, { signal: analysisController.signal });
       analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -629,6 +632,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       },
       bookBeta,
       ...(buySizingAdjustments.length > 0 ? { buySizingAdjustments } : {}),
+      ...(spyRegime != null ? { regime: { riskOn: spyRegime.riskOn, spy: spyRegime.spy, ma: spyRegime.ma } } : {}),
       ...(spyPrice != null ? { spyPrice } : {}),
     };
 

@@ -398,6 +398,44 @@ export async function fetchCurrentPrice(symbol: string): Promise<number | null> 
   }
 }
 
+// ── Market regime (beta overlay, 2-week trial 2026-07-06) ────────────────────
+// Is SPY above its ~100-day average (uptrend) or below (downtrend)? Drives the book's
+// beta TARGET — high in uptrends to capture upside, defensive in downtrends to cut
+// drawdown. A slow 100d window is deliberate: the 2y SPY backtest showed 100d keeps ~90%
+// of buy-hold's return while cutting max drawdown ~40% with low whipsaw (~7 switches/yr),
+// whereas fast (10–50d) windows whipsaw and 200d reacts too late.
+export interface SpyRegime { riskOn: boolean; spy: number; ma: number; window: number; }
+
+// Pure rule (unit-tested): risk-on iff the latest close is above the SMA of the last `window`
+// closes. Returns null when there isn't enough history to form the average.
+export function spyRegimeFromCloses(closes: number[], window: number): SpyRegime | null {
+  const valid = closes.filter((c) => typeof c === "number" && isFinite(c));
+  if (valid.length < window) return null;
+  const spy = valid[valid.length - 1];
+  const ma = valid.slice(-window).reduce((s, c) => s + c, 0) / window;
+  return { riskOn: spy > ma, spy, ma, window };
+}
+
+// Fetches ~6mo of SPY daily closes and applies the rule. Null on fetch failure / short history
+// → caller treats as neutral (no regime tilt), so a Yahoo hiccup never forces a beta change.
+export async function fetchSpyRegime(window = 100): Promise<SpyRegime | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/SPY?range=6mo&interval=1d`;
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const data = await res.json() as { chart?: { result?: Array<{ indicators?: { quote?: Array<{ close?: (number | null)[] }> } }> } };
+    const closes = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
+    if (!closes) return null;
+    // Drop the last bar: the 7:30am PT cron runs ~1h into the session, so Yahoo's final daily bar is
+    // an INTRADAY partial, not a settled close. The 100d backtest used settled closes — evaluate the
+    // regime on the last SETTLED close (no lookahead), so the live signal matches what was validated.
+    const settled = closes.filter((c): c is number => c != null).slice(0, -1);
+    return spyRegimeFromCloses(settled, window);
+  } catch {
+    return null;
+  }
+}
+
 // Lightweight single-symbol quote (price + 1-day % change). Lets the stop-check
 // detect drops from just the held positions instead of fetching the full universe,
 // so it can run frequently (hourly) without hammering Yahoo.
