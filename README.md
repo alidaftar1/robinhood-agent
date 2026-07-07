@@ -2,6 +2,8 @@
 
 An autonomous equity trading agent built with Claude AI and the Robinhood MCP server. Runs daily on Vercel, rebalances a real portfolio, and emails a summary report — no human required.
 
+> ⚠️ **Disclaimer — not financial advice.** This is a personal, experimental engineering project built for **educational and portfolio purposes only**. It is **not financial, investment, or trading advice**, and nothing here is a recommendation to buy or sell any security. The author is **not a licensed financial advisor**. Autonomous trading carries real risk: this software trades a real brokerage account and **can and does lose money**; past performance does not indicate future results. The software is provided **"as is," without warranty of any kind**, and the author accepts **no liability** for any loss or damage arising from its use. It is **not affiliated with, endorsed by, or sponsored by** Robinhood, Anthropic, or any other company named here. **Use at your own risk.**
+
 ## How it works
 
 Every weekday at 7:30am PT, a Vercel cron fires `/api/trade`:
