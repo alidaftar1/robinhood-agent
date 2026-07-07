@@ -4,7 +4,7 @@ import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
-import { computeStockBeta, spyRegimeFromCloses } from "@/lib/market-data";
+import { computeStockBeta } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
@@ -363,28 +363,13 @@ describe("benchmark-awareness: beta math", () => {
     expect(bySym.AAPL ?? 0).toBeLessThan(5); // the shrinkable buy yields instead
   });
 
-  it("spyRegimeFromCloses is risk-on iff the latest close is above the window SMA", () => {
-    const rising = [10, 11, 12, 13, 14]; // last (14) > mean(12) → uptrend
-    expect(spyRegimeFromCloses(rising, 5)!.riskOn).toBe(true);
-    const falling = [14, 13, 12, 11, 10]; // last (10) < mean(12) → downtrend
-    expect(spyRegimeFromCloses(falling, 5)!.riskOn).toBe(false);
-    expect(spyRegimeFromCloses([10, 11], 5)).toBeNull(); // not enough history for the average
-    const r = spyRegimeFromCloses(rising, 5)!;
-    expect(r.spy).toBe(14); expect(r.ma).toBeCloseTo(12, 6); expect(r.window).toBe(5);
-  });
-
-  it("buildAnalysisPrompt injects a regime-conditional beta target (risk-on high, risk-off defensive)", () => {
+  it("buildAnalysisPrompt runs a concentrated book (4–6 total names, conviction in size)", () => {
     const pf = { buyingPower: "$100", totalValue: "$1000", positions: [] } as any;
-    const on = buildAnalysisPrompt("2026-07-06", "", pf, "", "", { riskOn: true });
-    expect(on).toContain("RISK-ON");
-    expect(on).toContain("1.0–1.3");
-    const off = buildAnalysisPrompt("2026-07-06", "", pf, "", "", { riskOn: false });
-    expect(off).toContain("RISK-OFF");
-    expect(off).toContain("0.4");
-    const none = buildAnalysisPrompt("2026-07-06", "", pf, "", "", undefined);
-    expect(none).not.toContain("RISK-ON");  // unknown regime → no regime block injected
-    expect(none).not.toContain("RISK-OFF");
-    expect(none).toContain("only worth it if its alpha"); // falls back to neutral β wording (no dangling ref)
+    const prompt = buildAnalysisPrompt("2026-07-06", "", pf, "", "");
+    expect(prompt).toContain("CONCENTRATION");
+    expect(prompt).toContain("4–6");
+    expect(prompt).not.toContain("RISK-ON");   // regime overlay reverted — no regime block
+    expect(prompt).not.toContain("RISK-OFF");
   });
 
   it("fitBuysToBudget drops a whole-share buy that truly can't fit and records a non-silent note", () => {

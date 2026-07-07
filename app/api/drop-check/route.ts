@@ -10,7 +10,7 @@ import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 export const maxDuration = 300;
 
 const DROP_THRESHOLD_PCT = -5; // sell if down ≥5% (intraday for main; from buy for influencer)
-const TAKE_PROFIT_PCT = 20;    // influencer winners: lock the gain at +20% from buy price
+const TAKE_PROFIT_PCT = 40;    // influencer winners: let winners run — lock the gain at +40% from buy price
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");

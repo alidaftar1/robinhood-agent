@@ -190,25 +190,9 @@ Rules for each field:
 - Use prices from the market data table.`;
 }
 
-export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, regime?: { riskOn: boolean; window?: number } | null): string {
+export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string): string {
   const maxPos = maxPositionDollars(portfolio.totalValue);
   const hasAges = !!portfolio.positions?.some(p => p.heldDays != null);
-  // Regime-conditional beta target (2-week trial 2026-07-06): risk-on → steer the book toward a
-  // medium-high β to capture upside; risk-off → stay defensive to cut drawdown. It's a BUY-SIDE tilt
-  // that is SUBORDINATE to the sector cap + sell-discipline (no beta-motivated churn) and leaves the
-  // influencer sleeve on its own signal. Empty when regime is unknown (Yahoo hiccup) → normal selection.
-  const regimeWin = regime?.window ?? 100;
-  const regimeGuidance = regime == null ? "" : regime.riskOn
-    ? `\n- MARKET REGIME — RISK-ON (β trial): SPY is ABOVE its ~${regimeWin}-day average (uptrend). Steer the book toward a β of ~1.0–1.3 to participate in the upside — through your BUYS: when the CURRENT BOOK β above is below ~0.9, prefer higher-β names (β ≥ 1) among comparable-momentum candidates, and don't ADD low/negative-β names for "stability." This does NOT override the sell-discipline (never sell a holding that still has an active momentum/★INS thesis just for its β — let winners run), the 40% SECTOR CAP, or the influencer sleeve (it follows its own signal). A name's β still needs some alpha (positive α5d/α14d) behind it.`
-    : `\n- MARKET REGIME — RISK-OFF (β trial): SPY is BELOW its ~${regimeWin}-day average (downtrend). Lean DEFENSIVE on new BUYS — favor lower-β / cushioning names and don't chase high-β market exposure into a downtrend (a book β around ~0.4 is fine here). Buy-side tilt only: keep following the sell-discipline and let the influencer sleeve act on its own signal.`;
-  // The two static β-guidance spots fall back to the original neutral wording when regime is
-  // unavailable (Yahoo hiccup), so they never dangling-reference a MARKET REGIME block that isn't there.
-  const betaReadingNote = regime == null
-    ? "A high-β name adds market risk to the book — only worth it if its alpha (α5d/α14d) justifies the extra swing."
-    : "Whether higher β is desirable depends on the MARKET REGIME (see the buy rules below); a name's β always needs some alpha (α5d/α14d) behind it.";
-  const betaImpactNote = regime == null
-    ? "compare the name's β to the CURRENT BOOK β above; buying names with β well above the book raises how hard you swing vs SPY, justified only by real alpha (positive α5d/α14d), not momentum alone. If book β is already >1.1, lean toward market-like-or-lower β names unless the alpha is exceptional."
-    : "follow the MARKET REGIME target above: in a risk-on regime lift the book toward β ~1.0–1.3 by preferring higher-β names when it is under target; in a risk-off regime stay defensive (~0.4). Either way a name's β needs real alpha (positive α5d/α14d) behind it, not momentum alone.";
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => {
         const avg = parseFloat(p.avgCost);
@@ -239,7 +223,7 @@ READING THE MARKET DATA TABLE:
 - mom14 = CONFIRMATION signal. High mom5 + high mom14 = sustained trend. High mom5 + low mom14 = spike only (be cautious).
 - α14d = 14-day alpha. Secondary confirmation alongside mom14.
 - 30d = macro context only. Don't stock-pick on 30d alone.
-- β = beta vs SPY (~1mo daily returns). >1 swings HARDER than the market (more risk AND more upside); <1 cushions; "—" = insufficient history, treat as market-like. ${betaReadingNote}
+- β = beta vs SPY (~1mo daily returns). >1 swings HARDER than the market (more risk AND more upside); <1 cushions; "—" = insufficient history, treat as market-like. A high-β name adds market risk to the book — only worth it if its alpha (α5d/α14d) justifies the extra swing.
 - ★INS = insider buying last 30 days. Strong conviction signal — weight heavily.
 - ⚡↑FIRM = impactful upgrade (≥15% upside). Treat like ★INS.
 - ↑FIRM / ↓FIRM = regular analyst action. Minor signal.
@@ -253,8 +237,9 @@ CONSTRAINTS:
 - Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
 - Max $${maxPos} per position (compute max_qty = floor(${maxPos} / price)), min $50. Whole shares only. Stocks from table only.
 - Never buy ⚠⚠ IMMINENT.
-- SECTOR CAP (risk control): avoid holding more than ~40% of the portfolio in any single sector. Momentum tends to cluster in one sector — don't sleepwalk into a concentrated sector bet. If a buy would push a sector past 40%, prefer an equally-strong name from an underweight sector instead. If you're ALREADY over 40% in a sector (see SECTOR EXPOSURE above), lean toward trimming it and redeploying into underweight sectors — unless you can give a specific reason the concentration is worth the risk.${regimeGuidance}
-- MARGINAL BENCHMARK IMPACT (evaluate EVERY buy against the CURRENT book, not in isolation): your benchmark is SPY. Before adding a name, ask "does this IMPROVE the risk-adjusted book, or just pile on risk I already carry?" Weigh three things: (1) SECTOR — a buy in a sector that's already among your heaviest (see SECTOR EXPOSURE) adds concentration, not diversification; prefer a comparable-strength name from an underweight sector. (2) BETA — ${betaImpactNote} (3) NOISE vs EDGE — a name very similar to what you already hold (same sector AND similar β) mostly adds correlated noise: more swing, no distinct edge. A buy earns its place by adding alpha or diversification, ideally both. A buy that stacks sector concentration + above-book beta + no distinct alpha is exactly the "more risk, no improvement" trade to avoid.
+- SECTOR CAP (risk control): avoid holding more than ~40% of the portfolio in any single sector. Momentum tends to cluster in one sector — don't sleepwalk into a concentrated sector bet. If a buy would push a sector past 40%, prefer an equally-strong name from an underweight sector instead. If you're ALREADY over 40% in a sector (see SECTOR EXPOSURE above), lean toward trimming it and redeploying into underweight sectors — unless you can give a specific reason the concentration is worth the risk.
+- CONCENTRATION (conviction in SIZE — the guardrails let you be aggressive): run a CONCENTRATED book of ~4–6 total positions (your very highest-conviction names, INCLUDING the ≤2 influencer slots). Put real size into the best momentum/alpha picks rather than spreading thin across a long tail of small, mediocre positions — a few strong bets beat a diluted book. The −5% stops + 40% sector cap bound the per-name and sector downside, so express conviction in SIZE. If you already hold more than ~6, trim the weakest (lowest mom5/α, no active signal) and redeploy into your best. Do NOT chase market beta for its own sake — concentrate where the ALPHA is.
+- MARGINAL BENCHMARK IMPACT (evaluate EVERY buy against the CURRENT book, not in isolation): your benchmark is SPY. Before adding a name, ask "does this IMPROVE the risk-adjusted book, or just pile on risk I already carry?" Weigh three things: (1) SECTOR — a buy in a sector that's already among your heaviest (see SECTOR EXPOSURE) adds concentration, not diversification; prefer a comparable-strength name from an underweight sector. (2) BETA — compare the name's β to the CURRENT BOOK β above; buying names with β well above the book raises how hard you swing vs SPY, justified only by real alpha (positive α5d/α14d), not momentum alone. If book β is already >1.1, lean toward market-like-or-lower β names unless the alpha is exceptional. (3) NOISE vs EDGE — a name very similar to what you already hold (same sector AND similar β) mostly adds correlated noise: more swing, no distinct edge. A buy earns its place by adding alpha or diversification, ideally both. A buy that stacks sector concentration + above-book beta + no distinct alpha is exactly the "more risk, no improvement" trade to avoid.
 - HARD LIMIT: total cost of all buys ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} (settled buying power). This number is fixed — selling today does NOT increase it. If you sell $300 of stock today and settled power is $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}, you can still only spend $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} on buys.
 ${influencerSection ?? ""}
 
