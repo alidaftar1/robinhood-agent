@@ -8,6 +8,7 @@ import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions,
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fitBuysToBudget } from "@/lib/buy-sizing";
+import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
@@ -290,6 +291,11 @@ export async function GET(request: Request) {
     } else {
       console.warn("DECISION_MISSING — no TRADE_DECISION found in analysis output");
     }
+
+    // Snapshot the model's RAW decision before the guards/sizer mutate decision.buys/sells below,
+    // so the Braintrust trace records what the model actually DECIDED (executed trades are logged
+    // separately), not the post-guard/post-sizing orders.
+    const decidedRaw = { thesis: decision.thesis, buys: decision.buys.map(b => ({ ...b })), sells: decision.sells.map(s => ({ ...s })) };
 
     // ── Hard cap: max concurrent influencer positions ─────────────────────────
     // The influencer bucket is high-risk by design; limit concentration regardless
@@ -693,7 +699,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     );
 
     // Patch the run already saved at index 0 with return metrics.
-    await updateLatestRun({
+    const finalRun = {
       ...baseRun,
       portfolioAfter,
       positions,
@@ -704,9 +710,14 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null,
       influencerDailyReturn,
       mainDailyReturn,
-    });
+    };
+    await updateLatestRun(finalRun);
 
     console.log("TRADE_RUN_COMPLETE", { date: today, summary: textContent.slice(0, 300) });
+    // Online observability: log the completed run to Braintrust. Fail-safe — runs AFTER the trade is
+    // saved + executed; the helper can't throw, and the .catch() decouples tracing from the trade
+    // response entirely (a logging problem must never affect the trade's success/500 path).
+    await logTradeRun({ run: finalRun, decision: decidedRaw, buyingPower: agenticBalance ? String(agenticBalance.buyingPower) : null }).catch(() => {});
     return Response.json({ success: true, date: today, summary: textContent });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
