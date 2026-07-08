@@ -173,13 +173,21 @@ Do NOT rebalance and do NOT open any new position. Only exit the listed position
           avgCost: String(p.avgCost ?? "0"),
           price: String(priceMap.get(String(p.symbol ?? "")) ?? p.price ?? 0),
         }));
-        trades = (snap.trades ?? []).map((t: any) => ({
-          symbol: String(t.symbol ?? ""),
-          side: String(t.side ?? ""),
-          quantity: String(t.quantity ?? "0"),
-          avgPrice: String(t.avgPrice ?? "0"),
-          state: String(t.state ?? "submitted"),
-        }));
+        trades = (snap.trades ?? []).map((t: any) => {
+          const sym = String(t.symbol ?? "");
+          const side = String(t.side ?? "");
+          // Sell-price capture: the model reports its PORTFOLIO_SNAPSHOT before the market order
+          // actually fills, and sometimes echoes the position's cost basis (e.g. 2026-07-08 recorded
+          // MSTR sold at its $98.54 buy price when it filled ~$92.93 — a real loss shown as flat).
+          // A market sell fills at ~the live price we quoted the instant the exit triggered, so for
+          // SELLS prefer that quote over the model's self-report. Falls back to the reported price
+          // if we have no live quote for the symbol.
+          const quoted = liteMap.get(sym)?.price;
+          const avgPrice = side === "sell" && typeof quoted === "number" && quoted > 0
+            ? String(quoted)
+            : String(t.avgPrice ?? "0");
+          return { symbol: sym, side, quantity: String(t.quantity ?? "0"), avgPrice, state: String(t.state ?? "submitted") };
+        });
         const equity = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
         const sellProceeds = trades.filter(t => t.side === "sell").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
         // Prefer the LIVE balance (settled cash + true unsettled = cash − buying power) so this
