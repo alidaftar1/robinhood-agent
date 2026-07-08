@@ -83,6 +83,16 @@ export async function GET(request: Request) {
     return Response.json({ skipped: true, reason: "market holiday" });
   }
 
+  // Idempotency guard FIRST — the cron can retry, and everything below (auto-repair, live verify, the
+  // Sonnet skeptical-reviewer + its Braintrust trace, reconcile) is expensive. If today's report
+  // already went out, short-circuit before doing any of it. The "sent" mark is only set AFTER a
+  // successful email, so a retry following a genuine pre-email failure still falls through and runs
+  // fully. force=true bypasses the guard for a deliberate manual re-run.
+  const force = new URL(request.url).searchParams.get("force") === "true";
+  if (!force && await hasAutopilotSentToday(today)) {
+    return Response.json({ skipped: true, reason: "autopilot already sent today", date: today });
+  }
+
   // Use the stable public alias for internal self-fetches. Under the Vercel cron,
   // request.url is the internal deployment URL and self-fetches to it fail (which
   // silently broke auto-repair + live verify). APP_URL/alias resolves correctly.
@@ -434,14 +444,11 @@ export async function GET(request: Request) {
   </p>
 </div>`;
 
-  const force = new URL(request.url).searchParams.get("force") === "true";
-  const alreadySent = !force && await hasAutopilotSentToday(today);
-  let emailSent = false;
-  if (!alreadySent) {
-    const subject = `Robinhood Agent — ${today} ${needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY"}`;
-    emailSent = await sendEmail(subject, html);
-    if (emailSent && !force) await markAutopilotSent(today);
-  }
+  // The already-sent short-circuit + force are handled at the top of the handler. If we reach here we
+  // either haven't emailed today or force=true — so always send.
+  const subject = `Robinhood Agent — ${today} ${needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY"}`;
+  const emailSent = await sendEmail(subject, html);
+  if (emailSent && !force) await markAutopilotSent(today);
 
   // Trigger the cloud code-fixer immediately, but ONLY on the scheduled cron run
   // (vercel.json sets ?cloudDispatch=1) and ONLY when a fresh email just went out.
