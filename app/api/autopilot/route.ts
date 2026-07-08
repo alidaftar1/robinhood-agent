@@ -3,6 +3,7 @@ import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-sto
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
+import { logReviewResult } from "@/lib/braintrust-trace";
 
 interface VerifyResult {
   status: string;
@@ -326,6 +327,8 @@ export async function GET(request: Request) {
     if (review.error) {
       autoFixed.push(`Skeptical-reviewer pass could not run (${review.error}).`);
     }
+    // Surface the reviewer's verdict + scores in Braintrust (fail-safe, never blocks the report).
+    await logReviewResult({ run: todayRun, result: review }).catch(() => {});
   }
   // high/medium concerns are actionable → they flip the status; low are FYI only.
   const seriousConcerns = reviewConcerns.filter((c) => c.severity !== "low");

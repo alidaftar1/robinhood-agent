@@ -1,5 +1,6 @@
 import { initLogger } from "braintrust";
 import type { TradeRun } from "./run-store";
+import type { ReviewResult } from "./autopilot-review";
 import { maxPositionDollars } from "./strategy";
 
 // ── Production observability ──────────────────────────────────────────────────
@@ -72,6 +73,16 @@ function getLogger(): Logger | null {
   return cached;
 }
 
+// Serverless: flush before the function returns, but never let it hang the caller. Clear the timer so
+// a fast flush doesn't leave a dangling 5s timeout keeping the lambda alive.
+async function flushSafely(lg: Logger): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    lg.flush(),
+    new Promise<void>((_, reject) => { timer = setTimeout(() => reject(new Error("flush timeout")), 5000); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 export async function logTradeRun(args: {
   run: TradeRun;
   decision: { thesis?: string; buys?: unknown[]; sells?: unknown[] } | null;
@@ -110,14 +121,42 @@ export async function logTradeRun(args: {
       // trace in the Logs tab (and averageable across runs), reusing the offline evals' invariants.
       scores: computeDecisionScores(run, decision, args.buyingPower),
     });
-    // Serverless: flush before the function returns, but never let it hang the trade. Clear the timer
-    // so a fast flush doesn't leave a dangling 5s timeout keeping the lambda alive.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      lg.flush(),
-      new Promise<void>((_, reject) => { timer = setTimeout(() => reject(new Error("flush timeout")), 5000); }),
-    ]).finally(() => clearTimeout(timer));
+    await flushSafely(lg);
   } catch (e) {
     console.warn("BRAINTRUST_TRACE_SKIPPED", e instanceof Error ? e.message : String(e));
+  }
+}
+
+// Surfaces the Sonnet skeptical-reviewer's verdict on a run as its own scored Braintrust event, in the
+// same project/Logs as the trade trace (joinable by date). The reviewer is a SEPARATE post-hoc pass
+// (8am autopilot, after the 7:30am trade), so it logs its own event rather than patching the trade
+// trace. Scores are 0–1, higher = better; omitted entirely if the reviewer itself errored, so a failed
+// pass never reads as "clean". Fail-safe: wrapped in try/catch, never affects the autopilot report.
+export async function logReviewResult(args: { run: TradeRun; result: ReviewResult }): Promise<void> {
+  try {
+    const lg = getLogger();
+    if (!lg) return;
+    const { run, result } = args;
+    const concerns = result.concerns ?? [];
+    const high = concerns.filter((c) => c.severity === "high").length;
+    const medium = concerns.filter((c) => c.severity === "medium").length;
+    const low = concerns.filter((c) => c.severity === "low").length;
+    const scores: Record<string, number> = result.error ? {} : {
+      reviewer_clean: concerns.length === 0 ? 1 : 0,           // nothing flagged at all
+      reviewer_no_high: high === 0 ? 1 : 0,                    // no high-severity concern
+      reviewer_no_serious: high === 0 && medium === 0 ? 1 : 0, // no actionable (high/medium) concern
+    };
+    lg.log({
+      input: { date: run.date, heldSymbols: (run.positions ?? []).map((p) => p.symbol) },
+      output: {
+        concerns: concerns.map((c) => ({ severity: c.severity, title: c.title, detail: (c.detail ?? "").slice(0, 300) })),
+        error: result.error ?? null,
+      },
+      metadata: { pass: "skeptical-reviewer", high, medium, low, total: concerns.length },
+      scores,
+    });
+    await flushSafely(lg);
+  } catch (e) {
+    console.warn("BRAINTRUST_REVIEW_TRACE_SKIPPED", e instanceof Error ? e.message : String(e));
   }
 }
