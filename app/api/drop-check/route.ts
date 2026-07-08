@@ -41,7 +41,7 @@ export async function GET(request: Request) {
   const influencerSymbols = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
 
   // Detection set: influencer-only runs check just those names; full runs check everything.
-  // (Holdings context for redeployment below always uses the complete position list.)
+  // (The sell-decision prompt below always gets the complete held-position list for context.)
   const positionsToCheck = influencerOnly
     ? heldPositions.filter((p) => influencerSymbols.has(p.symbol))
     : heldPositions;
@@ -52,7 +52,7 @@ export async function GET(request: Request) {
 
   // CHEAP DETECTION PASS — fetch only the to-check position quotes (≤10), not the full universe.
   // Lets this run hourly without hammering Yahoo. Full market data is only loaded below
-  // if a drop is actually detected (needed for the redeployment prompt).
+  // if a drop is actually detected (to price the surviving positions + give the sell decision context).
   const liteQuotes = await Promise.all(
     positionsToCheck.map((p) => fetchQuoteLite(p.symbol).then((q) => ({ symbol: p.symbol, q })))
   );
@@ -100,7 +100,8 @@ export async function GET(request: Request) {
     const accessToken = await getValidAccessToken();
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-    // A drop was detected — NOW load full market data for the redeployment decision.
+    // A drop was detected — NOW load full market data to price surviving positions + give the
+    // sell decision market context (this run is sell-only; it does not redeploy into new names).
     const [marketData, spyPrice] = await Promise.all([
       getMarketData(),
       fetchCurrentPrice("SPY"),
@@ -122,15 +123,13 @@ export async function GET(request: Request) {
 These held positions hit an exit trigger and must be SOLD:
   ${droppedNames}
 ${hasStop ? `• stop-loss = down ≥${Math.abs(DROP_THRESHOLD_PCT)}% (thesis breakdown — cut it).\n` : ""}${hasProfit ? `• TAKE-PROFIT = an influencer pick up ≥${TAKE_PROFIT_PCT}% from buy. Lock the gain — these are hype names that round-trip; do NOT let it ride.\n` : ""}
-INSTRUCTIONS — deviate from standard process:
-1. SELL every position listed above immediately — both stop-loss and take-profit exits.
+INSTRUCTIONS — deviate from standard process. This is a SELL-ONLY capital-preservation run:
+1. SELL every position listed above — both stop-loss and take-profit exits.
+   - Exception (STOP-LOSS only): if it's clearly sympathy selling (broad market down, fundamentals unchanged), you may use judgment and HOLD the position. A TAKE-PROFIT exit is NOT optional — always lock the gain.
 2. Keep ALL other positions UNCHANGED.
-3. With the freed cash, either:
-   a. Buy ONE high-conviction alternative (best momentum, no imminent earnings, within the per-position cap), OR
-   b. Hold cash if SPY is also broadly down (>1.5% today) — capital preservation takes priority.
-   c. For a STOP-LOSS only: if it's clearly sympathy selling (broad market down, fundamentals unchanged), you may use judgment and hold. A TAKE-PROFIT exit is NOT optional — always lock the gain.
-4. Emit PORTFOLIO_SNAPSHOT as usual.
-Do NOT do a full portfolio rebalance. Only exit the listed positions.
+3. Do NOT BUY anything. Do NOT place any buy order or call place_equity_order with side=buy. Hold the freed cash as-is — the NEXT MORNING rebalance redeploys SETTLED cash under the full ruleset (sector cap, book context). This run is one uncoordinated decision-maker; redeploying here would bypass the morning run's sector cap and could spend same-day sale proceeds that are still unsettled.
+4. Emit PORTFOLIO_SNAPSHOT as usual (trades should contain ONLY sells).
+Do NOT rebalance and do NOT open any new position. Only exit the listed positions.
 
 `;
 
@@ -143,7 +142,7 @@ Do NOT do a full portfolio rebalance. Only exit the listed positions.
       system: systemPrompt,
       messages: [{
         role: "user",
-        content: `RISK-EXIT: ${droppedPositions.map(({ position, change1d, reason }) => `${position.symbol} ${reason === "profit" ? `is up +${change1d.toFixed(1)}% from buy (take-profit)` : `is down ${change1d.toFixed(1)}% (stop-loss)`}`).join(", ")}. Sell these and assess redeployment. Place orders now.`,
+        content: `RISK-EXIT: ${droppedPositions.map(({ position, change1d, reason }) => `${position.symbol} ${reason === "profit" ? `is up +${change1d.toFixed(1)}% from buy (take-profit)` : `is down ${change1d.toFixed(1)}% (stop-loss)`}`).join(", ")}. SELL these now and HOLD the freed cash — do NOT buy anything. Place the sell orders now.`,
       }],
       mcp_servers: [{
         type: "url",
@@ -212,10 +211,21 @@ Do NOT do a full portfolio rebalance. Only exit the listed positions.
     // Carry forward influencer tracking: surviving influencer positions only (sold ones drop out).
     const influencerPositions = positions.filter((p) => influencerSymbols.has(p.symbol));
 
+    // SELL-ONLY invariant backstop: this run must never buy. We can't un-place an order (no
+    // off-process cancels), so if the model disobeyed and placed a buy, surface it LOUDLY —
+    // in the log, the saved summary, and the alert — so it's never silent.
+    const unexpectedBuys = trades.filter((t) => t.side === "buy");
+    const buyWarn = unexpectedBuys.length > 0
+      ? `\n\n⚠️ SELL-ONLY VIOLATION — drop-check placed ${unexpectedBuys.length} unexpected BUY(s): ${unexpectedBuys.map((t) => `${t.symbol} x${t.quantity} @ ${t.avgPrice}`).join(", ")}. Investigate — this run is not supposed to buy.`
+      : "";
+    if (unexpectedBuys.length > 0) {
+      console.error("DROP_CHECK_UNEXPECTED_BUY", unexpectedBuys.map((t) => `${t.symbol} x${t.quantity} @ ${t.avgPrice}`));
+    }
+
     await saveRun({
       timestamp: runTimestamp,
       date: today,
-      summary: `[RISK-EXIT] Sold: ${droppedNames}\n\n${textContent}`,
+      summary: `[RISK-EXIT] Sold: ${droppedNames}${buyWarn}\n\n${textContent}`,
       portfolioAfter,
       positions,
       trades,
@@ -226,8 +236,8 @@ Do NOT do a full portfolio rebalance. Only exit the listed positions.
     });
 
     await sendAlert(
-      `${hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
-      `Sold ${droppedNames}.\n\nCheck the dashboard:\n${process.env.APP_URL ?? ""}/?key=${process.env.CRON_SECRET ?? ""}`
+      `${unexpectedBuys.length > 0 ? "⚠️ Risk-Exit + UNEXPECTED BUY" : hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
+      `Sold ${droppedNames}.${buyWarn}\n\nCheck the dashboard:\n${process.env.APP_URL ?? ""}/?key=${process.env.CRON_SECRET ?? ""}`
     );
 
     console.log("DROP_CHECK_COMPLETE", { sold: droppedPositions.map(({ position }) => position.symbol) });
