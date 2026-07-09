@@ -27,6 +27,7 @@ export const STOCK_SECTOR: Record<string, string> = {
   INTC:"XLK", INTU:"XLK", IT:"XLK", JKHY:"XLK", JNPR:"XLK", KEYS:"XLK", KLAC:"XLK",
   LDOS:"XLK", LRCX:"XLK", MCHP:"XLK", MPWR:"XLK", MRVL:"XLK", MSFT:"XLK", MU:"XLK",
   NOW:"XLK", NTAP:"XLK", NVDA:"XLK", NXPI:"XLK", ON:"XLK", ORCL:"XLK", PANW:"XLK",
+  PLTR:"XLK", // held via the influencer sleeve (not in SP500_UNIVERSE) — mapped so the whole-book risk panel classifies it as Technology
   PAYC:"XLK", PAYX:"XLK", PTC:"XLK", QCOM:"XLK", SNPS:"XLK", STX:"XLK", SWKS:"XLK",
   TDY:"XLK", TEL:"XLK", TER:"XLK", TRMB:"XLK", TXN:"XLK", TYL:"XLK", VRSN:"XLK",
   WDC:"XLK", ZBRA:"XLK", ADSK:"XLK",
