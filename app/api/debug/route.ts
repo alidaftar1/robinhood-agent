@@ -145,6 +145,26 @@ export async function GET(request: Request) {
     }
   }
 
+  // Correct a stored position's snapshot price for one date. Format: DATE:SYMBOL:PRICE. Fixes a
+  // historical run where a held position's price was recorded as its cost basis (the pre-enrichPriceMap
+  // bug — e.g. PLTR 2026-07-08 stored $116.26 = avgCost vs ~$132 market). Follow with ?recomputeSleeves=1
+  // so the sleeve returns recompute against the corrected price (and STAY correct, unlike a
+  // setInfluencerReturn override which recompute overwrites).
+  const patchPP = url.searchParams.get("patchPositionPrice");
+  if (patchPP) {
+    const [date, sym, price] = patchPP.split(":");
+    if (date && sym && price && parseFloat(price) > 0) {
+      const ok = await updateRunByDate(date, (run) => ({
+        ...run,
+        positions: (run.positions ?? []).map((p) => (p.symbol === sym ? { ...p, price: String(price) } : p)),
+        influencerPositions: (run.influencerPositions ?? []).map((p) => (p.symbol === sym ? { ...p, price: String(price) } : p)),
+      }));
+      results.patchPositionPrice = ok ? `set ${sym} price=${price} on ${date}` : `no run found for ${date}`;
+    } else {
+      results.patchPositionPrice = "bad format — use DATE:SYMBOL:PRICE";
+    }
+  }
+
   // Backfill/correct influencer + main sleeve returns across all history with the fixed
   // sleeve-trade attribution. Corrects artifacts where a position sold OUT of the influencer
   // sleeve booked its prior value as a phantom loss (e.g. BTC 2026-06-30 → bogus −14.13%),
