@@ -54,5 +54,24 @@ export function reconcileDashboard(runsNewestFirst: TradeRun[]): ReconcileFindin
     });
   }
 
+  // 3. Held-position price recorded as COST BASIS (the pre-enrichPriceMap artifact). A held name whose
+  //    snapshot `price` exactly equals its `avgCost` — when it was NOT bought today — is almost always a
+  //    price that fell back to cost basis instead of marking to market (PLTR 2026-07-08: stored $116.26 =
+  //    avgCost vs ~$132 market → a phantom +8% sleeve return the next day). On a BUY day price==avgCost
+  //    is expected, so names bought today are excluded. enrichPriceMap should prevent this now, so any
+  //    firing is a genuine regression — robust, near-zero false positives.
+  const boughtToday = new Set((latest.trades ?? []).filter(t => t.side === "buy").map(t => t.symbol));
+  const costBasisPriced = (latest.positions ?? []).filter(p => {
+    const price = parseFloat(p.price), avg = parseFloat(p.avgCost);
+    return price > 0 && avg > 0 && Math.abs(price - avg) < 0.01 && !boughtToday.has(p.symbol);
+  });
+  if (costBasisPriced.length > 0) {
+    findings.push({
+      severity: "medium",
+      title: "Held position priced at cost basis (not marked to market)",
+      detail: `${costBasisPriced.map(p => p.symbol).join(", ")} — snapshot price equals avgCost on a day the name was NOT bought, so the price likely fell back to cost basis instead of the live market price. This injects a phantom day-over-day move into the sleeve returns. Fix: /api/debug?patchPositionPrice=${latest.date}:SYM:REAL_PRICE then ?recomputeSleeves=1 (enrichPriceMap should prevent recurrence).`,
+    });
+  }
+
   return findings;
 }
