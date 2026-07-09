@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { buildSystemPrompt, buildAnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
-import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchMomentum } from "@/lib/market-data";
+import { buildSystemPrompt, buildV1AnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
+import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap } from "@/lib/market-data";
+import { getQualityScores } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, type MomentumSignal } from "@/lib/influencer-signals";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
@@ -116,10 +117,19 @@ export async function GET(request: Request) {
       };
       const sectorSection = buildRiskSection(previousRun?.positions ?? [], priceMap, marketData.stocks);
 
+      // V1 quality-momentum shortlist (the main-book rails). Falls back to momentum-only if quality data
+      // is unavailable so a dry run still produces a book.
+      const dryQuality = await getQualityScores();
+      const dryEligible = dryQuality
+        ? new Set(Object.entries(dryQuality.scores).filter(([, v]) => v.eligible).map(([s]) => s))
+        : new Set(marketData.stocks.map(s => s.symbol));
+      const dryShortlist = buildV1Shortlist(marketData.stocks, dryEligible);
+      const dryShortlistTable = formatV1Shortlist(dryShortlist, dryQuality?.scores ?? {});
+
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 3000,
-        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx, influencerSection, sectorSection),
+        system: buildV1AnalysisPrompt(today, dryShortlistTable, portfolioCtx, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol)),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -131,7 +141,9 @@ export async function GET(request: Request) {
 
       // Apply the same influencer cap + downtrend guard the real run uses (display only)
       const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !decision.sells.some(s => s.symbol === p.symbol)).length;
-      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) => b.strategy === "influencer" || !sp500Set.has(b.symbol);
+      const dryShortlistSet = new Set(dryShortlist.map(s => s.symbol));
+      const dryInfluencerCandidates = new Set(influencerMomentum.keys());
+      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) => b.strategy === "influencer" || (dryInfluencerCandidates.has(b.symbol) && !dryShortlistSet.has(b.symbol));
       const annotatedBuys = decision.buys.map(b => {
         const mom = influencerMomentum.get(b.symbol);
         const downtrendRejected = isInfluencerBuy(b) && isInfluencerDowntrend(mom);
@@ -185,11 +197,13 @@ export async function GET(request: Request) {
     // Fetch live prices + 5-day momentum for top influencer tickers (downtrend screen)
     let influencerSection = "";
     const influencerMomentum = new Map<string, MomentumSignal>();
+    const influencerCandidateSet = new Set<string>(); // symbols the LLM may buy as INFLUENCER picks (the rails allow these off-shortlist)
     if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
       const topInfluencerTickers = Object.entries(influencerCache.tickerCounts)
         .sort(([, a], [, b]) => b - a)
         .slice(0, 12)
         .map(([t]) => t);
+      topInfluencerTickers.forEach(t => influencerCandidateSet.add(t));
       const moms = await Promise.allSettled(topInfluencerTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
       for (const r of moms) {
         if (r.status === "fulfilled" && r.value.m) {
@@ -251,6 +265,42 @@ export async function GET(request: Request) {
     // buy's marginal risk impact and respect the 40% soft cap.
     const sectorSection = buildRiskSection(portfolioCtx?.positions ?? [], priceMap, marketData.stocks);
 
+    // ── V1 quality-momentum shortlist (the main-book rails) ──────────────────────
+    // Deterministic: quality-eligible names with positive 12-1 momentum, sector-capped. The LLM may
+    // ONLY buy MAIN-book names from this list (enforced by a hard filter after the decision). Falls back
+    // to momentum-only (no quality screen) + an alert if SEC/quality data is unavailable, so the strategy
+    // still runs; the shortlist is top-12 so a held name only rotates out once it leaves the top-12.
+    const quality = await getQualityScores();
+    if (!quality) {
+      console.warn("V1_QUALITY_UNAVAILABLE — main book running momentum-only this run (no quality screen)");
+      await sendAlert(
+        `⚠️ V1 quality data unavailable — ${today}`,
+        `SEC/Redis quality data could not be loaded; the main book is running MOMENTUM-ONLY (no quality screen) this run. Quality is cached ~weekly — investigate if this persists.`
+      ).catch(() => {});
+    }
+    const eligible = quality
+      ? new Set(Object.entries(quality.scores).filter(([, v]) => v.eligible).map(([s]) => s))
+      : new Set(marketData.stocks.map(s => s.symbol));
+    const v1Shortlist = buildV1Shortlist(marketData.stocks, eligible);
+    const v1ShortlistSet = new Set(v1Shortlist.map(s => s.symbol));
+    const shortlistTable = formatV1Shortlist(v1Shortlist, quality?.scores ?? {});
+    console.log("V1_SHORTLIST", { n: v1Shortlist.length, qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Shortlist.map(s => s.symbol) });
+
+    // ── V1 DEGENERATE-DATA GUARD ──────────────────────────────────────────────
+    // If the universe fetch came back badly partial (Yahoo throttling on the heavier 2y fetch) or the
+    // shortlist is too small to form a book, DO NOT trade — a data glitch must NEVER drive a mass
+    // rotation/liquidation. Skip the run, leaving the existing book (and its −5% stops) untouched.
+    const UNIVERSE_FLOOR = 350;   // normal ~432
+    const SHORTLIST_FLOOR = 4;    // normal ~12
+    if (marketData.stocks.length < UNIVERSE_FLOOR || v1Shortlist.length < SHORTLIST_FLOOR) {
+      console.error("V1_DEGENERATE_DATA_SKIP", { universe: marketData.stocks.length, shortlist: v1Shortlist.length });
+      await sendAlert(
+        `⚠️ V1 skipped trading — degenerate market data (${today})`,
+        `Universe=${marketData.stocks.length} (floor ${UNIVERSE_FLOOR}), shortlist=${v1Shortlist.length} (floor ${SHORTLIST_FLOOR}). Likely a Yahoo/SEC hiccup, not a real signal. Skipped the run to avoid a data-driven mass rotation; existing book untouched.`
+      ).catch(() => {});
+      return Response.json({ skipped: true, reason: "degenerate market data", universe: marketData.stocks.length, shortlist: v1Shortlist.length });
+    }
+
     const runTimestamp = new Date().toISOString();
     let textContent = "";
     let trades: TradeSnapshot[] = [];
@@ -264,7 +314,7 @@ export async function GET(request: Request) {
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 3000,
-        system: buildAnalysisPrompt(today, formatMarketDataForPrompt(marketData), portfolioCtx!, influencerSection, sectorSection),
+        system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol)),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       }, { signal: analysisController.signal });
       analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -294,6 +344,32 @@ export async function GET(request: Request) {
     // separately), not the post-guard/post-sizing orders.
     const decidedRaw = { thesis: decision.thesis, buys: decision.buys.map(b => ({ ...b })), sells: decision.sells.map(s => ({ ...s })) };
 
+    // ── V1 WITHIN-RAILS HARD FILTER ───────────────────────────────────────────
+    // The main book may ONLY buy from the pre-screened quality-momentum shortlist. Soft prompt guidance
+    // does not reliably bind (see the regime-overlay + SCHW incidents), so enforce it in code: drop any
+    // MAIN buy whose symbol is not in the shortlist. Pre-execution, so dropping is safe (no order placed).
+    // Influencer buys are governed by their own cap/downtrend guards below, not this filter.
+    // A buy is allowed iff it is on the quality-momentum shortlist (a MAIN pick) OR is an actual
+    // influencer candidate (a symbol shown in the INFLUENCER SIGNALS section). Anything else — an
+    // off-shortlist S&P name, a hallucinated/off-universe ticker, or a mislabeled buy — is dropped.
+    // Do NOT infer "influencer" from `!sp500Set.has(symbol)`: that let hallucinated tickers through.
+    {
+      const offList: string[] = [];
+      decision.buys = decision.buys.filter(b => {
+        if (v1ShortlistSet.has(b.symbol)) return true;           // main buy on the rails
+        if (influencerCandidateSet.has(b.symbol)) return true;   // legit influencer pick (in the real signal set)
+        offList.push(b.symbol);
+        return false;
+      });
+      if (offList.length > 0) {
+        console.error("V1_OFF_RAILS_BUYS_DROPPED", offList);
+        await sendAlert(
+          `⚠️ V1 off-rails buys dropped — ${today}`,
+          `The model tried to buy names on neither the quality-momentum shortlist nor the influencer signal set: ${offList.join(", ")}. Dropped before execution (within-rails guard). Investigate if this recurs.`
+        ).catch(() => {});
+      }
+    }
+
     // ── Hard cap: max concurrent influencer positions ─────────────────────────
     // The influencer bucket is high-risk by design; limit concentration regardless
     // of what the model decides. Count positions we'd KEEP plus NEW influencer buys.
@@ -302,7 +378,7 @@ export async function GET(request: Request) {
       const soldSet = new Set(decision.sells.map(s => s.symbol));
       const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !soldSet.has(p.symbol)).length;
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
-        b.strategy === "influencer" || !sp500Set.has(b.symbol);
+        b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
       const allowedNew = Math.max(0, MAX_INFLUENCER_POSITIONS - keptInfluencer);
       let kept = 0;
       const trimmed: string[] = [];
@@ -323,7 +399,7 @@ export async function GET(request: Request) {
     // Don't buy a falling knife; the −5% stop is cleanup, not a substitute for this.
     {
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
-        b.strategy === "influencer" || !sp500Set.has(b.symbol);
+        b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
       const rejected: string[] = [];
       decision.buys = decision.buys.filter(b => {
         if (!isInfluencerBuy(b)) return true; // main strategy already screens momentum
@@ -515,7 +591,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
           const real = verified.get(b.symbol);
           if (!real) continue;
           const strategy: "main" | "influencer" =
-            (b.strategy === "influencer" || !sp500Set.has(b.symbol)) ? "influencer" : "main";
+            (b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol))) ? "influencer" : "main";
           trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state, strategy });
         }
         if (missing.length > 0) {
@@ -541,6 +617,12 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     let cashAfter: number;
 
     if (liveBalanceAfter !== null && livePositionsAfter !== null) {
+      // Fill in a live MARKET price for any held symbol the priceMap doesn't already carry
+      // (influencer name outside the top-12 momentum set, or a failed Yahoo fetch) so the
+      // recorded `price` is never silently the position's avgCost — a price==avgCost
+      // placeholder injects a phantom day-over-day move into the sleeve-return series.
+      const unresolved = await enrichPriceMap(livePositionsAfter.map(p => p.symbol), priceMap);
+      if (unresolved.length > 0) console.warn("POSITION_PRICE_UNRESOLVED — snapshot falling back to avgCost", { symbols: unresolved });
       positions = livePositionsAfter.map(p => ({
         symbol: p.symbol,
         quantity: p.quantity,
@@ -578,7 +660,12 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       const boughtPositions = trades.filter(t => t.side === "buy").map(t => ({
         symbol: t.symbol, quantity: t.quantity, avgCost: t.avgPrice,
       }));
-      positions = [...keptPositions, ...boughtPositions].map(p => ({
+      const merged = [...keptPositions, ...boughtPositions];
+      // Same guard as the live path: resolve a real market price for any held symbol missing
+      // from the priceMap rather than silently stamping avgCost as the snapshot price.
+      const unresolved = await enrichPriceMap(merged.map(p => p.symbol), priceMap);
+      if (unresolved.length > 0) console.warn("POSITION_PRICE_UNRESOLVED — reconstructed snapshot falling back to avgCost", { symbols: unresolved });
+      positions = merged.map(p => ({
         symbol: p.symbol,
         quantity: p.quantity,
         avgCost: p.avgCost,

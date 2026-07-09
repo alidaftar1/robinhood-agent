@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
-import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite } from "@/lib/market-data";
+import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap } from "@/lib/market-data";
 import { saveRun, getLatestRun, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -167,7 +167,15 @@ Do NOT rebalance and do NOT open any new position. Only exit the listed position
       try {
         const snap = JSON.parse(snapshotMatch[1]);
         const cash = parseFloat(snap.cash ?? "0");
-        positions = (snap.positions ?? []).map((p: any) => ({
+        // Seed the fresh detection-pass quotes, then fetch a live MARKET price for any surviving
+        // held symbol still missing from the map. Prevents the snapshot from falling back to the
+        // model's self-reported `p.price` (which it sometimes echoes as the position's cost basis),
+        // which would inject a phantom day-over-day move into the sleeve-return series.
+        for (const [sym, q] of liteMap) if (q && q.price > 0) priceMap.set(sym, q.price);
+        const snapPositions = (snap.positions ?? []) as any[];
+        const unresolved = await enrichPriceMap(snapPositions.map((p) => String(p.symbol ?? "")), priceMap);
+        if (unresolved.length > 0) console.warn("POSITION_PRICE_UNRESOLVED — drop-check snapshot falling back to reported price", { symbols: unresolved });
+        positions = snapPositions.map((p: any) => ({
           symbol: String(p.symbol ?? ""),
           quantity: String(p.quantity ?? "0"),
           avgCost: String(p.avgCost ?? "0"),

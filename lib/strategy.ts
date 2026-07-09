@@ -253,3 +253,65 @@ Rules:
 - If nothing to sell: sells=[]
 - If not enough buying power or no good opportunities: buys=[]`;
 }
+
+// ── V1 Quality-Momentum analysis prompt ──────────────────────────────────────────────────────────────
+// Purpose-built for the V1 strategy (docs/strategy-quality-momentum.md). The main-book universe is the
+// pre-screened shortlist (12-1 momentum + above-median quality + 40% sector cap, built deterministically
+// in lib/market-data buildV1Shortlist). The model may ONLY buy MAIN-book names from that shortlist — a
+// hard filter in the trade route enforces this regardless of what the model outputs. The influencer
+// sleeve is unchanged (≤2 slots on its own signal). Kept separate from buildAnalysisPrompt for rollback.
+export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = []): string {
+  const maxPos = maxPositionDollars(portfolio.totalValue);
+  const bp = (portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "");
+  const positionsLines = portfolio.positions?.length
+    ? portfolio.positions.map(p => {
+        const avg = parseFloat(p.avgCost);
+        const ret = p.price && avg > 0 ? ((p.price - avg) / avg) * 100 : null;
+        const retStr = ret != null ? `, ${ret >= 0 ? "+" : ""}${ret.toFixed(1)}% since entry` : "";
+        const tag = influencerHeld.includes(p.symbol) ? "  [INFLUENCER SLEEVE — do not sell here]" : "";
+        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${tag}`;
+      }).join("\n")
+    : "  (none — full cash)";
+
+  return `You are an autonomous equity trading agent running a QUALITY-MOMENTUM strategy. Analyze the portfolio and the pre-screened candidate shortlist and decide trades. Do NOT place any orders — output only a structured decision.
+
+MAIN-BOOK CANDIDATE SHORTLIST — you may ONLY buy MAIN-book names from this list:
+${shortlistTable}
+
+These names already passed three screens: (1) strong 12-MONTH momentum ("12-1mom" = last 12 months' return skipping the most recent month — the evidence-backed momentum horizon), (2) above-median QUALITY (profitability + low leverage from SEC filings — screens out junk that merely ran up), (3) the 40% sector cap (≤2 names per sector, already guaranteed). Higher 12-mo momentum = stronger trend; higher quality = sounder business.
+
+PORTFOLIO STATE (live from Robinhood):
+- Settled buying power: ${portfolio.buyingPower} — this is your ENTIRE budget for buys today.
+- Total value: ${portfolio.totalValue ?? "unknown"}
+- Current positions:
+${positionsLines}
+${sectorSection ?? ""}
+Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} | Today: ${today}
+
+T+1 SETTLEMENT RULE: cash account — sell proceeds do NOT settle until tomorrow. Your buy budget is the settled buying power above; it does NOT increase when you sell today. Plan buys within settled buying power only.
+
+STRATEGY — QUALITY-MOMENTUM (main book):
+- BUY: pick up to 6 MAIN-book names from the shortlist above — your highest-conviction (strongest 12-month momentum + solid quality). Size them meaningfully (a concentrated ~6-name book beats a long thin tail). You may ONLY buy MAIN-book names that appear in the shortlist — nothing else.
+- SELL: a held MAIN-book position stays ONLY if it still appears in the shortlist above. If a current MAIN holding is NOT in the shortlist, its momentum or quality has decayed → SELL it and rotate into a shortlist name. State in your thesis that you are selling each off-shortlist MAIN holding.
+- DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −5%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist.
+- The shortlist already limits NEW picks to ≤2 per sector. Still, if adding a name would push a sector (counting your CURRENT holdings) past ~40% of the book, prefer another shortlist name from a lighter sector.
+- Do NOT chase names that just spiked; the shortlist is already the right, evidence-backed set. Conviction goes into SIZE among these names.
+
+CONSTRAINTS:
+- Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
+- Max $${maxPos} per position (compute max_qty = floor(${maxPos} / price)), min $50. Whole shares only.
+- MAIN-book buys ONLY from the shortlist above; INFLUENCER buys ONLY from the INFLUENCER SIGNALS section.
+- Never buy a name flagged with earnings ≤3 days away (⚠EARN with a date within 3 days).
+- HARD LIMIT: total cost of all buys ≤ ${bp} (settled buying power). Fixed — selling today does NOT increase it.
+${influencerSection ?? ""}
+
+Write a brief thesis (2–4 sentences): which shortlist names you're buying and why (momentum + quality), which current holdings you're selling (confirm any holding NOT in the shortlist is being sold).${influencerSection ? " It MUST also state your influencer-sleeve decision: which influencer pick(s) you're buying and why, OR — if none — the specific disqualifier (priced above the per-position cap, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer sleeve." : ""} Then compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${bp}; if it exceeds, remove the most expensive buy until it fits. Then output exactly one line:
+TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","quantity":N}],"buys":[{"symbol":"X","quantity":N,"price":P,"strategy":"main"}]}
+
+Rules:
+- sells = only symbols you currently hold that you want to exit
+- buys = new or added positions, total cost ≤ settled buying power, prices from the shortlist or influencer price column
+- strategy = "main" for shortlist picks (default), "influencer" for picks from the INFLUENCER SIGNALS section
+- If nothing to sell: sells=[]
+- If not enough buying power or no good opportunities: buys=[]`;
+}

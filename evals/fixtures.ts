@@ -55,6 +55,7 @@ function buildMockStocks(): StockData[] {
       sharpe5d: momentumScore(change5d, 5, vol),
       sharpe14d: momentumScore(change14d, 10, vol),
       sharpe30d: momentumScore(base.change30d, 21, vol),
+      mom12_1: base.change30d * 4, // deterministic mock 12-1 momentum (~annualized proxy) for tests
       // Mock β loosely scaled off volatility (higher-vol mocks swing harder), clamped to a
       // realistic 0.6–1.6 band. Deterministic so eval runs stay stable.
       beta: Math.max(0.6, Math.min(1.6, 1 + (vol - 20) / 60)),

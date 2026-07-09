@@ -120,6 +120,7 @@ export interface StockData {
   sharpe5d: number;        // momentumScore(change5d, 5, vol) — annualized 5d return ÷ full-window vol; PRIMARY sort signal (labeled "mom5")
   sharpe14d: number;       // momentumScore(change14d, 10, vol) — annualized 14d(≈10td) return ÷ full-window vol; confirmation ("mom14")
   sharpe30d: number;       // momentumScore(change30d, 21, vol) — annualized 30d(≈21td) return ÷ full-window vol
+  mom12_1: number | null;  // 12-1 momentum %: return from ~252td ago to ~21td ago (V1 primary signal). null = insufficient history.
   beta: number | null;     // β vs SPY over the ~1mo daily window: cov(stock,spy)/var(spy). >1 swings more than the market, <1 less, negative = inverse. null = insufficient/untrustworthy data.
   earningsDate: string | null;
   relStrength1d: number;   // change1d minus SPY's change1d
@@ -219,12 +220,53 @@ export function momentumScore(changePct: number, tradingDays: number, annualized
   return (changePct * (252 / tradingDays)) / Math.pow(annualizedVolPct, VOL_PENALTY_EXP);
 }
 
+// ── V1 Quality-Momentum shortlist (the deterministic "rails") ────────────────────────────────────────
+// Given the universe + the quality-eligible set, returns the main-book candidate shortlist the LLM may
+// pick from: quality-eligible names with POSITIVE 12-1 momentum, ranked by that momentum, capped so no
+// sector exceeds the 40% cap of an N-name book. Because the shortlist itself is sector-capped, ANY N the
+// LLM picks from it respects the 40% cap by construction. See docs/strategy-quality-momentum.md.
+export function buildV1Shortlist(
+  stocks: StockData[],
+  eligible: Set<string>,
+  opts: { N?: number; shortlistSize?: number } = {},
+): StockData[] {
+  const N = opts.N ?? 6;
+  const maxPerSector = Math.max(1, Math.floor(0.4 * N)); // N=6 → 2/sector
+  const size = opts.shortlistSize ?? 12;
+  const ranked = stocks
+    .filter((s) => typeof s.mom12_1 === "number" && (s.mom12_1 as number) > 0 && eligible.has(s.symbol))
+    .sort((a, b) => (b.mom12_1 as number) - (a.mom12_1 as number));
+  const picked: StockData[] = [];
+  const perSector: Record<string, number> = {};
+  for (const s of ranked) {
+    if (picked.length >= size) break;
+    const sec = STOCK_SECTOR[s.symbol] ?? "?";
+    if ((perSector[sec] ?? 0) >= maxPerSector) continue;
+    picked.push(s);
+    perSector[sec] = (perSector[sec] ?? 0) + 1;
+  }
+  return picked;
+}
+
+// Renders the V1 shortlist as a compact table for the analysis prompt. quality is the SEC-derived
+// per-symbol quality percentile (0–1). Flags earnings within 30d so the model can avoid imminent ones.
+export function formatV1Shortlist(shortlist: StockData[], quality: Record<string, { quality: number }>): string {
+  const rows = shortlist.map((s) => {
+    const q = quality[s.symbol]?.quality;
+    const earn = s.earningsDate ? `  ⚠EARN ${s.earningsDate}` : "";
+    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}`;
+  });
+  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector\n${rows.join("\n")}`;
+}
+
 async function fetchQuote(symbol: string): Promise<(StockData & { _closes: number[] }) | null> {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
+    // 2y so we have ≥253 trading days for 12-1 momentum (needs the close ~252td before the ~21td-ago
+    // anchor). 30d/vol/beta below anchor off the tail, so the wider window doesn't distort them.
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=2y&interval=1d`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
 
@@ -253,10 +295,17 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _closes: numbe
     const price = meta.regularMarketPrice ?? 0;
     // regularMarketPreviousClose = actual previous session close; chartPreviousClose = close before range start (~1mo ago)
     const prevClose = meta.regularMarketPreviousClose ?? meta.chartPreviousClose ?? price;
-    const monthAgoClose = validCloses[0] ?? price;
+    // Anchor 30d off ~21 trading days back (NOT validCloses[0], which is now ~1yr ago after widening
+    // the fetch to 1y for the 12-1 momentum signal).
+    const monthAgoClose = validCloses[Math.max(0, validCloses.length - 22)] ?? price;
     const high52w = meta.fiftyTwoWeekHigh ?? price;
     const change30d = monthAgoClose ? ((price - monthAgoClose) / monthAgoClose) * 100 : 0;
-    const vol = annualizedVol(validCloses);
+    const vol = annualizedVol(validCloses.slice(-22)); // keep vol on the ~1mo window (full 1y would differ)
+
+    // 12-1 momentum (V1 primary signal): return from ~252 trading days ago to ~21 trading days ago
+    // (12-month formation, skipping the most recent month per the momentum convention). % ; null if short.
+    const n = validCloses.length;
+    const mom12_1 = n >= 253 ? (validCloses[n - 22] / validCloses[n - 253] - 1) * 100 : null;
 
     // 5-trading-day signal (~1 week)
     const closes5d = validCloses.slice(-6); // 5 trading days + anchor
@@ -291,6 +340,7 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _closes: numbe
       sharpe5d,
       sharpe14d,
       sharpe30d: momentumScore(change30d, 21, vol),
+      mom12_1,
       beta: null,         // set below in getPriceData once SPY closes are known
       _closes: validCloses, // retained only to compute beta vs SPY; stripped before return
       earningsDate,
@@ -333,7 +383,7 @@ async function getPriceData(): Promise<{
       const { _closes, ...s } = r.value!;
       return {
         ...s,
-        beta: computeStockBeta(_closes, spyCloses),
+        beta: computeStockBeta(_closes.slice(-22), spyCloses.slice(-22)), // ~1mo window (fetch is now 1y)
         relStrength1d: s.change1d - spyChange1d,
         relStrength5d: s.change5d - spyChange5d,
         relStrength14d: s.change14d - spyChange14d,
@@ -396,6 +446,34 @@ export async function fetchCurrentPrice(symbol: string): Promise<number | null> 
   } catch {
     return null;
   }
+}
+
+// Ensure `priceMap` holds a real, positive MARKET price for every symbol in `symbols`,
+// fetching a live quote for any that's missing. Used when snapshotting held positions so a
+// position's recorded `price` is never silently its avgCost. priceMap is built only from the
+// S&P universe (+ top influencer momentum), so a held influencer name (e.g. PLTR outside the
+// top-12) or any symbol whose Yahoo fetch failed that run is absent — and the old
+// `priceMap.get(sym) ?? avgCost` fallback then stored price == avgCost. That placeholder
+// injects a phantom day-over-day move into the sleeve-return series (PLTR 2026-07-08 stored
+// its $116.26 cost as "price" while it traded ~$132, so the next day read a bogus +8%).
+// Mutates priceMap in place; returns the symbols that STILL couldn't be priced (live fetch
+// failed) so the caller can log the last-resort fallback instead of it being silent.
+export async function enrichPriceMap(
+  symbols: string[],
+  priceMap: Map<string, number>,
+): Promise<string[]> {
+  const missing = [...new Set(symbols)].filter((s) => s.length > 0 && !((priceMap.get(s) ?? 0) > 0));
+  if (missing.length === 0) return [];
+  const results = await Promise.allSettled(missing.map((s) => fetchCurrentPrice(s).then((p) => ({ s, p }))));
+  const unresolved: string[] = [];
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value.p != null && r.value.p > 0) {
+      priceMap.set(r.value.s, r.value.p);
+    } else if (r.status === "fulfilled") {
+      unresolved.push(r.value.s);
+    }
+  }
+  return unresolved;
 }
 
 // Lightweight single-symbol quote (price + 1-day % change). Lets the stop-check
