@@ -319,6 +319,17 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const mainAlpha = mainCumReturn != null && spyReturn != null ? mainCumReturn - spyReturn : null;
   const hasComparison = returnSeries.some(p => p.agentic != null);
 
+  // NEW quality-momentum main book: return SINCE the 2026-07-09 strategy switch, anchored once the book
+  // was fully rebuilt after T+1 settlement (V1_TRACK_START) so the tiny transition-day base doesn't
+  // distort it. null (→ "book building") until that date's runs exist. Adjust V1_TRACK_START if the
+  // rebuild completes on a different day.
+  const V1_TRACK_START = "2026-07-11";
+  const v1MainReturn = (() => {
+    const v1 = runsChronological.filter(r => r.date >= V1_TRACK_START && typeof r.mainDailyReturn === "number");
+    if (v1.length === 0) return null;
+    return (v1.reduce((idx, r) => idx * (1 + (r.mainDailyReturn as number)), 1) - 1) * 100;
+  })();
+
   const latestInfluencer = returnSeries[returnSeries.length - 1]?.influencer;
   const influencerCumReturn = latestInfluencer != null ? latestInfluencer - 100 : null;
   // Influencer alpha must use SPY over the INFLUENCER window, not the AI-window spyReturn —
@@ -409,6 +420,13 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               {mainCumReturn != null ? fmtPct(mainCumReturn) : "—"}
             </span>
             <span style={s.perfSince}>core S&P strategy · since {seriesSince.main ?? "—"}</span>
+          </div>
+          <div style={s.perfStat}>
+            <Tip style={s.perfLabel} label="Quality-Momentum · new" def="The NEW quality-momentum main-book strategy's return since it took over on 2026-07-09 — anchored once the book was fully rebuilt after T+1 settlement, so the transition days don't distort it. This is the live 2-week trial's scorecard; the 'Main Book Return' to its left spans the whole account history (old momentum strategy + new)." />
+            <span style={{ ...s.perfValue, color: returnColor(v1MainReturn) }}>
+              {v1MainReturn != null ? fmtPct(v1MainReturn) : "—"}
+            </span>
+            <span style={s.perfSince}>{v1MainReturn != null ? "since strategy update · 2026-07-09" : "since 2026-07-09 · book building"}</span>
           </div>
           <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="S&P 500 Return" def="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'" />
