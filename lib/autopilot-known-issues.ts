@@ -105,6 +105,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Reconcile the dashboard's derived returns against the raw data. (1) Does any held position (NOT in today's buy trades) have snapshot price == avgCost? That's the cost-basis artifact — the stored price should be the live market price; it poisons the sleeve return the following day. (2) Does any single-day sleeve or main return look implausible (say |return| > ~15%) relative to the account's agenticDailyReturn and the actual price moves of the held names? A large sleeve return that doesn't reconcile with the positions' real moves is usually a price/partition artifact, not real P&L. (3) If TWO runs exist for one date (a manual run plus the cron), verify the day's sleeve returns were recomputed against the MERGED trades, not one run's subset. Do NOT flag a buy-day position whose price==avgCost — that is correct and nets to zero.",
   },
+  {
+    date: "2026-07-10",
+    title: "Sleeve return distorted by a tiny prior-day base (book rebuilt from cash)",
+    lesson:
+      "The V1 strategy switch liquidated the main book on 07-09 (main sleeve → just APA, ~$33.60) and rebuilt it from settled cash on 07-10 (→ ~$2,038 across 5 names). computeDailyReturn only guarded yesterdayValue <= 0, so the tiny-but-positive $33.60 base slipped through: a sub-dollar real P&L / $33.60 = a phantom mainDailyReturn of −2.05%, which compounded the dashboard's Main Book Return from the honest −4.25% to −6.22%. The whole-account agenticDailyReturn was correct (+0.02%) because it divides by TOTAL value (incl. cash), so the distortion was sleeve-only. FIXED: computeSleeveReturns now nulls a sleeve's daily return when its prior-day book was < 10% of today's (a >10x growth = rebuilt from cash, not managed — directional, so liquidation days and normal add days are unaffected); 07-10 backfilled via ?recomputeSleeves=1.",
+    check:
+      "Is any single-day sleeve return (main or influencer) large in % BUT driven by a tiny prior-day base rather than a real price move? Signature: the sleeve's prior-day position value is a small fraction (<~10%) of its current-day value — i.e. the book was rebuilt from cash that day (mass liquidation the day before, then redeploy). That daily % is a denominator artifact and should be null (excluded from compounding), NOT counted as real P&L. Distinguish from a genuine loss by checking whether the held names actually moved that much.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

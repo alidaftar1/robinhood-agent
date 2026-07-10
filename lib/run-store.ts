@@ -375,11 +375,27 @@ export function computeSleeveReturns(
   const mainToday = positions.filter(p => !isInfluencer(p.symbol));
   const mainYesterday = prevPositions.filter(p => !isInfluencer(p.symbol));
 
-  const influencer = influToday.length > 0 && influYesterday.length > 0
+  // Tiny-denominator guard: a sleeve REBUILT from cash (prior-day book a negligible
+  // fraction of today's) has no meaningful daily % — a sub-dollar real P&L divided by a
+  // near-zero base amplifies into a large phantom return. This is directional: it fires
+  // only on cash-deployment GROWTH days (2026-07-10 main: prior book $33.60 was 1.6% of
+  // today's $2,038 → −2.05% phantom), NOT on liquidation days (prior book is large, base
+  // is fine) or normal add days (prior book stays well above the threshold). The 10% floor
+  // means the sleeve grew >10x in a day — that's a rebuild, not management. Tunable.
+  //
+  // Deliberately RELATIVE-only (no absolute dollar floor): the influencer sleeve is
+  // legitimately small — a BTC-only sleeve is ~$28 — so any absolute floor big enough to
+  // matter would null that sleeve's real returns every day. A sub-dollar base (where a
+  // relative-only test could still amplify) can't occur here: the smallest real position
+  // is one whole/fractional share worth ~$28. Do NOT add an absolute floor without solving
+  // the small-sleeve case first.
+  const materialBase = (today: PositionSnapshot[], yst: PositionSnapshot[]) =>
+    value(yst) >= 0.10 * value(today);
+  const influencer = influToday.length > 0 && influYesterday.length > 0 && materialBase(influToday, influYesterday)
     ? computeDailyReturn(value(influToday), value(influYesterday), influToday, influYesterday,
         trades.filter(t => isInfluencer(t.symbol)))
     : null;
-  const main = mainToday.length > 0 && mainYesterday.length > 0
+  const main = mainToday.length > 0 && mainYesterday.length > 0 && materialBase(mainToday, mainYesterday)
     ? computeDailyReturn(value(mainToday), value(mainYesterday), mainToday, mainYesterday,
         trades.filter(t => !isInfluencer(t.symbol)))
     : null;
