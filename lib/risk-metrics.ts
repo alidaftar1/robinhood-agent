@@ -48,6 +48,63 @@ export function computeSectorBreakdown(run: TradeRun): SectorSlice[] {
   );
 }
 
+// ─── Market-risk concentration (β buckets) ──────────────────────────────────────
+// The risk view the SECTOR panel can't show: two names in DIFFERENT sectors (e.g. GOOGL
+// in Comm Services + PLTR in Tech) can both be high-β growth and move together, so a book
+// that looks sector-diversified can still be one concentrated market bet. This groups the
+// book by how hard each name swings with the market (β vs SPY), value-weighted, reading as
+// "X% of the book swings harder than the market". β per name comes from the run's
+// bookBeta.bySymbol (persisted at trade time); a name with no known β (e.g. BTC) → "Unknown".
+export interface BetaBucket {
+  key: "high" | "market" | "low" | "inverse" | "unknown";
+  name: string;
+  value: number;
+  pct: number;
+  members: Array<{ symbol: string; beta: number | null }>; // names in this bucket, biggest position first
+}
+
+const BETA_BUCKET_NAMES: Record<BetaBucket["key"], string> = {
+  high: "Swings more (β > 1.1)",
+  market: "Moves with market",
+  low: "Swings less (β 0–0.9)",
+  inverse: "Moves opposite (β < 0)",
+  unknown: "Unknown β",
+};
+const BETA_BUCKET_ORDER: BetaBucket["key"][] = ["high", "market", "low", "inverse", "unknown"];
+
+export function computeBetaBreakdown(run: TradeRun): BetaBucket[] {
+  const bySymbol = run.bookBeta?.bySymbol;
+  // Without persisted per-name β there's nothing to bucket (older runs / same-day thin runs).
+  if (!bySymbol || Object.keys(bySymbol).length === 0) return [];
+  const byBucket = new Map<BetaBucket["key"], Array<{ symbol: string; beta: number | null; value: number }>>();
+  let equity = 0;
+  for (const p of run.positions ?? []) {
+    const value = parseFloat(p.quantity) * parseFloat(p.price);
+    if (!isFinite(value) || value <= 0) continue;
+    const b = bySymbol[p.symbol];
+    // inverse (β < 0) is checked before low, else an inverse/diversifier name (moves OPPOSITE
+    // the market) would be mislabeled "swings less" — a materially different risk read.
+    const key: BetaBucket["key"] =
+      b == null ? "unknown" : b < 0 ? "inverse" : b > 1.1 ? "high" : b < 0.9 ? "low" : "market";
+    const arr = byBucket.get(key) ?? [];
+    arr.push({ symbol: p.symbol, beta: b ?? null, value });
+    byBucket.set(key, arr);
+    equity += value;
+  }
+  if (equity <= 0) return [];
+  return BETA_BUCKET_ORDER.filter((k) => byBucket.has(k)).map((k) => {
+    const members = byBucket.get(k)!;
+    const value = members.reduce((s, m) => s + m.value, 0);
+    return {
+      key: k,
+      name: BETA_BUCKET_NAMES[k],
+      value,
+      pct: (value / equity) * 100,
+      members: members.sort((a, b) => b.value - a.value).map((m) => ({ symbol: m.symbol, beta: m.beta })),
+    };
+  });
+}
+
 export const SECTOR_CAP_PCT = 40;
 
 // Renders the current sector mix + a soft-cap nudge for the analysis prompt.
@@ -123,8 +180,11 @@ export function computeBeatRate(
 export function computeBookBeta(
   positions: Array<{ symbol: string; value: number }>,
   betaOf: (symbol: string) => number | null | undefined
-): { beta: number; coveragePct: number } | null {
+): { beta: number; coveragePct: number; bySymbol: Record<string, number> } | null {
   let wSum = 0, bSum = 0, covered = 0;
+  // Per-name β of only the KNOWN names (the 1.0 fallback is NOT recorded, so a name absent
+  // here reads as "Unknown" in the beta breakdown rather than a fake market-like reading).
+  const bySymbol: Record<string, number> = {};
   for (const p of positions) {
     if (!isFinite(p.value) || p.value <= 0) continue;
     const raw = betaOf(p.symbol);
@@ -132,12 +192,12 @@ export function computeBookBeta(
     // only null/undefined/non-finite (unmeasured) falls back to 1.0 (market-like).
     const known = raw != null && isFinite(raw);
     const b = known ? raw : 1.0;
-    if (known) covered += p.value;
+    if (known) { covered += p.value; bySymbol[p.symbol] = raw as number; }
     wSum += p.value;
     bSum += b * p.value;
   }
   if (wSum <= 0) return null;
-  return { beta: bSum / wSum, coveragePct: (covered / wSum) * 100 };
+  return { beta: bSum / wSum, coveragePct: (covered / wSum) * 100, bySymbol };
 }
 
 // Book β for a set of holdings, looking each name's β up from a market-data stock list.
@@ -148,7 +208,7 @@ export function computeBookBeta(
 export function computeBookBetaForPositions(
   stocks: Array<{ symbol: string; beta: number | null }>,
   positions: Array<{ symbol: string; value: number }>,
-): { beta: number; coveragePct: number } | null {
+): { beta: number; coveragePct: number; bySymbol: Record<string, number> } | null {
   const betaOf = new Map<string, number | null>(stocks.map(s => [s.symbol, s.beta]));
   return computeBookBeta(positions, (s) => betaOf.get(s));
 }

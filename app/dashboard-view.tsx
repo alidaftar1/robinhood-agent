@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -365,6 +365,9 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
 
   const cashPct = current ? computeCashPct(current) : null;
   const sectorBreakdown = current ? computeSectorBreakdown(current) : [];
+  // β-bucket view — how the book splits by market-swing risk, which the sector mix can't show
+  // (different sectors, same high-β growth risk). Empty until a run persists per-name β.
+  const betaBreakdown = current ? computeBetaBreakdown(current) : [];
   // "Swings vs. Market" = holdings-based book β stored on `current` — the SAME run that drives
   // the cash/sector stats on this card, so β always matches the holdings shown beside it (no
   // stale-β-vs-fresh-positions mismatch). Meaningful from day one; the realized-regression β
@@ -600,6 +603,29 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 </div>
               ))}
               <div style={{ ...s.perfSince, marginTop: 8 }}>a lot in one industry means it's betting on that industry, not picking individual winners</div>
+            </div>
+          )}
+          {betaBreakdown.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div style={{ ...s.perfLabel, marginBottom: 10 }}><Tip label="Market-Risk Mix" def="How the book splits by how much each holding swings with the market (beta). The industry mix can look diversified while the money is really one bet — e.g. a Comm-Services name and a Tech name that both swing hard together. This groups by that swing instead of by industry label." /></div>
+              {betaBreakdown.map((bkt) => {
+                const color = bkt.key === "high" ? "#e8943a" : bkt.key === "low" ? "#7dba7d" : bkt.key === "inverse" ? "#9d7dba" : bkt.key === "unknown" ? "#777" : "#7d9dba";
+                return (
+                  <div key={bkt.key} style={{ marginBottom: 13 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ width: 118, fontSize: 12, color: "#bbb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{bkt.name}</span>
+                      <div style={{ flex: 1, background: "#1a1a1a", borderRadius: 4, height: 14, overflow: "hidden" }}>
+                        <div style={{ width: `${bkt.pct}%`, background: color, height: "100%" }} />
+                      </div>
+                      <span style={{ width: 40, textAlign: "right", fontSize: 12, color: "#888" }}>{bkt.pct.toFixed(0)}%</span>
+                    </div>
+                    <div title={bkt.members.map((m) => (m.beta == null ? m.symbol : `${m.symbol} β${m.beta.toFixed(2)}`)).join(", ")} style={{ fontSize: 12.5, color: "#d0d0d0", fontWeight: 500, marginTop: 5, marginLeft: 128, letterSpacing: 0.3 }}>
+                      {bkt.members.map((m) => m.symbol).join("   ·   ")}
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{ ...s.perfSince, marginTop: 8 }}>high-swing names in different industries still rise and fall together — a lot here means less real diversification than the industry mix suggests</div>
             </div>
           )}
         </div>

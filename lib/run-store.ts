@@ -61,7 +61,7 @@ export interface TradeRun {
    *  realized regression over a handful of daily returns, which is noise until months of
    *  history accrue and (for a daily-rebalanced book) blends names no longer held. coveragePct
    *  = share of book value with a known β. null on older runs / when no priced holdings. (2026-07-04) */
-  bookBeta?: { beta: number; coveragePct: number } | null;
+  bookBeta?: { beta: number; coveragePct: number; bySymbol?: Record<string, number> } | null;
   /** Human-readable notes from the pre-flight buy-sizing step (fitBuysToBudget) when it shrank
    *  or DROPPED a decided buy to fit settled buying power — e.g. "TSLA DROPPED — whole share
    *  needs ~$413 but only $40 left; ~$413 stays idle". Persisted so a dropped buy is never
