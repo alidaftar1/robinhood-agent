@@ -38,23 +38,27 @@ const results = await runReviewerRecall(anthropic, FIXTURES);
 for (const r of results) {
   const f = FIXTURES.find((x) => x.id === r.id)!;
   const span = experiment.startSpan({ name: r.id });
+  const verdict = r.skipped ? "skipped" : r.kPass === r.kRan ? "pass^k" : r.kPass === 0 ? "fail" : "flaky";
   span.log({
     input: { fixture: r.id, kind: f.shouldFlag ? "should-flag" : "clean", expected: f.expected ?? "stay quiet (no concern)" },
-    output: { outcome: r.outcome, concerns: r.concerns.map((c) => `[${c.severity}] ${c.title}`) },
+    output: { verdict, kPass: r.kPass, kRan: r.kRan, outcomes: r.outcomes, concerns: r.concernsSample.map((c) => `[${c.severity}] ${c.title}`) },
     scores: {
-      // 1 when the reviewer was right (caught a real problem, or stayed quiet on a clean run); null when skipped.
-      reviewer_correct: r.outcome === "skipped" ? null : r.outcome === "TP" || r.outcome === "TN" ? 1 : 0,
-      // recall vs specificity split out so the dashboard can trend each independently.
-      caught_real_problem: f.shouldFlag && r.outcome !== "skipped" ? (r.outcome === "TP" ? 1 : 0) : null,
-      quiet_on_clean: !f.shouldFlag && r.outcome !== "skipped" ? (r.outcome === "TN" ? 1 : 0) : null,
+      // pass^K (consistency): 1 only when the reviewer was right on ALL k runs; null when skipped.
+      reviewer_pass_k: r.skipped ? null : r.kPass === r.kRan ? 1 : 0,
+      // per-run pass RATE (the lenient "pass@1" view) — the gap to pass^k is the flakiness.
+      reviewer_pass_rate: r.skipped ? null : r.kPass / r.kRan,
+      // recall vs specificity split out (as per-run rates) so the dashboard can trend each.
+      caught_real_problem: f.shouldFlag && !r.skipped ? r.kPass / r.kRan : null,
+      quiet_on_clean: !f.shouldFlag && !r.skipped ? r.kPass / r.kRan : null,
     },
-    metadata: { shouldFlag: f.shouldFlag, note: f.note, error: r.error ?? null },
+    metadata: { shouldFlag: f.shouldFlag, note: f.note, k: r.kRan, error: r.error ?? null },
   });
   span.end();
 }
 
 const s = scoreReviewer(results);
-console.log(`\nreviewer recall ${s.recall == null ? "n/a" : Math.round(s.recall * 100) + "%"} (${s.tp}/${s.tp + s.fn}) · specificity ${s.specificity == null ? "n/a" : Math.round(s.specificity * 100) + "%"} (${s.tn}/${s.tn + s.fp})`);
+const pct = (x: number | null) => (x == null ? "n/a" : Math.round(x * 100) + "%");
+console.log(`\npass^${s.K} recall ${pct(s.recallPassK)} (per-run ${pct(s.recallMean)}) · pass^${s.K} specificity ${pct(s.specificityPassK)} (per-run ${pct(s.specificityMean)})${s.flaky.length ? ` · flaky: ${s.flaky.join(", ")}` : ""}`);
 console.log(llmBudgetSummary());
 await experiment.flush();
 console.log(`\nhttps://www.braintrust.dev/app/Yogi's%20Insight/p/robinhood-agent/experiments/${EXPERIMENT_NAME}`);

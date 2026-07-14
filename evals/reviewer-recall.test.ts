@@ -31,11 +31,11 @@ describe("reviewer-recall: live reviewer evaluation (token-gated)", () => {
     const results = await runReviewerRecall(anthropic);
     console.log("\nREVIEWER RECALL (live Sonnet skeptical-reviewer vs real labeled runs):\n" + renderReviewerScoreboard(results) + "\n" + llmBudgetSummary() + "\n");
 
-    const scored = results.filter((r) => r.outcome !== "skipped");
+    const scored = results.filter((r) => !r.skipped);
     expect(scored.length).toBeGreaterThan(0); // the harness actually exercised the reviewer
     // We MEASURE the reviewer; we do NOT hard-assert a specific recall/specificity — the reviewer is
     // stochastic and N is tiny, so an equality assertion would flake in CI. Just surface a drop.
-    const clean = results.find((r) => !r.shouldFlag && r.outcome !== "skipped");
-    if (clean && clean.outcome !== "TN") console.warn(`[reviewer-recall] clean control drew a concern this run (${clean.outcome}) — specificity < 100% (stochastic; watch if it persists).`);
+    const clean = results.find((r) => !r.shouldFlag && !r.skipped);
+    if (clean && clean.kPass < clean.kRan) console.warn(`[reviewer-recall] clean control drew a concern on ${clean.kRan - clean.kPass}/${clean.kRan} run(s) — specificity < 100% (stochastic; watch if it persists).`);
   }, 120_000);
 });

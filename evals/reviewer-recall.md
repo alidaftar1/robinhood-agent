@@ -13,10 +13,17 @@ Runs `reviewRun` (unchanged production code) against real runs where a known pro
 - **Recall / TPR** — of the runs that really contained a problem, how many did the reviewer flag?
 - **Specificity** — on a clean run, does it stay quiet instead of manufacturing a false concern?
 
+**Consistency — `pass^K`.** The reviewer is stochastic, so a single run is luck, not capability. Each
+fixture is run **K times** (default K=5, `REVIEWER_RECALL_K`) and scored two ways: **`pass^K`** (did it
+get it right on *all* K runs — the strict, consistency bar) and the **per-run rate** (the lenient
+`pass@1`-style average). The gap between them is *flakiness* a single run hides — a fixture caught 3/5
+is reported as **FLAKY**, not a pass. Only a `pass^K` (K/K) fixture is "held." A fixture that can't be
+funded for all K runs is **skipped**, never scored on a partial K.
+
 The reviewer emits free-text concerns, so deciding "did it catch mode X" is itself a judgment — an
 **LLM-as-judge** (`llm-judge.ts`) grades each concern set against the labeled expectation. Every LLM
 call — reviewer and judge — goes through a **token budget** (`llm-budget.ts`): opt-in (`EVAL_LLM=1`),
-hard-capped, cheap judge, spend logged.
+hard-capped, cheap judge, spend logged. A full k=5 sweep is ~45 calls, so raise `EVAL_LLM_MAX_CALLS`.
 
 ## The fixtures (real incidents, hand-labeled)
 
@@ -28,16 +35,21 @@ hard-capped, cheap judge, spend logged.
 | `stranded-decided-buy` | decided TSLA buy didn't execute; ~$408 left idle | ✅ |
 | `clean-run-control` | a healthy, diversified, internally-consistent run | ❌ (specificity) |
 
-## Latest run (illustrative — the reviewer is stochastic; this is not a CI-asserted number)
+## Latest run (illustrative — stochastic, not a CI-asserted number; here budget-capped to k=2)
 
 ```
-reviewer recall 75% (3/4) · specificity 100% (1/1)
-  sleeve-return-artifact   FN   (blind spot — see below)
-  regime-beta-mismatch     TP
-  sector-vs-thesis         TP
-  stranded-decided-buy     TP
-  clean-run-control        TN
+  fixture                  kind         k-pass  verdict  reviewer concern(s)
+  sleeve-return-artifact   should-flag  0/2     FAIL     (blind spot — see below)
+  regime-beta-mismatch     should-flag  2/2     pass^2
+  sector-vs-thesis         should-flag  —       SKIP
+  stranded-decided-buy     should-flag  —       SKIP
+  clean-run-control        clean        —       SKIP
+  pass^2 RECALL (caught EVERY run): 50%   ·   per-run recall: 50%
+  (3 fixture(s) skipped for budget — a full k=2 sweep needs ~18 calls: set EVAL_LLM_MAX_CALLS)
 ```
+
+`pass^K` here confirmed the sleeve-return blind spot is *consistent* (0/2, not a one-run fluke) and the
+regime-mismatch catch is *reliable* (2/2) — the distinction a single run couldn't make.
 
 ## What the harness surfaced — and the judgment call it forced
 
@@ -69,15 +81,18 @@ regression after a reviewer-prompt change shows up on the dashboard instead of o
 ## Run it
 
 ```bash
-bun --env-file=.env.local test evals/reviewer-recall.test.ts            # integrity only, free
-EVAL_LLM=1 bun --env-file=.env.local test evals/reviewer-recall.test.ts # runs the live reviewer
-bun run eval:braintrust:reviewer                                        # + logs to Braintrust
+bun --env-file=.env.local test evals/reviewer-recall.test.ts                                  # integrity only, free
+EVAL_LLM=1 bun --env-file=.env.local test evals/reviewer-recall.test.ts                        # live reviewer (defaults k=5 — raise the cap)
+EVAL_LLM=1 EVAL_LLM_MAX_CALLS=50 bun --env-file=.env.local test evals/reviewer-recall.test.ts  # full k=5 pass^K sweep
+EVAL_LLM=1 REVIEWER_RECALL_K=3 EVAL_LLM_MAX_CALLS=30 bun --env-file=.env.local test evals/reviewer-recall.test.ts  # cheaper k=3
+bun run eval:braintrust:reviewer                                                               # + logs pass^k to Braintrust
 ```
 
 ## Honest limitations
 
-- **Small N (5 fixtures), stochastic reviewer** → a directional gauge, not a precise metric. The test
-  deliberately does not hard-assert recall (it would flake); the numbers above are one representative run.
+- **Small N (5 fixtures)** → still a directional gauge, not a precise metric. `pass^K` now measures the
+  reviewer's *stochasticity* directly (K runs per fixture), so consistency is no longer guessed from one
+  run — but the fixture count is small. The test deliberately does not hard-assert recall (it would flake).
 - **The judge is an LLM** — grading free-text concerns is fallible; the crisp `expected` strings keep
   it tight, and it takes the first YES/NO token to avoid a verbose reply inflating recall.
 - **Token metering** counts *calls* for both reviewer and judge, but *tokens* only for the judge

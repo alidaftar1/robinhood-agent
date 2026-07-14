@@ -126,11 +126,27 @@ export const FIXTURES: ReviewerFixture[] = [
 
 const OK_VERIFY = { status: "ok", cashDiff: 0, valueDiff: 0, positionIssues: 0, uncapturedOrders: 0 } as const;
 
-export type Outcome = "TP" | "FN" | "TN" | "FP" | "skipped";
+export type Outcome = "TP" | "FN" | "TN" | "FP";
+
+// K repeated runs per fixture. pass^K measures CONSISTENCY, not a lucky single run: a fixture only
+// counts as "held" when the reviewer gets it right on ALL K runs. A run "passes" when the reviewer
+// CAUGHT the planted problem (should-flag) or stayed QUIET (clean). K=5 preferred (the pass^k
+// literature); env-overridable, clamped to ≥1. NOTE: a full k=5 sweep of all fixtures is ~45 LLM
+// calls, so raise EVAL_LLM_MAX_CALLS accordingly — underfunded fixtures are skipped, not partial.
+export const REVIEWER_RECALL_K = Math.max(1, Math.floor(Number(process.env.REVIEWER_RECALL_K ?? 5)) || 5);
+
 export interface ReviewerResult {
-  id: string; shouldFlag: boolean; outcome: Outcome;
-  concerns: ReviewConcern[]; error?: string;
+  id: string;
+  shouldFlag: boolean;
+  kRan: number;                     // runs completed (kRan < K ⇒ skipped, excluded from pass^K)
+  kPass: number;                    // of kRan, how many passed (caught if should-flag; quiet if clean)
+  outcomes: Outcome[];              // per-run outcome, in order
+  concernsSample: ReviewConcern[];  // concerns from the first completed run (for the scoreboard)
+  skipped: boolean;                 // couldn't complete all K runs (budget exhausted or reviewer error)
+  error?: string;
 }
+
+const passCount = (outcomes: Outcome[]) => outcomes.filter((o) => o === "TP" || o === "TN").length;
 
 // Grade whether the reviewer's concerns cover the expected issue (LLM-as-judge). Returns null if
 // the token budget refused the grading call.
@@ -141,47 +157,98 @@ async function graded(concerns: ReviewConcern[], expected: string): Promise<bool
   );
 }
 
-// Run the REAL reviewer against each fixture and score it. Every LLM call is budgeted; when the
-// budget is exhausted the remaining fixtures are marked "skipped" rather than forcing spend.
-export async function runReviewerRecall(anthropic: Anthropic, fixtures = FIXTURES): Promise<ReviewerResult[]> {
-  const out: ReviewerResult[] = [];
-  for (const f of fixtures) {
-    // A should-flag fixture needs 2 calls (reviewer + judge); reserve both up front so we never
-    // spend the reviewer call and then get refused the judge (which would drop the item from the
-    // recall denominator and skew the reported number).
-    const need = f.shouldFlag ? 2 : 1;
-    if (!llmBudgetCanAfford(need) || !reserveLlmCall()) { out.push({ id: f.id, shouldFlag: f.shouldFlag, outcome: "skipped", concerns: [] }); continue; }
+// Run ONE fixture K times. The whole K-run is reserved up front (llmBudgetCanAfford), so a fixture
+// runs all K times or not at all — pass^K is never computed from a partial sample. A reviewer error
+// or a judge-budget refusal mid-run aborts the fixture as skipped rather than reporting a short K.
+async function runFixtureKTimes(anthropic: Anthropic, f: ReviewerFixture, K: number): Promise<ReviewerResult> {
+  const callsPerRun = f.shouldFlag ? 2 : 1; // reviewer (+ judge, for should-flag)
+  const outcomes: Outcome[] = [];
+  let concernsSample: ReviewConcern[] = [];
+  const done = (skipped: boolean, error?: string): ReviewerResult =>
+    ({ id: f.id, shouldFlag: f.shouldFlag, kRan: outcomes.length, kPass: passCount(outcomes), outcomes, concernsSample, skipped, error });
+
+  if (!llmBudgetCanAfford(K * callsPerRun)) return done(true);
+
+  for (let i = 0; i < K; i++) {
+    reserveLlmCall(); // reviewer call — the whole K-run's affordability was pre-checked above
     const { concerns, error } = await reviewRun(anthropic, f.run, [], OK_VERIFY);
-    if (error) { out.push({ id: f.id, shouldFlag: f.shouldFlag, outcome: "skipped", concerns: [], error }); continue; }
+    if (error) return done(true, error);
+    if (i === 0) concernsSample = concerns;
     let outcome: Outcome;
     if (f.shouldFlag) {
-      const caught = await graded(concerns, f.expected!);
-      outcome = caught == null ? "skipped" : caught ? "TP" : "FN";
+      const caught = await graded(concerns, f.expected!); // graded → llmJudge reserves its own call
+      if (caught == null) return done(true); // judge refused → don't report a partial K
+      outcome = caught ? "TP" : "FN";
     } else {
       // Clean run: a HIGH/MEDIUM concern is a false alarm; a bare "low" FYI is tolerated.
       outcome = concerns.some((c) => c.severity !== "low") ? "FP" : "TN";
     }
-    out.push({ id: f.id, shouldFlag: f.shouldFlag, outcome, concerns });
+    outcomes.push(outcome);
   }
+  return done(false);
+}
+
+// Run the REAL reviewer K times against each fixture. Budgeted; underfunded fixtures are skipped
+// (not partially scored) and surfaced in the scoreboard so a too-low cap is obvious.
+export async function runReviewerRecall(anthropic: Anthropic, fixtures = FIXTURES, K = REVIEWER_RECALL_K): Promise<ReviewerResult[]> {
+  const out: ReviewerResult[] = [];
+  for (const f of fixtures) out.push(await runFixtureKTimes(anthropic, f, K));
   return out;
 }
 
-export interface ReviewerScore { tp: number; fn: number; tn: number; fp: number; recall: number | null; specificity: number | null; scored: number }
+export interface ReviewerScore {
+  K: number;
+  recallPassK: number | null;       // should-flag fixtures caught on ALL K runs / scored should-flag
+  specificityPassK: number | null;  // clean fixtures quiet on ALL K runs / scored clean
+  recallMean: number | null;        // Σ kPass / Σ kRan over should-flag (the per-run "pass@1" view)
+  specificityMean: number | null;   // Σ kPass / Σ kRan over clean
+  flaky: string[];                  // fixtures with 0 < kPass < kRan — right only sometimes
+  scored: number;                   // fixtures that completed all K runs
+  skipped: number;
+}
+
+// pass^K aggregation. recall*PassK* is the strict consistency bar (caught EVERY run); recall*Mean* is
+// the lenient per-run view. The GAP between them is the flakiness the single-run harness hid.
 export function scoreReviewer(results: ReviewerResult[]): ReviewerScore {
-  const tp = results.filter((r) => r.outcome === "TP").length;
-  const fn = results.filter((r) => r.outcome === "FN").length;
-  const tn = results.filter((r) => r.outcome === "TN").length;
-  const fp = results.filter((r) => r.outcome === "FP").length;
-  return { tp, fn, tn, fp, recall: tp + fn ? tp / (tp + fn) : null, specificity: tn + fp ? tn / (tn + fp) : null, scored: tp + fn + tn + fp };
+  const done = results.filter((r) => !r.skipped && r.kRan > 0);
+  const flag = done.filter((r) => r.shouldFlag);
+  const clean = done.filter((r) => !r.shouldFlag);
+  const passedAll = (r: ReviewerResult) => r.kPass === r.kRan;
+  const mean = (rs: ReviewerResult[]) => {
+    const ran = rs.reduce((s, r) => s + r.kRan, 0);
+    return ran ? rs.reduce((s, r) => s + r.kPass, 0) / ran : null;
+  };
+  return {
+    K: done.length ? Math.max(...done.map((r) => r.kRan)) : REVIEWER_RECALL_K,
+    recallPassK: flag.length ? flag.filter(passedAll).length / flag.length : null,
+    specificityPassK: clean.length ? clean.filter(passedAll).length / clean.length : null,
+    recallMean: mean(flag),
+    specificityMean: mean(clean),
+    flaky: done.filter((r) => r.kPass > 0 && r.kPass < r.kRan).map((r) => r.id),
+    scored: done.length,
+    skipped: results.filter((r) => r.skipped).length,
+  };
 }
 
 export function renderReviewerScoreboard(results: ReviewerResult[]): string {
-  const rows = results.map((r) => `  ${r.id.padEnd(24)} ${(r.shouldFlag ? "should-flag" : "clean").padEnd(12)} ${r.outcome.padEnd(8)} ${r.error ? "(" + r.error + ")" : r.concerns.map((c) => c.title).slice(0, 2).join("; ")}`);
   const s = scoreReviewer(results);
+  const pct = (x: number | null) => (x == null ? "n/a" : Math.round(x * 100) + "%");
+  const rows = results.map((r) => {
+    const verdict = r.skipped ? "SKIP" : r.kPass === r.kRan ? `pass^${r.kRan}` : r.kPass === 0 ? "FAIL" : "FLAKY";
+    const kk = r.skipped && r.kRan === 0 ? "—" : `${r.kPass}/${r.kRan}`;
+    const tail = r.error ? "(" + r.error + ")" : r.concernsSample.map((c) => c.title).slice(0, 2).join("; ");
+    return `  ${r.id.padEnd(24)} ${(r.shouldFlag ? "should-flag" : "clean").padEnd(12)} ${kk.padEnd(7)} ${verdict.padEnd(8)} ${tail}`;
+  });
+  const needCalls = results.reduce((n, r) => n + (r.shouldFlag ? 2 : 1) * s.K, 0);
   return [
-    "  fixture                  kind         outcome  reviewer concern(s)",
+    "  fixture                  kind         k-pass  verdict  reviewer concern(s)",
     ...rows,
     "",
-    `  RECALL (real problems caught): ${s.recall == null ? "n/a" : Math.round(s.recall * 100) + "%"} (${s.tp}/${s.tp + s.fn})   ·   SPECIFICITY (clean stays quiet): ${s.specificity == null ? "n/a" : Math.round(s.specificity * 100) + "%"} (${s.tn}/${s.tn + s.fp})`,
-  ].join("\n");
+    `  pass^${s.K} RECALL (caught EVERY run): ${pct(s.recallPassK)}   ·   per-run recall: ${pct(s.recallMean)}`,
+    `  pass^${s.K} SPECIFICITY (quiet EVERY run): ${pct(s.specificityPassK)}   ·   per-run specificity: ${pct(s.specificityMean)}`,
+    s.flaky.length
+      ? `  ⚠ FLAKY (right only sometimes — the pass^k gap a single run hid): ${s.flaky.join(", ")}`
+      : `  no flaky fixtures — every scored fixture was consistent across ${s.K} runs`,
+    s.skipped ? `  (${s.skipped} fixture(s) skipped for budget — a full k=${s.K} sweep needs ~${needCalls} calls: set EVAL_LLM_MAX_CALLS)` : "",
+  ].filter(Boolean).join("\n");
 }
