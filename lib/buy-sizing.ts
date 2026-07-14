@@ -11,6 +11,54 @@
 export const BUY_BUFFER_PCT = 0.03;   // leave 3% of settled buying power unspent (broker buffer)
 export const BUY_PRICE_CUSHION = 1.02; // budget each buy 2% above the thesis price (live tick)
 
+// ── Per-position cap enforcement (cumulative holdings, not per-order) ────────
+// The $maxPos per-position cap (max(400, 20% of book), lib/strategy.ts) is stated to the
+// model as "Max $X per position" but is only operationalized in-prompt as a PER-BUY check
+// (max_qty = floor(maxPos / price)) that treats every buy as if starting from ZERO shares.
+// So when the model TOPS UP a name it already holds, the per-buy check passes trivially
+// (1 extra share ≪ max_qty) while the CUMULATIVE position drifts past the cap — nothing
+// deterministic ever counts the existing shares. Observed: APA topped up 07-13 (→~$550) and
+// 07-14 (→~$585) past the $490 cap (~24% of a $2,454 book vs the 20% intent), uncaught.
+//
+// This clamps each buy so (existing $held + new shares) ≤ maxPositionDollars, using the SAME
+// dollar cap the prompt already states — it does NOT change the cap or force a trim; it only
+// refuses to ADD to a name already at/over its per-name limit (shrinking a top-up, or dropping
+// it if there's zero headroom). Fresh positions (0 held) behave exactly like the prompt's
+// existing max_qty rule. Pure + dependency-free so it's unit-testable. Run BEFORE fitBuysToBudget
+// (cap the name first, then fit what's left into settled buying power).
+export function capBuysToPositionLimit<T extends { symbol: string; quantity: number; price: number }>(
+  buys: T[],
+  heldValueBySymbol: Map<string, number>,
+  maxPositionDollars: number,
+): { sized: T[]; adjustments: string[] } {
+  const sized: T[] = [];
+  const adjustments: string[] = [];
+  // Track value committed per symbol as we go (existing held + accepted new shares) so
+  // repeated buys of the same name within one decision can't collectively breach the cap.
+  const committed = new Map(heldValueBySymbol);
+  const cap = Math.round(maxPositionDollars);
+  for (const b of buys) {
+    if (!(b.price > 0) || !(maxPositionDollars > 0)) {
+      sized.push(b); // no usable price / cap → can't clamp; leave to the budget fit + broker
+      continue;
+    }
+    const held = committed.get(b.symbol) ?? 0;
+    const headroom = maxPositionDollars - held;
+    const maxAddQty = Math.floor(headroom / b.price);
+    if (maxAddQty >= b.quantity) {
+      sized.push(b);
+      committed.set(b.symbol, held + b.quantity * b.price);
+    } else if (maxAddQty >= 1) {
+      sized.push({ ...b, quantity: maxAddQty });
+      adjustments.push(`${b.symbol} ${b.quantity}→${maxAddQty} (capped: ~$${Math.round(held)} already held, $${cap} per-name limit)`);
+      committed.set(b.symbol, held + maxAddQty * b.price);
+    } else {
+      adjustments.push(`${b.symbol} DROPPED — position already at the $${cap} per-name cap (~$${Math.round(held)} held); top-up would breach it`);
+    }
+  }
+  return { sized, adjustments };
+}
+
 export function fitBuysToBudget<T extends { symbol: string; quantity: number; price: number }>(
   buys: T[],
   settledBuyingPower: number,
