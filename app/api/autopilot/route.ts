@@ -4,6 +4,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
 import { logReviewResult } from "@/lib/braintrust-trace";
+import { sendAlert } from "@/lib/alert";
 
 interface VerifyResult {
   status: string;
@@ -459,6 +460,15 @@ export async function GET(request: Request) {
   if (cloudDispatch && emailSent) {
     cloudDispatched = await dispatchCloudAgent();
     console.log("CLOUD_DISPATCH", cloudDispatched);
+    // Make a dispatch failure LOUD. It's otherwise swallowed (non-fatal by design) and there's
+    // no schedule fallback, so an expired/revoked GH_DISPATCH_TOKEN would silently kill the cloud
+    // autopilot with no warning (the "silent self-heal masks a failure" class). Alert instead.
+    if (!cloudDispatched.ok) {
+      await sendAlert(
+        "⚠️ Autopilot cloud-dispatch FAILED — cloud autopilot will not run",
+        `The Vercel /api/autopilot cron could not trigger the GitHub autopilot workflow (dispatch result: ${cloudDispatched.detail}). Until fixed, the cloud autopilot — deep verification, skeptical reviewer, Autopilot Journal, and propose-mode PRs — will NOT run, and there is no schedule fallback. Most likely cause: GH_DISPATCH_TOKEN expired/revoked (HTTP 401) or the env var is missing. Fix: regenerate the PAT with the 'repo' scope, update GH_DISPATCH_TOKEN in the Vercel project env (Production) + .env.local, then redeploy.`,
+      );
+    }
   }
 
   return Response.json({
