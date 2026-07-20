@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt, buildV1AnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
@@ -312,12 +313,27 @@ export async function GET(request: Request) {
     const analysisKillTimer = setTimeout(() => analysisController.abort(), 150_000);
     let analysisText = "";
     try {
-      const analysisResp = await (anthropic.beta.messages as any).create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 3000,
-        system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol)),
-        messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
-      }, { signal: analysisController.signal });
+      // Wrap the decision call in a gen_ai.invoke_agent span so the child gen_ai.chat
+      // span nests under it — this is what populates Sentry's AI Agents dashboard
+      // ("trade-analyst" runs). Plain messages.create only shows in Traces.
+      const analysisResp = await Sentry.startSpan(
+        {
+          op: "gen_ai.invoke_agent",
+          name: "invoke_agent trade-analyst",
+          attributes: {
+            "gen_ai.operation.name": "invoke_agent",
+            "gen_ai.system": "anthropic",
+            "gen_ai.request.model": "claude-sonnet-4-6",
+            "gen_ai.agent.name": "trade-analyst",
+          },
+        },
+        () => (anthropic.beta.messages as any).create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 3000,
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol)),
+          messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
+        }, { signal: analysisController.signal }),
+      );
       analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
       console.log("ANALYSIS_DONE", { length: analysisText.length });
     } finally {
