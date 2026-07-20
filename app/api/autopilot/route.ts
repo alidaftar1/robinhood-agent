@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
@@ -321,7 +321,7 @@ export async function GET(request: Request) {
 
   let reviewConcerns: ReviewConcern[] = [];
   if (todayRun) {
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const anthropic = createAnthropic();
     // Hand the reviewer verify's reconciliation so it doesn't re-flag (or hallucinate)
     // cash/position/composition mismatches the deterministic layer already confirmed.
     const verifyContext = verifyResult

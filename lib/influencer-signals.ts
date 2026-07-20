@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createAnthropic } from "@/lib/anthropic";
 import { SP500_UNIVERSE } from "./strategy";
 
 // ─── Channel registry ──────────────────────────────────────────────────────────
@@ -245,7 +246,7 @@ If genuinely no actionable tickers (pure education, macro-only, no names): TICKE
 // ─── Main refresh ──────────────────────────────────────────────────────────────
 
 export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = createAnthropic();
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // last 7 days — these channels post picks weekly, not daily
 
   // Fetch recent videos from all channels in parallel

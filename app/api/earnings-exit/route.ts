@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice } from "@/lib/market-data";
@@ -67,7 +67,7 @@ export async function GET(request: Request) {
 
   try {
     const accessToken = await getValidAccessToken();
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const anthropic = createAnthropic();
 
     const priceMap = new Map<string, number>(marketData.stocks.map((s) => [s.symbol, s.price]));
 

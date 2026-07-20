@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt, buildV1AnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap } from "@/lib/market-data";
@@ -90,7 +91,7 @@ export async function GET(request: Request) {
     // Analysis only: no MCP, no orders, no saveRun. Lets us validate that influencer
     // signals flow into Sonnet's decision (and the influencer cap) without real trades.
     if (dryRun) {
-      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const anthropic = createAnthropic();
       const [marketData, previousRun, influencerCache] = await Promise.all([
         getMarketData(),
         getLatestRun(),
@@ -172,7 +173,7 @@ export async function GET(request: Request) {
     // (the Claude MCP client token only works for the MCP endpoint, not direct REST API)
     const accessToken = await getValidAccessToken();
     console.log("TOKEN_OK");
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const anthropic = createAnthropic();
     const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache] = await Promise.all([
       getMarketData(),
       fetchCurrentPrice("SPY"),

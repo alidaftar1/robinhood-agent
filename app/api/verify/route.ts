@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { getRuns, mergeRunsByDate } from "@/lib/run-store";
 
@@ -57,7 +58,7 @@ export async function GET(request: Request) {
     return Response.json({ error: "Failed to get Robinhood access token" }, { status: 503 });
   }
 
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = createAnthropic();
 
   // Three read-only Haiku+MCP calls in parallel
   const [balanceText, positionsText, ordersText] = await Promise.all([

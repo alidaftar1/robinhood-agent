@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap } from "@/lib/market-data";
@@ -98,7 +98,7 @@ export async function GET(request: Request) {
 
   try {
     const accessToken = await getValidAccessToken();
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const anthropic = createAnthropic();
 
     // A drop was detected — NOW load full market data to price surviving positions + give the
     // sell decision market context (this run is sell-only; it does not redeploy into new names).
