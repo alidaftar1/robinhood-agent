@@ -17,8 +17,11 @@ export default withSentryConfig(nextConfig, {
   // Auth token for uploading source maps at build time. Set SENTRY_AUTH_TOKEN in the env.
   authToken: process.env.SENTRY_AUTH_TOKEN,
 
-  webpack: {
-    // Auto-instrument Vercel Cron Monitors → each cron in vercel.json shows up as a check-in.
-    automaticVercelMonitors: true,
+  _experimental: {
+    // Auto-instrument Vercel crons as Sentry Cron Monitors. This is the span-based
+    // approach that works for the App Router — the older `automaticVercelMonitors`
+    // is Pages-Router-only and silently does nothing here. Reads vercel.json crons
+    // and sends a check-in each time one runs.
+    vercelCronsMonitoring: true,
   },
 });
