@@ -8,7 +8,7 @@ import { computeStockBeta } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
-import { fitBuysToBudget } from "@/lib/buy-sizing";
+import { fitBuysToBudget, capBuysToPositionLimit } from "@/lib/buy-sizing";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -378,6 +378,34 @@ describe("benchmark-awareness: beta math", () => {
     const { sized, adjustments } = fitBuysToBudget([{ symbol: "TSLA", quantity: 1, price: 405.22 }], 300);
     expect(sized.find(b => b.symbol === "TSLA")).toBeUndefined();
     expect(adjustments.some(a => a.includes("TSLA") && a.includes("DROPPED"))).toBe(true);
+  });
+
+  it("capBuysToPositionLimit shrinks a top-up so a held name can't drift past its per-position cap (APA 07-13/07-14)", () => {
+    // APA already ~$550 held (16 × ~$34.4) against a $490 cap; the model tries to add 1 more.
+    // The in-prompt per-buy max_qty check (floor(490/34.4)=14) passes a 1-share top-up trivially,
+    // so nothing counted the existing shares. This clamps to the remaining headroom (here: none).
+    const held = new Map([["APA", 550]]);
+    const { sized, adjustments } = capBuysToPositionLimit([{ symbol: "APA", quantity: 1, price: 34.4 }], held, 490);
+    expect(sized.find(b => b.symbol === "APA")).toBeUndefined();       // no headroom → the top-up is dropped
+    expect(adjustments.some(a => a.includes("APA") && a.includes("490"))).toBe(true);
+  });
+
+  it("capBuysToPositionLimit clamps a top-up to the remaining headroom rather than dropping it", () => {
+    // APA $410 held, $490 cap → $80 headroom → floor(80/34.4)=2 shares fit; model asked for 5.
+    const { sized, adjustments } = capBuysToPositionLimit(
+      [{ symbol: "APA", quantity: 5, price: 34.4 }], new Map([["APA", 410]]), 490,
+    );
+    expect(sized.find(b => b.symbol === "APA")!.quantity).toBe(2);
+    expect(adjustments.some(a => a.includes("APA") && a.includes("5→2"))).toBe(true);
+  });
+
+  it("capBuysToPositionLimit leaves a fresh position (0 held) exactly like the in-prompt max_qty rule", () => {
+    // No existing shares → floor(490/34.4)=14 headroom; a 13-share fresh buy passes untouched.
+    const { sized, adjustments } = capBuysToPositionLimit(
+      [{ symbol: "APA", quantity: 13, price: 34.4 }], new Map(), 490,
+    );
+    expect(sized.find(b => b.symbol === "APA")!.quantity).toBe(13);
+    expect(adjustments.length).toBe(0);
   });
 
   it("dashboard 'Swings vs. Market' reads the CURRENT run's stored book β (holdings-based, aligned with the holdings shown beside it)", () => {

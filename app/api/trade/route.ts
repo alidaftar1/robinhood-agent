@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { buildSystemPrompt, buildV1AnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
+import { buildSystemPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
@@ -10,7 +10,7 @@ import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, t
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
-import { fitBuysToBudget } from "@/lib/buy-sizing";
+import { fitBuysToBudget, capBuysToPositionLimit } from "@/lib/buy-sizing";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -153,8 +153,16 @@ export async function GET(request: Request) {
       });
       const influencerBuys = annotatedBuys.filter(b => b.resolvedStrategy === "influencer");
       const allowedNew = Math.max(0, 2 - keptInfluencer);
-      // Preview the pre-flight buy sizing the real run now applies.
-      const { sized: sizedBuys, adjustments: sizingAdjustments } = fitBuysToBudget(decision.buys, buyingPower);
+      // Preview the pre-flight buy sizing the real run now applies (per-name cap, then budget fit).
+      const dryHeldValue = new Map<string, number>();
+      for (const p of previousRun?.positions ?? []) {
+        dryHeldValue.set(p.symbol, parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost)));
+      }
+      const { sized: cappedBuys, adjustments: capAdjustments } = capBuysToPositionLimit(
+        decision.buys, dryHeldValue, maxPositionDollars(previousRun?.portfolioAfter?.totalValue),
+      );
+      const { sized: sizedBuys, adjustments: budgetAdjustments } = fitBuysToBudget(cappedBuys, buyingPower);
+      const sizingAdjustments = [...capAdjustments, ...budgetAdjustments];
 
       return Response.json({
         dryRun: true,
@@ -436,10 +444,21 @@ export async function GET(request: Request) {
     // (sells today settle T+1 → they don't fund today's buys; size against real BP)
     let buySizingAdjustments: string[] = [];
     if (decision.buys.length > 0 && agenticBalance) {
-      const { sized, adjustments } = fitBuysToBudget(decision.buys, agenticBalance.buyingPower);
-      if (adjustments.length > 0) {
-        console.log("BUY_SIZING_ADJUSTED", { settledBuyingPower: agenticBalance.buyingPower, adjustments });
-        buySizingAdjustments = adjustments; // persisted on the run below so a drop is never silent
+      // First cap each buy to the per-name dollar limit against CUMULATIVE holdings (the
+      // in-prompt max_qty check ignores existing shares, so top-ups drift a name past its cap —
+      // APA 07-13/07-14). Then fit whatever survives into live settled buying power.
+      const heldValue = new Map<string, number>();
+      for (const p of portfolioCtx?.positions ?? []) {
+        heldValue.set(p.symbol, parseFloat(p.quantity) * (p.price ?? parseFloat(p.avgCost)));
+      }
+      const { sized: capped, adjustments: capAdj } = capBuysToPositionLimit(
+        decision.buys, heldValue, maxPositionDollars(String(agenticBalance.totalValue)),
+      );
+      const { sized, adjustments } = fitBuysToBudget(capped, agenticBalance.buyingPower);
+      const allAdjustments = [...capAdj, ...adjustments];
+      if (allAdjustments.length > 0) {
+        console.log("BUY_SIZING_ADJUSTED", { settledBuyingPower: agenticBalance.buyingPower, perNameCap: maxPositionDollars(String(agenticBalance.totalValue)), adjustments: allAdjustments });
+        buySizingAdjustments = allAdjustments; // persisted on the run below so a cap/drop is never silent
       }
       decision.buys = sized;
     }

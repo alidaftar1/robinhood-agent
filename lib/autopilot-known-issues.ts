@@ -113,6 +113,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Is any single-day sleeve return (main or influencer) large in % BUT driven by a tiny prior-day base rather than a real price move? Signature: the sleeve's prior-day position value is a small fraction (<~10%) of its current-day value — i.e. the book was rebuilt from cash that day (mass liquidation the day before, then redeploy). That daily % is a denominator artifact and should be null (excluded from compounding), NOT counted as real P&L. Distinguish from a genuine loss by checking whether the held names actually moved that much.",
   },
+  {
+    date: "2026-07-14",
+    title: "Per-position cap breached by incremental top-ups (existing shares uncounted)",
+    lesson:
+      "The per-position dollar cap (max(400, 20% of book) = $490 at a $2,454 book, lib/strategy.ts maxPositionDollars) is stated to the model as 'Max $X per position' but was only operationalized in-prompt as a PER-BUY check (max_qty = floor(maxPos/price)) that assumes ZERO existing shares. On low-buying-power days the model kept picking APA (the only affordable ~$34 share) and topping it up: 07-13 bought +2 (→16 sh ≈ $550) and 07-14 bought +1 (→17 sh ≈ $565–585) — each 1–2 share top-up trivially passed the per-buy check (floor(490/34)=14) while the CUMULATIVE position drifted to ~23–24% of the book, past the 20%/$490 cap, with nothing deterministic counting the shares already held. fitBuysToBudget enforced only the budget, never the per-name cap. FIXED (proposed PR): capBuysToPositionLimit (lib/buy-sizing.ts) clamps each buy so (existing $held + new shares) ≤ maxPositionDollars, run before fitBuysToBudget; it does NOT change the cap or force a trim, only refuses to ADD to a name already at/over its limit, and records the clamp/drop in buySizingAdjustments.",
+    check:
+      "For each BUY that ADDS to an already-held name, does (existing shares + bought shares) × price exceed maxPositionDollars = max(400, 0.2 × totalValue)? Signature: a held name (esp. the cheapest-per-share one, e.g. APA) topped up on a low-settled-BP day, whose resulting position value is > ~20% of the book, with NO 'capped'/'DROPPED per-name' note in buySizingAdjustments. That means the position cap was breached silently by a top-up. Flag it; also note whether tiny leftover buying power is repeatedly funneling into the single cheapest-share name (a concentration bias distinct from a genuine highest-conviction add).",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */
