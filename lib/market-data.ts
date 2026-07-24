@@ -261,13 +261,38 @@ export function buildV1Shortlist(
 
 // Renders the V1 shortlist as a compact table for the analysis prompt. quality is the SEC-derived
 // per-symbol quality percentile (0–1). Flags earnings within 30d so the model can avoid imminent ones.
-export function formatV1Shortlist(shortlist: StockData[], quality: Record<string, { quality: number }>): string {
+export function formatV1Shortlist(
+  shortlist: StockData[],
+  quality: Record<string, { quality: number }>,
+  insiderBuys: Record<string, InsiderBuy[]> = {},
+  analystRatings: Record<string, AnalystRating[]> = {},
+): string {
+  // Re-surface the insider + analyst signals we fetch every run but V1 had dropped
+  // from this table. Context flags — the model weighs them among the shortlist (a
+  // ↓FIRM is a risk headwind, a ★INS/⚡↑ raises conviction); they do NOT override the
+  // rails (still only shortlist names, within the caps). Same intent as ⚠EARN.
+  const insFlag = (sym: string) => (insiderBuys[sym]?.length ? " ★INS" : "");
+  const analystFlag = (sym: string): string => {
+    const ratings = analystRatings[sym];
+    if (!ratings?.length) return "";
+    return [...ratings]
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .slice(0, 2)
+      .map((r) => {
+        const arrow = r.action === "upgrade" || r.action === "raise_pt" ? "↑" : "↓";
+        const pt = r.priceTarget ? `$${r.priceTarget.toFixed(0)}` : "";
+        const upside = r.pctUpside != null ? `(${r.pctUpside >= 0 ? "+" : ""}${r.pctUpside.toFixed(0)}%)` : "";
+        const impact = r.action === "upgrade" && (r.pctUpside ?? 0) >= 15 ? "⚡" : "";
+        return ` ${impact}${arrow}${r.firmShort}${pt}${upside}`;
+      })
+      .join("");
+  };
   const rows = shortlist.map((s) => {
     const q = quality[s.symbol]?.quality;
     const earn = s.earningsDate ? `  ⚠EARN ${s.earningsDate}` : "";
-    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}`;
+    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${insFlag(s.symbol)}${analystFlag(s.symbol)}`;
   });
-  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector\n${rows.join("\n")}`;
+  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d]\n${rows.join("\n")}`;
 }
 
 async function fetchQuote(symbol: string): Promise<(StockData & { _closes: number[] }) | null> {

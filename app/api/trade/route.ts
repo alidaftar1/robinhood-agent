@@ -127,7 +127,7 @@ export async function GET(request: Request) {
         ? new Set(Object.entries(dryQuality.scores).filter(([, v]) => v.eligible).map(([s]) => s))
         : new Set(marketData.stocks.map(s => s.symbol));
       const dryShortlist = buildV1Shortlist(marketData.stocks, dryEligible);
-      const dryShortlistTable = formatV1Shortlist(dryShortlist, dryQuality?.scores ?? {});
+      const dryShortlistTable = formatV1Shortlist(dryShortlist, dryQuality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings);
 
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
@@ -292,7 +292,7 @@ export async function GET(request: Request) {
       : new Set(marketData.stocks.map(s => s.symbol));
     const v1Shortlist = buildV1Shortlist(marketData.stocks, eligible);
     const v1ShortlistSet = new Set(v1Shortlist.map(s => s.symbol));
-    const shortlistTable = formatV1Shortlist(v1Shortlist, quality?.scores ?? {});
+    const shortlistTable = formatV1Shortlist(v1Shortlist, quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings);
     console.log("V1_SHORTLIST", { n: v1Shortlist.length, qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Shortlist.map(s => s.symbol) });
 
     // ── V1 DEGENERATE-DATA GUARD ──────────────────────────────────────────────
