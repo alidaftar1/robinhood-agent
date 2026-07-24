@@ -120,6 +120,13 @@ export async function GET(request: Request) {
 
     const hasProfit = droppedPositions.some((e) => e.reason === "profit");
     const hasStop = droppedPositions.some((e) => e.reason === "stop");
+    // Broad-market regime (SPY vs its ~100-day MA) — the cleanest input for the sympathy
+    // check below. Steadier than raw SPY %; on a risk-off day a drop is more likely
+    // sympathy (lean hold), on risk-on a lone crater is more likely name-specific (cut).
+    const regime = marketData.spyContext?.regime;
+    const regimeLine = regime
+      ? `MARKET REGIME (use for the sympathy check): ${regime.riskOn ? "RISK-ON" : "RISK-OFF"} — SPY $${regime.spy.toFixed(2)} is ${regime.riskOn ? "ABOVE" : "BELOW"} its 100-day average $${regime.ma.toFixed(2)}. ${regime.riskOn ? "Broad market is in an uptrend, so a single name cratering here is MORE likely name-specific — the drop is real, lean toward CUTTING." : "Broad market is in a downtrend, so a drop is MORE likely broad-market sympathy — a sympathy-HOLD (if fundamentals are intact) is more defensible."}\n`
+      : "";
     const urgentHeader = `🔴 RISK-EXIT RUN — ${today} 🔴
 These held positions hit an exit trigger and must be SOLD:
   ${droppedNames}
@@ -127,6 +134,7 @@ ${hasStop ? `• stop-loss = down ≥${Math.abs(DROP_THRESHOLD_PCT)}% (thesis br
 INSTRUCTIONS — deviate from standard process. This is a SELL-ONLY capital-preservation run:
 1. SELL every position listed above — both stop-loss and take-profit exits.
    - Exception (STOP-LOSS only): if it's clearly sympathy selling (broad market down, fundamentals unchanged), you may use judgment and HOLD the position. A TAKE-PROFIT exit is NOT optional — always lock the gain.
+${regimeLine}
 2. Keep ALL other positions UNCHANGED.
 3. Do NOT BUY anything. Do NOT place any buy order or call place_equity_order with side=buy. Hold the freed cash as-is — the NEXT MORNING rebalance redeploys SETTLED cash under the full ruleset (sector cap, book context). This run is one uncoordinated decision-maker; redeploying here would bypass the morning run's sector cap and could spend same-day sale proceeds that are still unsettled.
 4. Emit PORTFOLIO_SNAPSHOT as usual (trades should contain ONLY sells).

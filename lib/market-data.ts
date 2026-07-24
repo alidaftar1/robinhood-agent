@@ -138,7 +138,7 @@ export interface MarketData {
   fetchedAt: string;
   insiderBuys: Record<string, InsiderBuy[]>;
   analystRatings: Record<string, AnalystRating[]>;
-  spyContext: { change1d: number; change30d: number } | null;
+  spyContext: { change1d: number; change30d: number; regime: { riskOn: boolean; spy: number; ma: number } | null } | null;
 }
 
 export async function getMarketData(): Promise<MarketData> {
@@ -397,7 +397,7 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _closes: numbe
 async function getPriceData(): Promise<{
   stocks: StockData[];
   sectors: SectorData[];
-  spyContext: { change1d: number; change30d: number } | null;
+  spyContext: { change1d: number; change30d: number; regime: { riskOn: boolean; spy: number; ma: number } | null } | null;
 }> {
   const sectorTickers = Object.keys(SECTOR_ETFS);
 
@@ -448,10 +448,21 @@ async function getPriceData(): Promise<{
     .filter((s): s is SectorData => s !== null)
     .sort((a, b) => b.relStrength30d - a.relStrength30d);
 
+  // Market regime = a slow broad-market trend filter: is SPY above (risk-on) or below
+  // (risk-off) its ~100-day moving average? Feeds the sympathy judgment — on a risk-off
+  // day a holding's drop is more likely broad-market sympathy (lean hold); on a risk-on
+  // day a name cratering while the market's healthy is more likely name-specific (act).
+  const spyMA100 = spyCloses.length >= 20
+    ? spyCloses.slice(-100).reduce((a, c) => a + c, 0) / Math.min(100, spyCloses.length)
+    : null;
+  const regime = spy && spyMA100 != null
+    ? { riskOn: spy.price > spyMA100, spy: spy.price, ma: spyMA100 }
+    : null;
+
   return {
     stocks,
     sectors,
-    spyContext: spy ? { change1d: spyChange1d, change30d: spyChange30d } : null,
+    spyContext: spy ? { change1d: spyChange1d, change30d: spyChange30d, regime } : null,
   };
 }
 

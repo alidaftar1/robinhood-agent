@@ -35,7 +35,7 @@ const BASE_PRICES: Record<string, { price: number; change1d: number; change30d: 
   NOW:  { price: 900,  change1d: 1.2, change30d: 26.2 },
 };
 
-const SPY_MOCK = { change1d: 0.5, change5d: 1.5, change30d: 3.0 };
+const SPY_MOCK = { change1d: 0.5, change5d: 1.5, change30d: 3.0, regime: { riskOn: true, spy: 600, ma: 580 } };
 
 function buildMockStocks(): StockData[] {
   return SP500_UNIVERSE.map((symbol) => {
