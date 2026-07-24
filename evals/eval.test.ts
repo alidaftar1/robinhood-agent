@@ -8,7 +8,7 @@ import { computeStockBeta } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
-import { fitBuysToBudget } from "@/lib/buy-sizing";
+import { fitBuysToBudget, usableBuyBudget } from "@/lib/buy-sizing";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -385,6 +385,19 @@ describe("benchmark-awareness: beta math", () => {
     const { sized, adjustments } = fitBuysToBudget([{ symbol: "TSLA", quantity: 1, price: 405.22 }], 300);
     expect(sized.find(b => b.symbol === "TSLA")).toBeUndefined();
     expect(adjustments.some(a => a.includes("TSLA") && a.includes("DROPPED"))).toBe(true);
+  });
+
+  it("usableBuyBudget hands the analysis a spend limit that survives fitBuysToBudget (GOOGL-07-24 decide-then-drop)", () => {
+    // GOOGL $322.24 barely "fit" raw settled BP $323.06 (by $0.82), so the analysis picked it —
+    // then fitBuysToBudget dropped it (buffer+cushion), stranding the cash. usableBuyBudget reserves
+    // both up front so the analysis never picks a name the pre-flight will drop.
+    const bp = 323.06;
+    const usable = usableBuyBudget(bp);
+    expect(322.24 <= usable).toBe(false); // GOOGL no longer looks affordable to the analysis
+    // Any buy the analysis picks within `usable` (at thesis price) survives the sizer on the raw BP.
+    const { sized, adjustments } = fitBuysToBudget([{ symbol: "X", quantity: 1, price: Math.floor(usable) }], bp);
+    expect(sized).toHaveLength(1);
+    expect(adjustments).toHaveLength(0);
   });
 
   it("dashboard 'Swings vs. Market' reads the CURRENT run's stored book β (holdings-based, aligned with the holdings shown beside it)", () => {

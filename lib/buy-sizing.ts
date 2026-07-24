@@ -11,6 +11,15 @@
 export const BUY_BUFFER_PCT = 0.03;   // leave 3% of settled buying power unspent (broker buffer)
 export const BUY_PRICE_CUSHION = 1.02; // budget each buy 2% above the thesis price (live tick)
 
+// The spend limit to hand the ANALYSIS so it never "decides" a buy the pre-flight
+// then silently drops (the GOOGL-07-24 case: $322 chosen, dropped for being $0.82
+// over the buffered budget, cash left idle). Reserves BOTH the broker buffer and the
+// per-buy price cushion up front: a buy set summing to ≤ this (at thesis price)
+// survives fitBuysToBudget exactly, so the analysis picks names that actually fit.
+export function usableBuyBudget(settledBuyingPower: number): number {
+  return (settledBuyingPower * (1 - BUY_BUFFER_PCT)) / BUY_PRICE_CUSHION;
+}
+
 export function fitBuysToBudget<T extends { symbol: string; quantity: number; price: number }>(
   buys: T[],
   settledBuyingPower: number,

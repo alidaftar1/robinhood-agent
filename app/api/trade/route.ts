@@ -10,7 +10,7 @@ import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, t
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
-import { fitBuysToBudget } from "@/lib/buy-sizing";
+import { fitBuysToBudget, usableBuyBudget } from "@/lib/buy-sizing";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -113,7 +113,7 @@ export async function GET(request: Request) {
 
       const buyingPower = simulateCash ? parseFloat(simulateCash) : parseFloat(previousRun?.portfolioAfter?.cash ?? "0");
       const portfolioCtx: PortfolioContext = {
-        buyingPower: `$${buyingPower.toFixed(2)} (SIMULATED — dry run)`,
+        buyingPower: `$${usableBuyBudget(buyingPower).toFixed(2)} (SIMULATED dry run — buffer-reserved spend limit)`,
         totalValue: `$${previousRun?.portfolioAfter?.totalValue ?? "0"} (estimated)`,
         positions: (previousRun?.positions ?? []).map(p => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost })),
       };
@@ -252,8 +252,13 @@ export async function GET(request: Request) {
       } catch (e) {
         console.error("HELD_DAYS_ENRICHMENT_FAILED — skipping time-stop ages", e);
       }
+      // Budget the analysis against the USABLE spend limit (broker buffer + price
+      // cushion already reserved), not the raw settled figure — otherwise it picks a
+      // name that barely fits the raw number but the pre-flight sizer then drops,
+      // stranding the cash (GOOGL 07-24). fitBuysToBudget below still runs on the raw
+      // buyingPower and applies the same reserves, so the two stay in sync.
       portfolioCtx = {
-        buyingPower: `$${agenticBalance.buyingPower.toFixed(2)} (live from Robinhood)`,
+        buyingPower: `$${usableBuyBudget(agenticBalance.buyingPower).toFixed(2)} (settled, buffer-reserved spend limit)`,
         totalValue: `$${agenticBalance.totalValue.toFixed(2)} (live from Robinhood)`,
         positions: positions.map(p => ({
           symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost,
