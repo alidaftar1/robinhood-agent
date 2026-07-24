@@ -3,6 +3,7 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap } from "@/lib/market-data";
 import { saveRun, getLatestRun, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { recordStopout } from "@/lib/stopouts";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
@@ -222,6 +223,14 @@ Do NOT rebalance and do NOT open any new position. Only exit the listed position
       } catch (e) {
         console.warn("DROP_CHECK_SNAPSHOT_PARSE_FAILED", e instanceof Error ? e.message : String(e));
       }
+    }
+
+    // Record stop-loss exits so the next analysis run can REASON about re-entry instead
+    // of blindly re-buying the name it just dumped (the GOOGL 07-23→07-24 whipsaw). Only
+    // stop-losses — a take-profit exit went UP, so its re-entry is a different decision.
+    // Best-effort; a missed record only degrades to today's blind behavior.
+    for (const { position, change1d, reason } of droppedPositions) {
+      if (reason === "stop") await recordStopout(position.symbol, today, change1d);
     }
 
     // Carry forward influencer tracking: surviving influencer positions only (sold ones drop out).

@@ -113,6 +113,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Is any single-day sleeve return (main or influencer) large in % BUT driven by a tiny prior-day base rather than a real price move? Signature: the sleeve's prior-day position value is a small fraction (<~10%) of its current-day value — i.e. the book was rebuilt from cash that day (mass liquidation the day before, then redeploy). That daily % is a denominator artifact and should be null (excluded from compounding), NOT counted as real P&L. Distinguish from a genuine loss by checking whether the held names actually moved that much.",
   },
+  {
+    date: "2026-07-24",
+    title: "Whipsaw — re-buying a name just stopped out",
+    lesson:
+      "GOOGL was stopped out 07-23 at −6.5% (thesis breakdown) and the 07-24 analysis decided to re-buy it the next day because it still topped the quality-momentum shortlist (the shortlist ranks 12-month momentum + quality, which a one-day breakdown barely dents). Selling at the low and re-buying near the same price realizes the loss for nothing. The book is now shown its recent stop-outs and told to justify any re-entry; the trade route stamps a deterministic '⚠️ RE-ENTRY FLAG' in the run summary when it re-buys a recently-stopped name — but whether the JUSTIFICATION is legitimate is a judgment only you can make.",
+    check:
+      "Does the run summary contain a '⚠️ RE-ENTRY FLAG'? If so, read the thesis: does it give a SPECIFIC reason the earlier breakdown no longer applies — a confirmed reversal, a fresh catalyst (★INS / ⚡↑), or evidence it was broad-market sympathy selling that has reversed? If the only justification is that the name is high quality / high momentum (that's merely why it's on the shortlist), flag it as a likely whipsaw — sold at the low, bought back near the same price.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

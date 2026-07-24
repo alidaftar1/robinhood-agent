@@ -11,6 +11,7 @@ import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions,
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fitBuysToBudget, usableBuyBudget } from "@/lib/buy-sizing";
+import { getRecentStopouts } from "@/lib/stopouts";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -175,7 +176,7 @@ export async function GET(request: Request) {
     const accessToken = await getValidAccessToken();
     console.log("TOKEN_OK");
     const anthropic = createAnthropic();
-    const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache] = await Promise.all([
+    const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache, recentStopouts] = await Promise.all([
       getMarketData(),
       fetchCurrentPrice("SPY"),
       getLatestRun(),
@@ -183,6 +184,7 @@ export async function GET(request: Request) {
       fetchAgenticBuyingPower(anthropic, accessToken),
       fetchAgenticPositions(anthropic, accessToken),
       getInfluencerSignals(),
+      getRecentStopouts(today),
     ]);
     console.log("MARKET_DATA_OK", { stocks: marketData.stocks.length });
     if (agenticBalance) {
@@ -335,7 +337,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol)),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
@@ -365,6 +367,22 @@ export async function GET(request: Request) {
     // so the Braintrust trace records what the model actually DECIDED (executed trades are logged
     // separately), not the post-guard/post-sizing orders.
     const decidedRaw = { thesis: decision.thesis, buys: decision.buys.map(b => ({ ...b })), sells: decision.sells.map(s => ({ ...s })) };
+
+    // Deterministic re-entry audit (the "verify" half): the model was shown its recent
+    // stop-outs and told to justify any re-buy — this FLAGS when it did so anyway, so a
+    // whipsaw (or a weak "it's high quality" justification) is never silent. Uses the
+    // DECIDED buys (the model's judgment), not post-sizing, so intent is audited even if
+    // the buy is later dropped for budget.
+    let reentryNote = "";
+    const reentries = decidedRaw.buys.filter(b => recentStopouts.some(s => s.symbol === b.symbol));
+    if (reentries.length > 0) {
+      const notes = reentries.map(b => {
+        const s = recentStopouts.find(x => x.symbol === b.symbol)!;
+        return `${b.symbol} (stopped ${s.date} at ${s.changePct.toFixed(1)}%)`;
+      }).join(", ");
+      console.warn("REENTRY_DETECTED", { reentries: notes });
+      reentryNote = `\n\n⚠️ RE-ENTRY FLAG: re-bought recently-stopped name(s): ${notes}. Confirm the thesis justifies re-entry (a confirmed reversal / fresh catalyst — not just shortlist membership), else this is a whipsaw.`;
+    }
 
     // ── V1 WITHIN-RAILS HARD FILTER ───────────────────────────────────────────
     // The main book may ONLY buy from the pre-screened quality-momentum shortlist. Soft prompt guidance
@@ -737,7 +755,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     const baseRun = {
       timestamp: runTimestamp,
       date: today,
-      summary: textContent,
+      summary: textContent + reentryNote,
       market: {
         stocksLoaded: marketData.stocks.length,
         headlinesLoaded: marketData.headlines.length,

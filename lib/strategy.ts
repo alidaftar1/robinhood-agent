@@ -260,9 +260,19 @@ Rules:
 // in lib/market-data buildV1Shortlist). The model may ONLY buy MAIN-book names from that shortlist — a
 // hard filter in the trade route enforces this regardless of what the model outputs. The influencer
 // sleeve is unchanged (≤2 slots on its own signal). Kept separate from buildAnalysisPrompt for rollback.
-export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = []): string {
+export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = []): string {
   const maxPos = maxPositionDollars(portfolio.totalValue);
   const bp = (portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "");
+  // Surface names the book stopped out recently so it doesn't blindly re-buy the thing
+  // it just dumped (the shortlist ranks 12-mo momentum + quality, which a 1-day −5%
+  // breakdown barely dents, so a stopped name reappears as a fresh candidate). This is
+  // a JUDGMENT input — the model decides; a deterministic flag audits any re-entry.
+  const stopoutBlock = recentStopouts.length
+    ? `\nRECENTLY STOPPED OUT — you SOLD these on a −5% breakdown; do NOT reflexively re-buy:
+${recentStopouts.map(s => `  ${s.symbol} — stopped ${s.date} at ${s.changePct.toFixed(1)}% (${Math.round((new Date(today).getTime() - new Date(s.date).getTime()) / 86_400_000)}d ago)`).join("\n")}
+A stopped name may reappear on the shortlist — that alone is NOT a reason to re-enter (the list ranks 12-month momentum + quality, which a one-day breakdown barely moves). DEFAULT: leave a recently-stopped name OUT and let the weakness resolve. Re-buy one ONLY with a SPECIFIC reason the breakdown no longer applies — a confirmed reversal, a fresh catalyst (★INS / ⚡↑), or clear evidence it was broad-market sympathy selling that has since reversed — NOT "high quality/momentum" (that's merely why it's on the list). If you re-buy a stopped name, your thesis MUST justify it explicitly.
+`
+    : "";
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => {
         const avg = parseFloat(p.avgCost);
@@ -303,7 +313,7 @@ CONSTRAINTS:
 - MAIN-book buys ONLY from the shortlist above; INFLUENCER buys ONLY from the INFLUENCER SIGNALS section.
 - Never buy a name flagged with earnings ≤3 days away (⚠EARN with a date within 3 days).
 - HARD LIMIT: total cost of all buys ≤ ${bp} (settled buying power). Fixed — selling today does NOT increase it.
-${influencerSection ?? ""}
+${stopoutBlock}${influencerSection ?? ""}
 
 Write a brief thesis (2–4 sentences): which shortlist names you're buying and why (momentum + quality), which current holdings you're selling (confirm any holding NOT in the shortlist is being sold).${influencerSection ? " It MUST also state your influencer-sleeve decision: which influencer pick(s) you're buying and why, OR — if none — the specific disqualifier (priced above the per-position cap, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer sleeve." : ""} Then compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${bp}; if it exceeds, remove the most expensive buy until it fits. Then output exactly one line:
 TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","quantity":N}],"buys":[{"symbol":"X","quantity":N,"price":P,"strategy":"main"}]}
