@@ -329,8 +329,12 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _closes: numbe
     const validCloses = closes.filter((c): c is number => c != null);
 
     const price = meta.regularMarketPrice ?? 0;
-    // regularMarketPreviousClose = actual previous session close; chartPreviousClose = close before range start (~1mo ago)
-    const prevClose = meta.regularMarketPreviousClose ?? meta.chartPreviousClose ?? price;
+    // Previous SESSION close. Prefer Yahoo's field, but it is intermittently null (it was
+    // null for SPY 2026-07-24, which sent change1d/change30d to a ~2-YEAR return — e.g. a
+    // bogus "SPY +36.9% on the 1d" that corrupted the drop-check sympathy judgment and every
+    // name's α vs SPY). Fall back to the second-to-last actual daily close (yesterday), NOT
+    // chartPreviousClose — that is the close at the START of the 2y fetch window (~2y ago).
+    const prevClose = meta.regularMarketPreviousClose ?? validCloses[validCloses.length - 2] ?? meta.chartPreviousClose ?? price;
     // Anchor 30d off ~21 trading days back (NOT validCloses[0], which is now ~1yr ago after widening
     // the fetch to 1y for the 12-1 momentum signal).
     const monthAgoClose = validCloses[Math.max(0, validCloses.length - 22)] ?? price;
