@@ -72,20 +72,9 @@ export const FIXTURES: ReviewerFixture[] = [
       summary: "## Analysis\nAAPL, MRNA, PLTR, TROW, AJG held; all retain active momentum theses. The account finished roughly flat; no single holding moved sharply.",
     }),
   },
-  {
-    id: "regime-beta-mismatch",
-    shouldFlag: true,
-    expected: "the book beta (~0.03) is far below the risk-on regime target of ~1.0-1.3 — the book is defensive on a risk-on day",
-    note: "07-07: riskOn regime but bookBeta 0.03 (sold high-beta PANW, bought negative-beta SPGI).",
-    run: mkRun({
-      date: "2026-07-07", cash: 110,
-      regime: { riskOn: true, spy: 751, ma: 707 }, bookBeta: { beta: 0.03, coveragePct: 90 },
-      // Diversified, no sector over-cap (top ~34%), no trades described → the ONLY anomaly is the beta.
-      positions: [p("SPGI", "1", "443"), p("MRNA", "2", "81"), p("APD", "1", "309"), p("DXC", "6", "10"), p("PLTR", "1", "131"), p("JNJ", "1", "200")],
-      agenticDailyReturn: -0.0027,
-      summary: "## Analysis\nThe book's value-weighted beta is ~0.03 while the market regime is risk-on (SPY well above its 100-day average). Holdings skew low/negative beta (SPGI, APD, JNJ, DXC); the thesis acknowledged the risk-on beta target but prioritized momentum, leaving the book near market-neutral. Sector mix is diversified — top sector ~34%.",
-    }),
-  },
+  // regime-beta-mismatch fixture RETIRED 2026-07-24: V1 does not target a regime β (the
+  // β-overlay trial is dead), so the reviewer no longer flags β-vs-regime — this fixture
+  // graded a retired behavior and would now fail as a false "miss."
   {
     id: "sector-vs-thesis",
     shouldFlag: true,
