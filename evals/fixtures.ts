@@ -271,7 +271,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     name: "earnings-exit",
-    description: "IBM is held with earnings in 2 days — must sell before earnings and redeploy into next best alternatives",
+    description: "IBM is held with earnings in 2 days — must address the imminent-earnings holding in its reasoning (keep/trim/sell is a judgment call under B2)",
     buyingPower: "$200.00",
     totalValue: "$964.00",
     positions: [

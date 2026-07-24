@@ -1,6 +1,7 @@
 import { SP500_UNIVERSE } from "./strategy";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
 import { getAnalystRatings, type AnalystRating } from "./analyst";
+import { fetchUpcomingEarnings } from "./earnings";
 
 export type { InsiderBuy, AnalystRating };
 
@@ -141,12 +142,21 @@ export interface MarketData {
 }
 
 export async function getMarketData(): Promise<MarketData> {
-  const [priceResult, headlines, insiderBuys, analystRatings] = await Promise.all([
+  const [priceResult, headlines, insiderBuys, analystRatings, upcomingEarnings] = await Promise.all([
     getPriceData(),
     getNewsHeadlines(),
     getInsiderBuys(),
     getAnalystRatings(),
+    fetchUpcomingEarnings(30),
   ]);
+  // Backstop earningsDate from FMP. Yahoo's chart API no longer returns
+  // meta.earningsTimestamp (verified absent 2026-07-23), which had left the daily
+  // analysis blind to earnings (the ⚠EARN / ⚠⚠ IMMINENT flags never fired). This
+  // restores that awareness. Union: keep the earliest upcoming date of the two sources.
+  for (const s of priceResult.stocks) {
+    const fmp = upcomingEarnings.get(s.symbol);
+    if (fmp && (!s.earningsDate || fmp < s.earningsDate)) s.earningsDate = fmp;
+  }
   return {
     stocks: priceResult.stocks,
     sectors: priceResult.sectors,

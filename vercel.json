@@ -6,7 +6,6 @@
     { "path": "/api/autopilot?cloudDispatch=1", "schedule": "0 15 * * 1-5"  },
     { "path": "/api/drop-check?scope=influencer",         "schedule": "0 14,15,16,18,19 * * 1-5" },
     { "path": "/api/drop-check?scope=influencer&t=close", "schedule": "45 19 * * 1-5" },
-    { "path": "/api/drop-check",                          "schedule": "0 17 * * 1-5" },
-    { "path": "/api/earnings-exit",    "schedule": "0 19 * * 1-5"  }
+    { "path": "/api/drop-check",                          "schedule": "0 17 * * 1-5" }
   ]
 }

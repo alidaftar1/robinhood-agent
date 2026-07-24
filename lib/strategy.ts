@@ -161,7 +161,7 @@ READING THE MARKET DATA TABLE:
 - sect = the sector ETF this stock belongs to (XLK=Tech, XLF=Financials, XLV=Health, XLI=Industrials, XLY=Cons.Discret, XLP=Cons.Staples, XLE=Energy, XLC=Comm.Svcs, XLB=Materials, XLRE=Real Estate, XLU=Utilities). Cross-reference with the SECTOR ROTATION table: a stock in a 🔥 HOT sector has a macro tailwind — sector momentum compounds individual stock momentum. A stock in a ❄ COLD sector fights a headwind even if its own momentum looks decent.
 - ★INS = recent insider buying — an officer or director made an open-market purchase in the last 30 days. This is one of the strongest conviction signals: insiders only buy with their own money when they believe the stock is undervalued. Weight this heavily alongside momentum.
 - ↑FIRM$PT(upside%) / ↓FIRM$PT = analyst action in the last 7 days. ↑ = upgrade or price target raise; ↓ = downgrade or PT cut. FIRM is abbreviated (GS=Goldman Sachs, JPM=JPMorgan, MS=Morgan Stanley, BofA=BofA, Barc=Barclays, etc). $PT is the new price target and the % is implied upside vs price at time of rating. ⚡↑FIRM = impactful upgrade: a full grade upgrade with ≥15% implied upside — treat this as a high-conviction buy signal, similar weight to ★INS. A plain ↑ without ⚡ is a minor PT raise — acknowledge but don't overweight. Downgrades and PT cuts are headwinds even on high-momentum stocks.
-- ⚠EARN = earnings announcement within 30 days. This is binary risk: the stock can gap ±10%+ in one day. Size down significantly or avoid. ⚠⚠ IMMINENT means ≤3 days away — **do NOT buy under any circumstances. If already holding, sell before earnings.**
+- ⚠EARN = earnings announcement within 30 days. This is binary risk: the stock can gap ±10%+ in one day. Size down significantly or avoid ADDING. ⚠⚠ IMMINENT means ≤3 days away — **do NOT buy under any circumstances.** If already holding through ⚠⚠ IMMINENT: this is a judgment call, not an automatic sell — a high-conviction momentum name can ride through (post-earnings drift tends to favor established winners), but TRIM or exit if the position is oversized or its thesis is weak. State your call and reasoning either way.
 - vs52wHigh = how far below the 52-week high. A stock near its high (-5%) with strong momentum is in a healthy uptrend. A stock far from its high (-40%) needs a specific recovery thesis.
 - β = beta vs SPY (~1mo daily). >1 swings harder than the market, <1 cushions, "—" = insufficient history. Higher β = more market risk; weigh it against the stock's alpha before adding it.
 
@@ -227,8 +227,8 @@ READING THE MARKET DATA TABLE:
 - ★INS = insider buying last 30 days. Strong conviction signal — weight heavily.
 - ⚡↑FIRM = impactful upgrade (≥15% upside). Treat like ★INS.
 - ↑FIRM / ↓FIRM = regular analyst action. Minor signal.
-- ⚠⚠ IMMINENT = earnings ≤3 days away. Do NOT buy. Sell if holding.
-- ⚠EARN = earnings within 30 days. Size down or avoid.
+- ⚠⚠ IMMINENT = earnings ≤3 days away. Do NOT buy. If holding: judgment call — trim if oversized/weak-thesis, else a high-conviction name may ride through (drift favors winners).
+- ⚠EARN = earnings within 30 days. Size down or avoid adding.
 
 CONSTRAINTS:
 - Gradual rotation: sell at most a few positions per run — don't liquidate everything at once.

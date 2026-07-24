@@ -478,9 +478,17 @@ export function checkDecisionNoImminentBuys(decision: TradeDecision | null, scen
   };
 }
 
-/** Decision must sell held positions whose earnings are ≤3 days away. */
-export function checkDecisionSellsImminent(decision: TradeDecision | null, scenario: Scenario): CheckResult {
-  if (!decision) return { name: "sells imminent earnings holdings (decision)", passed: false, detail: "no decision parsed" };
+/**
+ * Decision must ADDRESS held positions whose earnings are ≤3 days away. Holding
+ * through imminent earnings is a judgment call, not an automatic sell — a high-
+ * conviction momentum name may ride through (post-earnings drift favors established
+ * winners) while an oversized/weak one gets trimmed. So we require the thesis to
+ * explicitly reason about the imminent-earnings holding (keep, trim, or sell), not
+ * a forced exit.
+ */
+export function checkDecisionAddressesImminent(decision: TradeDecision | null, scenario: Scenario): CheckResult {
+  const name = "addresses imminent earnings on holdings (decision)";
+  if (!decision) return { name, passed: false, detail: "no decision parsed" };
   const today = Date.now();
   const imminentHeld = scenario.positions.filter(p => {
     const date = scenario.earningsOverrides?.[p.symbol];
@@ -488,13 +496,15 @@ export function checkDecisionSellsImminent(decision: TradeDecision | null, scena
     const d = (new Date(date).getTime() - today) / 86_400_000;
     return d >= 0 && d <= 3;
   }).map(p => p.symbol);
-  if (imminentHeld.length === 0) return { name: "sells imminent earnings holdings (decision)", passed: true, detail: "none held" };
-  const sold = decision.sells.map(s => s.symbol);
-  const notSold = imminentHeld.filter(s => !sold.includes(s));
+  if (imminentHeld.length === 0) return { name, passed: true, detail: "none held" };
+  const thesis = (decision.thesis ?? "").toUpperCase();
+  const unaddressed = imminentHeld.filter(s => !thesis.includes(s.toUpperCase()));
   return {
-    name: "sells imminent earnings holdings (decision)",
-    passed: notSold.length === 0,
-    detail: notSold.length > 0 ? `still holding ${notSold.join(", ")} with ⚠⚠ IMMINENT earnings` : `correctly exited: ${imminentHeld.join(", ")}`,
+    name,
+    passed: unaddressed.length === 0,
+    detail: unaddressed.length > 0
+      ? `thesis does not reason about imminent-earnings holding(s): ${unaddressed.join(", ")}`
+      : `addressed imminent earnings on ${imminentHeld.join(", ")} (keep/trim/sell is the model's call)`,
   };
 }
 
@@ -532,7 +542,7 @@ export function runAllDecisionChecks(text: string, decision: TradeDecision | nul
     checkDecisionSP500Only(decision),
     checkDecisionWholeShares(decision),
     checkDecisionNoImminentBuys(decision, scenario),
-    checkDecisionSellsImminent(decision, scenario),
+    checkDecisionAddressesImminent(decision, scenario),
     checkDecisionHasThesis(decision),
     checkSellsOnlyHeld(decision, scenario),
   ];
