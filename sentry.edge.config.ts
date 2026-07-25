@@ -3,7 +3,6 @@ import * as Sentry from "@sentry/nextjs";
 
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  tracesSampleRate: 1.0,
-  enableLogs: true,
-  debug: false,
+  tracesSampleRate: 1.0, // stays — powers AI-monitoring gen_ai spans
+  debug: false,          // Logs trimmed 2026-07-25
 });

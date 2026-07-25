@@ -5,15 +5,12 @@ import * as Sentry from "@sentry/nextjs";
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
 
+  // Tracing stays: it's the transport for AI monitoring's gen_ai spans (needs > 0).
   tracesSampleRate: 1.0,
 
-  // Session Replay (the "Watch real user sessions" product). Record only a sample of
-  // ordinary sessions, but every session that hits an error.
-  replaysSessionSampleRate: 0.1,
-  replaysOnErrorSampleRate: 1.0,
-  integrations: [Sentry.replayIntegration()],
-
-  enableLogs: true,
+  // Trimmed 2026-07-25: Session Replay + Logs removed — near-zero value on a
+  // barely-used dashboard, and Replay was heavy client-bundle weight. Kept: error
+  // monitoring + AI monitoring (+ the tracing that powers it).
   debug: false,
 });
 
