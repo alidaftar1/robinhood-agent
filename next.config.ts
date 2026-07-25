@@ -17,11 +17,11 @@ export default withSentryConfig(nextConfig, {
   // Auth token for uploading source maps at build time. Set SENTRY_AUTH_TOKEN in the env.
   authToken: process.env.SENTRY_AUTH_TOKEN,
 
-  _experimental: {
-    // Auto-instrument Vercel crons as Sentry Cron Monitors. This is the span-based
-    // approach that works for the App Router — the older `automaticVercelMonitors`
-    // is Pages-Router-only and silently does nothing here. Reads vercel.json crons
-    // and sends a check-in each time one runs.
-    vercelCronsMonitoring: true,
-  },
+  // NOTE: Vercel cron monitoring (_experimental.vercelCronsMonitoring) was REMOVED 2026-07-25.
+  // The span-based check-ins were systematically unreliable — the "completed" check-in didn't
+  // register before the serverless function froze, so Sentry declared spurious "timeout
+  // check-in" failures on crons that ran fine (apidrop-check, then apiinfluencer-cache — 2/2
+  // false positives, incl. a single-schedule cron). Cron health is covered by the app's own
+  // checks (autopilot verifies the daily run) instead. The orphaned Sentry monitors must be
+  // deleted in the Sentry UI, or they'll flip to "missed check-in" alerts.
 });
