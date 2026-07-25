@@ -91,7 +91,7 @@ for (const scenario of SCENARIOS) {
       },
       expected: {
         allChecksPassed: true,
-        insider_signal_awareness: Object.keys(insiderBuys).length > 0 ? 0.7 : null,
+        llm_judge__insider_awareness: Object.keys(insiderBuys).length > 0 ? 0.7 : null,
       },
       output: {
         thesis: decision?.thesis?.slice(0, 300) ?? null,
@@ -105,8 +105,10 @@ for (const scenario of SCENARIOS) {
           check: c.name,
           detail: c.detail,
         })),
+        // The one LLM-as-judge score (all other scores are deterministic code checks).
+        // Its name is prefixed `llm_judge__` so it's obvious in the Braintrust score columns.
         insiderJudge: Object.keys(insiderBuys).length > 0
-          ? { score: insiderScore.score, rationale: insiderScore.rationale }
+          ? { type: "llm-as-judge", score: insiderScore.score, rationale: insiderScore.rationale }
           : null,
       },
     });

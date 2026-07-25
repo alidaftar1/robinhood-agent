@@ -32,7 +32,7 @@ export async function scoreInsiderAwareness(
   const insiderSymbols = Object.keys(insiderBuys).filter((s) => (insiderBuys[s]?.length ?? 0) > 0);
 
   if (insiderSymbols.length === 0) {
-    return { name: "insider_signal_awareness", score: 1, rationale: "No insider buys in scenario — N/A" };
+    return { name: "llm_judge__insider_awareness", score: 1, rationale: "No insider buys in scenario — N/A" };
   }
 
   // Prefer MCP tool calls; fall back to parsing TRADE_DECISION from analysis-session output.
@@ -91,13 +91,13 @@ Respond with JSON only, no other text: {"score": <number 0-1>, "rationale": "<on
     const parsed = JSON.parse(match[0]) as { score: number; rationale: string };
 
     return {
-      name: "insider_signal_awareness",
+      name: "llm_judge__insider_awareness",
       score: Math.max(0, Math.min(1, parsed.score)),
       rationale: parsed.rationale,
     };
   } catch (err) {
     return {
-      name: "insider_signal_awareness",
+      name: "llm_judge__insider_awareness",
       score: 0,
       rationale: `Judge error: ${err instanceof Error ? err.message : String(err)}`,
     };
