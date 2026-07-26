@@ -269,6 +269,34 @@ describe("llm-eval: insider signal awareness", () => {
   }, 120_000);
 });
 
+// ─── Judge sanity-check: is the insider LLM-judge ITSELF sane? ─────────────────
+// scoreInsiderAwareness is the one LLM-as-judge in this suite, and nothing else
+// verifies IT. This is a LIGHTWEIGHT calibration check (not a full study): feed the
+// judge hand-labeled reasoning and assert it lands in the right zone AND discriminates.
+// The `yes > no` check is the key anti-degenerate guard — it catches a broken judge
+// (busted prompt, always-returns-1.0, parse failure) that a single absolute score can't.
+describe("judge-the-judge: insider LLM-judge sanity", () => {
+  const INSIDER = { IBM: [{} as unknown as import("@/lib/market-data").InsiderBuy] }; // judge only needs a non-empty array
+
+  // Reasoning that EXPLICITLY cites and uses the ★INS signal → rubric ~1.0.
+  const CLEAR_YES = `IBM carries a ★INS flag — its CEO made a $270k open-market purchase last week, a strong insider-conviction signal. Combined with top-decile momentum I'm adding IBM. TRADE_DECISION:{"thesis":"IBM ★INS + momentum","sells":[],"buys":[{"symbol":"IBM","quantity":1,"price":282,"strategy":"main"}]}`;
+  // BOUGHT the ★INS stock but reasoned purely on momentum, never mentioning insider → rubric ~0.3.
+  const CLEAR_NO = `IBM has the strongest 12-month momentum on the shortlist (mom5=60, alpha +3%) and solid quality, so I'm adding it. TRADE_DECISION:{"thesis":"IBM momentum leader","sells":[],"buys":[{"symbol":"IBM","quantity":1,"price":282,"strategy":"main"}]}`;
+
+  it("scores explicit insider reasoning HIGH, no-mention LOW, and ranks yes > no", async () => {
+    const [yes, no] = await Promise.all([
+      scoreInsiderAwareness(CLEAR_YES, INSIDER, []),
+      scoreInsiderAwareness(CLEAR_NO, INSIDER, []),
+    ]);
+    console.log(`\n── judge-the-judge (insider) ──`);
+    console.log(`  CLEAR_YES → ${yes.score.toFixed(2)} | ${yes.rationale}`);
+    console.log(`  CLEAR_NO  → ${no.score.toFixed(2)} | ${no.rationale}`);
+    expect(yes.score).toBeGreaterThanOrEqual(0.7);  // explicit insider reasoning
+    expect(no.score).toBeLessThanOrEqual(0.4);       // traded it but never mentioned the signal
+    expect(yes.score).toBeGreaterThan(no.score);     // discrimination (anti-degenerate)
+  }, 60_000);
+});
+
 // ─── Deterministic: benchmark-awareness (per-stock β + book β + prompt wiring) ──
 // No LLM — pure math + prompt-content assertions, so these never flake.
 
