@@ -329,12 +329,8 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _closes: numbe
     const validCloses = closes.filter((c): c is number => c != null);
 
     const price = meta.regularMarketPrice ?? 0;
-    // Previous SESSION close. Prefer Yahoo's field, but it is intermittently null (it was
-    // null for SPY 2026-07-24, which sent change1d/change30d to a ~2-YEAR return — e.g. a
-    // bogus "SPY +36.9% on the 1d" that corrupted the drop-check sympathy judgment and every
-    // name's α vs SPY). Fall back to the second-to-last actual daily close (yesterday), NOT
-    // chartPreviousClose — that is the close at the START of the 2y fetch window (~2y ago).
-    const prevClose = meta.regularMarketPreviousClose ?? validCloses[validCloses.length - 2] ?? meta.chartPreviousClose ?? price;
+    // Previous SESSION close — see resolvePrevClose for the null-field rationale.
+    const prevClose = resolvePrevClose(meta.regularMarketPreviousClose, validCloses, meta.chartPreviousClose, price);
     // Anchor 30d off ~21 trading days back (NOT validCloses[0], which is now ~1yr ago after widening
     // the fetch to 1y for the 12-1 momentum signal).
     const monthAgoClose = validCloses[Math.max(0, validCloses.length - 22)] ?? price;
@@ -527,24 +523,51 @@ export async function enrichPriceMap(
   return unresolved;
 }
 
+// Previous-SESSION close for a 1-day % change. Yahoo's regularMarketPreviousClose is the
+// right value but is intermittently null (it was null for SPY 2026-07-24, which sent
+// change1d/change30d to a ~2-YEAR return — a bogus "SPY +36.9% on the 1d" that corrupted the
+// drop-check sympathy judgment and every name's α vs SPY). When it's null, fall back to the
+// second-to-last actual daily close (yesterday) — NOT chartPreviousClose, which is the close
+// at the START of the fetch window (up to ~2y ago) and can be a stale/far-off reference.
+// Shared by getPriceData and fetchQuoteLite so the two paths cannot diverge again — they did:
+// fetchQuoteLite (the drop-check's price source) lacked the validCloses fallback and false-stopped
+// on null-prev-close days until 2026-07-27.
+export function resolvePrevClose(
+  regularMarketPreviousClose: number | null | undefined,
+  validCloses: number[],
+  chartPreviousClose: number | null | undefined,
+  price: number,
+): number {
+  return regularMarketPreviousClose ?? validCloses[validCloses.length - 2] ?? chartPreviousClose ?? price;
+}
+
 // Lightweight single-symbol quote (price + 1-day % change). Lets the stop-check
 // detect drops from just the held positions instead of fetching the full universe,
 // so it can run frequently (hourly) without hammering Yahoo.
 export async function fetchQuoteLite(symbol: string): Promise<{ price: number; change1d: number } | null> {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1d&interval=1d`;
+    // range=5d (not 1d) so a real prior daily close exists to fall back to when Yahoo
+    // returns a null regularMarketPreviousClose. Otherwise the ?? chain lands on
+    // chartPreviousClose, which can be a stale/far-off reference and yield a bogus
+    // change1d — the same null-prev-close bug fixed in getPriceData (SPY-2-year return).
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=5d&interval=1d`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
     const data = await res.json() as {
-      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number; regularMarketPreviousClose?: number; chartPreviousClose?: number } }> };
+      chart?: { result?: Array<{
+        meta?: { regularMarketPrice?: number; regularMarketPreviousClose?: number; chartPreviousClose?: number };
+        indicators?: { quote?: Array<{ close?: (number | null)[] }> };
+      }> };
     };
-    const meta = data?.chart?.result?.[0]?.meta;
+    const result = data?.chart?.result?.[0];
+    const meta = result?.meta;
     if (!meta?.regularMarketPrice) return null;
     const price = meta.regularMarketPrice;
-    const prevClose = meta.regularMarketPreviousClose ?? meta.chartPreviousClose ?? price;
+    const validCloses = (result?.indicators?.quote?.[0]?.close ?? []).filter((c): c is number => c != null);
+    const prevClose = resolvePrevClose(meta.regularMarketPreviousClose, validCloses, meta.chartPreviousClose, price);
     const change1d = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
     return { price, change1d };
   } catch {

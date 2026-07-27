@@ -2,7 +2,7 @@ import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap } from "@/lib/market-data";
-import { saveRun, getLatestRun, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { saveRun, getRuns, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { recordStopout } from "@/lib/stopouts";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -30,7 +30,12 @@ export async function GET(request: Request) {
   const scope = new URL(request.url).searchParams.get("scope");
   const influencerOnly = scope === "influencer";
 
-  const previousRun = await getLatestRun();
+  // Fetch a few recent runs (not just the latest): an intraday exit run this same day
+  // saves a sells-only run at the front of the list, so getLatestRun() alone would hide
+  // the morning trade run's buys — which boughtTodaySymbols below needs. runs[0] is still
+  // the canonical latest for held-positions/portfolio context.
+  const recentRuns = await getRuns(6);
+  const previousRun = recentRuns[0] ?? null;
   const heldPositions = previousRun?.positions ?? [];
 
   if (heldPositions.length === 0) {
@@ -40,6 +45,18 @@ export async function GET(request: Request) {
   // Influencer picks: use tighter stop-loss vs buy price (not prev close)
   // A position is an influencer pick if it appears in the latest run's influencerPositions
   const influencerSymbols = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
+
+  // Names bought TODAY. Their intraday % from prev-close includes the part of the day
+  // that happened BEFORE we bought them — measuring the stop from that baseline whipsaws
+  // a fresh buy out on a decline it never took (see the TER 2026-07-27 same-day round-trip:
+  // −5.75% from prev-close but +1.1% from the actual buy). Measure these from buy price
+  // instead, the same treatment influencer picks already get. Union buys across ALL of
+  // today's runs (an earlier intraday sells-only exit run must not hide the morning buys).
+  const boughtTodaySymbols = new Set(
+    recentRuns
+      .filter((r) => r.date === today)
+      .flatMap((r) => (r.trades ?? []).filter((t) => t.side === "buy").map((t) => t.symbol))
+  );
 
   // Detection set: influencer-only runs check just those names; full runs check everything.
   // (The sell-decision prompt below always gets the complete held-position list for context.)
@@ -66,10 +83,14 @@ export async function GET(request: Request) {
       const q = liteMap.get(p.symbol);
       const currentPrice = q?.price ?? 0;
       const isInfluencer = influencerSymbols.has(p.symbol);
+      // Measure from BUY price (avgCost) instead of prev-close for influencer picks (covers
+      // the −5% stop and +TP target) AND for same-day buys (avoid stopping on a pre-purchase
+      // decline). Established main-book holds still use intraday-from-prev-close, which catches
+      // a genuine fresh crash on a name that was fine yesterday.
+      const measureFromBuy = isInfluencer || boughtTodaySymbols.has(p.symbol);
 
       let change1d: number;
-      if (isInfluencer && currentPrice > 0 && parseFloat(p.avgCost) > 0) {
-        // For influencer picks: measure from BUY price (covers both the −5% stop and +20% target)
+      if (measureFromBuy && currentPrice > 0 && parseFloat(p.avgCost) > 0) {
         change1d = ((currentPrice - parseFloat(p.avgCost)) / parseFloat(p.avgCost)) * 100;
       } else {
         change1d = q?.change1d ?? 0;

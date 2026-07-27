@@ -114,6 +114,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
       "Is any single-day sleeve return (main or influencer) large in % BUT driven by a tiny prior-day base rather than a real price move? Signature: the sleeve's prior-day position value is a small fraction (<~10%) of its current-day value — i.e. the book was rebuilt from cash that day (mass liquidation the day before, then redeploy). That daily % is a denominator artifact and should be null (excluded from compounding), NOT counted as real P&L. Distinguish from a genuine loss by checking whether the held names actually moved that much.",
   },
   {
+    date: "2026-07-27",
+    title: "Same-day round-trip — bought and stopped out the same day",
+    lesson:
+      "TER was bought at 7:30am ($326.20) as the top quality-momentum shortlist pick on a day it was already down ~12% from its prior close, then the drop-check stopped it out the same day at ~$328. The stop measured TER's intraday % from the PRIOR CLOSE (−5.75%), which includes the drop that happened BEFORE the buy — but from the actual buy price it was +1.1%, so no real loss occurred. Result: a pointless same-day round-trip near breakeven (also NTAP 07-09 −0.2%, SMCI 06-24 +0.0% — same signature). FIXED 2026-07-27: the drop-check now measures a same-day buy from its buy price (avgCost), the same treatment influencer picks already got, so a fresh buy is no longer stopped on a pre-purchase decline.",
+    check:
+      "Does any symbol appear as BOTH a buy and a sell in the same run's trades (today's run or any recent run)? That's a same-day round-trip. If the round-trip's realized P&L is roughly flat or positive (sold at ≈ or above the buy price), it's a whipsaw — the stop reacted to a decline that predated the buy — flag it (medium) naming the symbol, buy price, sell price, net %. A round-trip sold WELL BELOW the buy (≤ −5% from buy) is a legitimate post-buy crash stop, not a whipsaw — don't flag those. Since the same-day-buy-from-buy-price fix, a new flat/positive round-trip means that fix regressed or a different exit path caused it.",
+  },
+  {
     date: "2026-07-24",
     title: "Whipsaw — re-buying a name just stopped out",
     lesson:

@@ -4,7 +4,7 @@ import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
-import { computeStockBeta } from "@/lib/market-data";
+import { computeStockBeta, resolvePrevClose } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
@@ -251,6 +251,29 @@ Do NOT do a full portfolio rebalance. Only exit the damaged positions.
     expect(ibmSells.length).toBeGreaterThan(0);
     expect(wfcSells).toHaveLength(0);
   }, 120_000);
+});
+
+// ─── prevClose fallback: the drop-check's price baseline (Fix 2026-07-27) ─────
+
+describe("prevClose fallback: null regularMarketPreviousClose does not fall to a stale ref", () => {
+  // TER 2026-07-27: Yahoo returned regularMarketPreviousClose=null; the drop-check's
+  // fetchQuoteLite lacked the validCloses fallback and used chartPreviousClose (a far-off
+  // ref), skewing change1d. resolvePrevClose (now shared with getPriceData) must prefer the
+  // second-to-last real daily close (yesterday), never the stale chartPreviousClose.
+  it("prefers yesterday's real close (validCloses[-2]) over chartPreviousClose when the field is null", () => {
+    const validCloses = [374.04, 369.46, 373.75, 327.01]; // ...07-23 close, then today's forming close
+    const prev = resolvePrevClose(null, validCloses, 349.92 /* stale chartPreviousClose */, 329.81);
+    expect(prev).toBe(373.75); // yesterday's close, NOT 349.92
+  });
+
+  it("uses regularMarketPreviousClose when Yahoo provides it", () => {
+    expect(resolvePrevClose(371.5, [369.46, 373.75, 327.01], 349.92, 329.81)).toBe(371.5);
+  });
+
+  it("falls back to chartPreviousClose only when there is no second real close, then to price", () => {
+    expect(resolvePrevClose(null, [327.01], 349.92, 329.81)).toBe(349.92); // single close → no [-2]
+    expect(resolvePrevClose(null, [], null, 329.81)).toBe(329.81);         // nothing → price (change1d=0)
+  });
 });
 
 // ─── LLM eval: insider signal awareness ──────────────────────────────────────
