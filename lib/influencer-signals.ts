@@ -28,15 +28,19 @@ export interface InfluencerSignal {
   videoUrl: string;
   publishedAt: string;
   viewCount: number;
-  tickers: string[];
+  tickers: string[];                       // BUY / bullish
   confidence: "high" | "medium" | "low";
+  avoidTickers?: string[];                  // BEARISH / warn-against (informational)
+  insight?: string;                         // one-sentence takeaway from the video
 }
 
 export interface InfluencerCache {
   refreshedAt: string;
   signals: InfluencerSignal[];
-  // Tickers seen across all signals, deduped, with mention count
+  // Bullish tickers across all signals, weighted by confidence (the buy signal)
   tickerCounts: Record<string, number>;
+  // Bearish/avoid tickers across all signals, by mention count (informational)
+  avoidCounts?: Record<string, number>;
 }
 
 // ─── Redis ─────────────────────────────────────────────────────────────────────
@@ -225,13 +229,21 @@ async function fetchTranscript(videoId: string): Promise<string | null> {
   }
 }
 
-async function extractTickers(
+interface ExtractedSignal {
+  tickers: string[];                          // BUY / bullish
+  confidence: "high" | "medium" | "low";      // conviction of the BUY list
+  avoid: string[];                            // BEARISH / warn-against
+  insight: string;                            // one-sentence takeaway/thesis
+}
+
+async function extractSignal(
   anthropic: Anthropic,
   title: string,
   description: string,
   channelName: string,
   transcript: string | null,
-): Promise<{ tickers: string[]; confidence: "high" | "medium" | "low" }> {
+): Promise<ExtractedSignal> {
+  const EMPTY: ExtractedSignal = { tickers: [], confidence: "low", avoid: [], insight: "" };
   try {
     // Prefer the actual spoken transcript (the real picks + stance live in the video, not the
     // clickbait title). Fall back to title+description when no captions are available.
@@ -240,36 +252,39 @@ async function extractTickers(
       : `Channel: ${channelName}\nTitle: ${title}\nDescription: ${description.slice(0, 500)}`;
     const res = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 256,
-      system: `Extract stock tickers this YouTube finance creator is bullish on or holding in this video. You are given the video's TRANSCRIPT when available (otherwise just title + description) — base the picks on what the creator actually SAYS, not the clickbait title.
-Include a ticker if the creator: recommends buying it, says they are buying/adding/holding it, names it as a top pick, or features it positively in a portfolio update. ETFs count.
-Exclude tickers mentioned only as warnings, shorts, examples of bad investments, comparisons, or generic market commentary.
-Convert company names to their ticker (e.g. "Nvidia"→NVDA, "Palantir"→PLTR, "Tesla"→TSLA, "SpaceX"→SPCX).
-Output exactly one line: TICKERS:{"tickers":["AAPL","NVDA"],"confidence":"high|medium|low"}
-confidence=high: an explicit buy call ("I'm buying X", "my top pick", "loading up on X")
-confidence=medium: portfolio update / holdings video naming positions, or a positive-but-soft mention
-confidence=low: named but stance is ambiguous
-If genuinely no actionable tickers (pure education, macro-only, no names): TICKERS:{"tickers":[],"confidence":"low"}`,
+      max_tokens: 400,
+      system: `Analyze what this YouTube finance creator says in this video. You get the video's TRANSCRIPT when available (otherwise just title + description) — base everything on what they actually SAY, not the clickbait title. Extract three things:
+- buy: tickers the creator is BULLISH on (recommends buying, is buying/adding/holding, names a top pick, features positively in a portfolio update). ETFs count.
+- avoid: tickers the creator is BEARISH on or warns against (says to sell/avoid, is shorting, calls overvalued or a bad investment). A ticker must NEVER be in both lists.
+- insight: ONE concise sentence (≤160 chars) capturing the creator's main takeaway/thesis this video — a market/macro/sector view or the core reason behind a pick. Specific, plain, no hype. "" if there's no clear take.
+Convert company names to tickers ("Nvidia"→NVDA, "Palantir"→PLTR, "Tesla"→TSLA, "SpaceX"→SPCX).
+Output exactly one line: SIGNAL:{"buy":["NVDA"],"confidence":"high|medium|low","avoid":["INTC"],"insight":"..."}
+confidence (of the BUY list): high = explicit buy call ("I'm buying X", "my top pick"); medium = portfolio/holdings mention or soft positive; low = ambiguous or no buys.
+If nothing actionable and no clear take: SIGNAL:{"buy":[],"confidence":"low","avoid":[],"insight":""}`,
       messages: [{
         role: "user",
         content: source,
       }],
     });
     const text = res.content.filter(b => b.type === "text").map(b => (b as { type: "text"; text: string }).text).join("");
-    const m = text.match(/^TICKERS:(.+)$/m);
-    if (!m) return { tickers: [], confidence: "low" };
-    const parsed = JSON.parse(m[1]) as { tickers: string[]; confidence: string };
+    const m = text.match(/^SIGNAL:(.+)$/m);
+    if (!m) return EMPTY;
+    const parsed = JSON.parse(m[1]) as { buy?: string[]; confidence?: string; avoid?: string[]; insight?: string };
+    // Shape-check + alias-normalize only. Real liquidity validation happens in a second pass
+    // (filterToTradeable) so newly-listed names not in the static universe can still qualify.
+    const norm = (arr: string[] | undefined) => (arr ?? [])
+      .map((t) => String(t).toUpperCase())
+      .map((t) => TICKER_ALIASES[t] ?? t)
+      .filter((t) => /^[A-Z]{1,5}$/.test(t));
+    const tickers = norm(parsed.buy);
+    const avoid = norm(parsed.avoid).filter((t) => !tickers.includes(t)); // never both lists
     return {
-      // Shape-check + alias-normalize only. Real liquidity validation happens in a
-      // second pass (validateTickerLiquidity) so newly-listed names not in the static
-      // universe (e.g. a fresh IPO) can still qualify if they're genuinely liquid.
-      tickers: (parsed.tickers ?? [])
-        .map((t: string) => t.toUpperCase())
-        .map((t: string) => TICKER_ALIASES[t] ?? t)
-        .filter((t: string) => /^[A-Z]{1,5}$/.test(t)),
-      confidence: (["high", "medium", "low"].includes(parsed.confidence) ? parsed.confidence : "low") as "high" | "medium" | "low",
+      tickers,
+      confidence: (["high", "medium", "low"].includes(parsed.confidence ?? "") ? parsed.confidence : "low") as "high" | "medium" | "low",
+      avoid,
+      insight: typeof parsed.insight === "string" ? parsed.insight.replace(/\s+/g, " ").trim().slice(0, 200) : "",
     };
-  } catch { return { tickers: [], confidence: "low" }; }
+  } catch { return EMPTY; }
 }
 
 // ─── Main refresh ──────────────────────────────────────────────────────────────
@@ -324,7 +339,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
       batch.map(async v => {
         const transcript = await fetchTranscript(v.item.id.videoId);
         if (transcript) transcriptHits++;
-        const result = await extractTickers(
+        const result = await extractSignal(
           anthropic,
           v.item.snippet.title,
           v.item.snippet.description,
@@ -335,7 +350,9 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
       })
     );
     for (const r of extracted) {
-      if (r.status === "fulfilled" && r.value.result.tickers.length > 0) {
+      // Keep a signal if it carries ANY of: a buy, an avoid, or an insight — so bearish-only
+      // and pure-commentary videos still surface in the email (they never did before).
+      if (r.status === "fulfilled" && (r.value.result.tickers.length > 0 || r.value.result.avoid.length > 0 || r.value.result.insight)) {
         const { v, result } = r.value;
         signals.push({
           channelName: v.channelName,
@@ -347,6 +364,8 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
           viewCount: viewMap.get(v.item.id.videoId) ?? 0,
           tickers: result.tickers,
           confidence: result.confidence,
+          avoidTickers: result.avoid,
+          insight: result.insight,
         });
       }
     }
@@ -354,28 +373,33 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
 
   console.log("INFLUENCER_TRANSCRIPT_COVERAGE", { videos: candidateVideos.length, withTranscript: transcriptHits });
 
-  // Validate every extracted ticker for real liquidity (known names fast-pass, unknown
-  // names checked against Yahoo). Drop anything that doesn't qualify, then drop signals
-  // left with no tickers. This is the universe future-proofing — no hardcoded gate.
-  const allCandidateTickers = signals.flatMap(s => s.tickers);
+  // Validate every extracted ticker (buy AND avoid) for real liquidity (known names fast-pass,
+  // unknown names checked against Yahoo). Drop non-qualifying tickers, then keep a signal if it
+  // still carries a buy, an avoid, or an insight. Universe future-proofing — no hardcoded gate.
+  const allCandidateTickers = [...new Set(signals.flatMap(s => [...s.tickers, ...(s.avoidTickers ?? [])]))];
   const tradeable = await filterToTradeable(allCandidateTickers);
   const validatedSignals = signals
-    .map(s => ({ ...s, tickers: s.tickers.filter(t => tradeable.has(t)) }))
-    .filter(s => s.tickers.length > 0);
+    .map(s => ({
+      ...s,
+      tickers: s.tickers.filter(t => tradeable.has(t)),
+      avoidTickers: (s.avoidTickers ?? []).filter(t => tradeable.has(t)),
+    }))
+    .filter(s => s.tickers.length > 0 || (s.avoidTickers?.length ?? 0) > 0 || s.insight);
 
-  // Build ticker mention counts (weighted by confidence)
+  // Bullish counts weighted by confidence (the buy signal); bearish counts by mention (informational).
   const tickerCounts: Record<string, number> = {};
+  const avoidCounts: Record<string, number> = {};
   for (const sig of validatedSignals) {
     const weight = sig.confidence === "high" ? 3 : sig.confidence === "medium" ? 2 : 1;
-    for (const t of sig.tickers) {
-      tickerCounts[t] = (tickerCounts[t] ?? 0) + weight;
-    }
+    for (const t of sig.tickers) tickerCounts[t] = (tickerCounts[t] ?? 0) + weight;
+    for (const t of sig.avoidTickers ?? []) avoidCounts[t] = (avoidCounts[t] ?? 0) + 1;
   }
 
   const cache: InfluencerCache = {
     refreshedAt: new Date().toISOString(),
     signals: validatedSignals,
     tickerCounts,
+    avoidCounts,
   };
   await cacheSet(cache);
   return cache;

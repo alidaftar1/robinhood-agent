@@ -4,6 +4,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
 import { computeAttribution, type ChannelStats } from "@/lib/influencer-ledger";
+import { getInfluencerSignals } from "@/lib/influencer-signals";
 import { logReviewResult } from "@/lib/braintrust-trace";
 import { sendAlert } from "@/lib/alert";
 
@@ -361,6 +362,20 @@ export async function GET(request: Request) {
   catch { /* ledger is best-effort; skip the section if it can't compute */ }
   const agedChannels = ledgerChannels.filter((c) => c.avgReturnPct !== 0 || c.hitRatePct !== 0);
 
+  // This week's raw influencer signals (buys / avoids / insights) from the 6am cache refresh —
+  // informational visibility into what the creators are actually saying. Fail-safe.
+  const influencerCache = await getInfluencerSignals().catch(() => null);
+  const topBuys = Object.entries(influencerCache?.tickerCounts ?? {})
+    .sort(([, a], [, b]) => b - a).slice(0, 8);
+  const topAvoids = Object.entries(influencerCache?.avoidCounts ?? {})
+    .sort(([, a], [, b]) => b - a).slice(0, 6);
+  const insights = (influencerCache?.signals ?? [])
+    .filter((s) => s.insight && s.insight.length > 0)
+    .sort((a, b) => (b.viewCount ?? 0) - (a.viewCount ?? 0))
+    .slice(0, 5)
+    .map((s) => ({ channel: s.channelName, text: s.insight as string }));
+  const hasInfluencerDigest = topBuys.length > 0 || topAvoids.length > 0 || insights.length > 0;
+
   // ─── Email ────────────────────────────────────────────────────────────────────
 
   const needsAttention = issues.length > 0 || seriousConcerns.length > 0 || seriousReconcile.length > 0;
@@ -431,6 +446,16 @@ export async function GET(request: Request) {
         return `<li><strong>${tag} ${f.title}</strong> — ${f.detail}</li>`;
       })
       .join("")}</ul>
+  </div>`
+    : ""}
+
+  ${hasInfluencerDigest
+    ? `<div style="background:#fefce8;border-left:4px solid #eab308;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🎬 Influencer signals this week:</strong>
+    ${topBuys.length > 0 ? `<p style="margin:6px 0 0;font-size:13px"><strong style="color:#059669">Buys:</strong> ${topBuys.map(([t, s]) => `${t} (${s})`).join(", ")}</p>` : ""}
+    ${topAvoids.length > 0 ? `<p style="margin:6px 0 0;font-size:13px"><strong style="color:#dc2626">Avoid:</strong> ${topAvoids.map(([t, s]) => `${t} (${s})`).join(", ")}</p>` : ""}
+    ${insights.length > 0 ? `<p style="margin:8px 0 2px;font-size:13px"><strong>Insights:</strong></p><ul style="margin:0;padding-left:20px;font-size:13px">${insights.map((i) => `<li><span style="color:#6b7280">[${i.channel}]</span> ${i.text.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</li>`).join("")}</ul>` : ""}
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af">Informational — buys feed the sleeve (score ≥ 3); avoids/insights are visibility only, not wired into trades.</p>
   </div>`
     : ""}
 
