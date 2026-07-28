@@ -455,9 +455,20 @@ export async function GET(request: Request) {
   // (vercel.json sets ?cloudDispatch=1) and ONLY when a fresh email just went out.
   // The once-per-day email dedup makes this fire at most once/day, and the cloud
   // agent's own bare-path reads of this endpoint never re-trigger it (no loop).
+  // Cost gate: the cloud agent is a full (Sonnet) Claude Code run, ~5x the cost of the whole
+  // in-app pipeline. On a clean HEALTHY day the deterministic checks + skeptical reviewer +
+  // verify + reconcile have already done the work and there is nothing for it to fix, so skip
+  // it. Only spin it up when something actionable surfaced — a needs-attention flag (issues /
+  // high|medium reviewer or reconcile concern), a live-data discrepancy, or a self-healed
+  // morning. This cuts the biggest line on the Anthropic bill (~1-in-5 days fire) while keeping
+  // the self-heal safety net for exactly the days that need it.
+  const cloudWorthDispatching =
+    needsAttention ||
+    (verifyResult != null && verifyResult.status !== "ok") ||
+    selfHealed;
   const cloudDispatch = new URL(request.url).searchParams.get("cloudDispatch") === "1";
   let cloudDispatched: { ok: boolean; detail: string } | null = null;
-  if (cloudDispatch && emailSent) {
+  if (cloudDispatch && emailSent && cloudWorthDispatching) {
     cloudDispatched = await dispatchCloudAgent();
     console.log("CLOUD_DISPATCH", cloudDispatched);
     // Make a dispatch failure LOUD. It's otherwise swallowed (non-fatal by design) and there's
@@ -469,6 +480,10 @@ export async function GET(request: Request) {
         `The Vercel /api/autopilot cron could not trigger the GitHub autopilot workflow (dispatch result: ${cloudDispatched.detail}). Until fixed, the cloud autopilot — deep verification, skeptical reviewer, Autopilot Journal, and propose-mode PRs — will NOT run, and there is no schedule fallback. Most likely cause: GH_DISPATCH_TOKEN expired/revoked (HTTP 401) or the env var is missing. Fix: regenerate the PAT with the 'repo' scope, update GH_DISPATCH_TOKEN in the Vercel project env (Production) + .env.local, then redeploy.`,
       );
     }
+  } else if (cloudDispatch && emailSent) {
+    // Clean HEALTHY run — deliberately skipped the cloud agent to save cost. Logged so the
+    // skip is visible (not a silent dispatch failure) and distinguishable in the logs.
+    console.log("CLOUD_DISPATCH_SKIPPED", { reason: "clean run, nothing actionable for the cloud agent" });
   }
 
   return Response.json({
@@ -486,5 +501,6 @@ export async function GET(request: Request) {
     verifyStatus: verifyResult?.status ?? "skipped",
     emailSent,
     cloudDispatched,
+    cloudDispatchSkipped: cloudDispatch && emailSent && !cloudWorthDispatching,
   });
 }
