@@ -3,6 +3,7 @@ import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-sto
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
+import { computeAttribution, type ChannelStats } from "@/lib/influencer-ledger";
 import { logReviewResult } from "@/lib/braintrust-trace";
 import { sendAlert } from "@/lib/alert";
 
@@ -352,6 +353,14 @@ export async function GET(request: Request) {
   catch (e) { autoFixed.push(`Dashboard reconciliation could not run (${e}).`); }
   const seriousReconcile = reconcileFindings.filter((f) => f.severity !== "low");
 
+  // Influencer-pick attribution: which YouTubers' picks are actually working. Read-only,
+  // fail-safe (an observability aid — must never break the report). Meaningful only once
+  // picks have some age; day-0 picks read ~0% by construction.
+  let ledgerChannels: ChannelStats[] = [];
+  try { ({ channels: ledgerChannels } = await computeAttribution(today)); }
+  catch { /* ledger is best-effort; skip the section if it can't compute */ }
+  const agedChannels = ledgerChannels.filter((c) => c.avgReturnPct !== 0 || c.hitRatePct !== 0);
+
   // ─── Email ────────────────────────────────────────────────────────────────────
 
   const needsAttention = issues.length > 0 || seriousConcerns.length > 0 || seriousReconcile.length > 0;
@@ -422,6 +431,21 @@ export async function GET(request: Request) {
         return `<li><strong>${tag} ${f.title}</strong> — ${f.detail}</li>`;
       })
       .join("")}</ul>
+  </div>`
+    : ""}
+
+  ${ledgerChannels.length > 0
+    ? `<div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🎬 Influencer-pick ledger — which channels' picks work:</strong>
+    ${agedChannels.length === 0
+      ? `<p style="margin:6px 0 0;font-size:13px;color:#6b7280">Tracking ${ledgerChannels.length} channels — picks logged recently still read ~0%; forward returns accumulate over the coming days.</p>`
+      : `<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+      <tr style="color:#6b7280"><td style="padding:3px 8px">Channel</td><td style="padding:3px 8px;text-align:right">Picks</td><td style="padding:3px 8px;text-align:right">Hit</td><td style="padding:3px 8px;text-align:right">Avg ret</td></tr>
+      ${agedChannels.slice(0, 8).map((c) =>
+        `<tr><td style="padding:3px 8px">${c.channel}</td><td style="padding:3px 8px;text-align:right">${c.picks}</td><td style="padding:3px 8px;text-align:right">${c.hitRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;color:${c.avgReturnPct >= 0 ? "#059669" : "#dc2626"}">${c.avgReturnPct >= 0 ? "+" : ""}${c.avgReturnPct.toFixed(1)}%</td></tr>`
+      ).join("")}
+    </table>
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af">Return since each pick was first logged (horizons vary). Small samples early — read as directional, not verdict.</p>`}
   </div>`
     : ""}
 
