@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { YoutubeTranscript } from "youtube-transcript";
 import { createAnthropic } from "@/lib/anthropic";
 import { SP500_UNIVERSE } from "./strategy";
 
@@ -202,28 +203,56 @@ const TICKER_ALIASES: Record<string, string> = {
   FACEBOOK: "META",
 };
 
+// ~2k tokens of transcript to Haiku — bounds cost and captures the intro + main thesis,
+// where a finance creator states the pick. Longer videos are truncated to the start.
+const TRANSCRIPT_CHAR_CAP = 8000;
+
+// Fetch a video's caption transcript (no API key — scrapes YouTube's timedtext endpoint).
+// Fail-safe: returns null on any error or when the video has no captions, so the caller
+// falls back to title+description. Fragile by nature (unofficial endpoint), hence never throws.
+async function fetchTranscript(videoId: string): Promise<string | null> {
+  try {
+    // youtube-transcript has no timeout/signal option, so race it — a hung or rate-limited
+    // fetch from a serverless IP must not stall the whole refresh (falls back to title+desc).
+    const segments = await Promise.race([
+      YoutubeTranscript.fetchTranscript(videoId),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("transcript timeout")), 8000)),
+    ]);
+    const text = segments.map((s) => s.text).join(" ").replace(/\s+/g, " ").trim();
+    return text ? text.slice(0, TRANSCRIPT_CHAR_CAP) : null;
+  } catch {
+    return null;
+  }
+}
+
 async function extractTickers(
   anthropic: Anthropic,
   title: string,
   description: string,
-  channelName: string
+  channelName: string,
+  transcript: string | null,
 ): Promise<{ tickers: string[]; confidence: "high" | "medium" | "low" }> {
   try {
+    // Prefer the actual spoken transcript (the real picks + stance live in the video, not the
+    // clickbait title). Fall back to title+description when no captions are available.
+    const source = transcript
+      ? `Channel: ${channelName}\nTitle: ${title}\nVIDEO TRANSCRIPT (may be truncated to the start of the video):\n${transcript}`
+      : `Channel: ${channelName}\nTitle: ${title}\nDescription: ${description.slice(0, 500)}`;
     const res = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 128,
-      system: `Extract stock tickers this YouTube finance creator is bullish on or holding in this video.
+      max_tokens: 256,
+      system: `Extract stock tickers this YouTube finance creator is bullish on or holding in this video. You are given the video's TRANSCRIPT when available (otherwise just title + description) — base the picks on what the creator actually SAYS, not the clickbait title.
 Include a ticker if the creator: recommends buying it, says they are buying/adding/holding it, names it as a top pick, or features it positively in a portfolio update. ETFs count.
-Exclude tickers mentioned only as warnings, shorts, examples of bad investments, or generic market commentary.
+Exclude tickers mentioned only as warnings, shorts, examples of bad investments, comparisons, or generic market commentary.
 Convert company names to their ticker (e.g. "Nvidia"→NVDA, "Palantir"→PLTR, "Tesla"→TSLA, "SpaceX"→SPCX).
 Output exactly one line: TICKERS:{"tickers":["AAPL","NVDA"],"confidence":"high|medium|low"}
-confidence=high: title or content is an explicit buy call ("Why I'm buying X", "Best stocks to buy now", "My top stock")
-confidence=medium: portfolio update / holdings video naming positions, or implied picks
-confidence=low: tickers mentioned but stance is ambiguous
+confidence=high: an explicit buy call ("I'm buying X", "my top pick", "loading up on X")
+confidence=medium: portfolio update / holdings video naming positions, or a positive-but-soft mention
+confidence=low: named but stance is ambiguous
 If genuinely no actionable tickers (pure education, macro-only, no names): TICKERS:{"tickers":[],"confidence":"low"}`,
       messages: [{
         role: "user",
-        content: `Channel: ${channelName}\nTitle: ${title}\nDescription: ${description.slice(0, 500)}`,
+        content: source,
       }],
     });
     const text = res.content.filter(b => b.type === "text").map(b => (b as { type: "text"; text: string }).text).join("");
@@ -284,18 +313,26 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   const videoIds = candidateVideos.map(v => v.item.id.videoId);
   const viewMap = await getVideoViews(videoIds);
 
-  // Extract tickers via Haiku (batch, but throttle to avoid rate limits)
+  // Extract tickers via Haiku (batch, but throttle to avoid rate limits). Each video's
+  // transcript is fetched first (fail-safe) so the extractor reads the actual spoken picks.
   const signals: InfluencerSignal[] = [];
+  let transcriptHits = 0;
   const BATCH = 5;
   for (let i = 0; i < candidateVideos.length; i += BATCH) {
     const batch = candidateVideos.slice(i, i + BATCH);
     const extracted = await Promise.allSettled(
-      batch.map(v => extractTickers(
-        anthropic,
-        v.item.snippet.title,
-        v.item.snippet.description,
-        v.channelName
-      ).then(result => ({ v, result })))
+      batch.map(async v => {
+        const transcript = await fetchTranscript(v.item.id.videoId);
+        if (transcript) transcriptHits++;
+        const result = await extractTickers(
+          anthropic,
+          v.item.snippet.title,
+          v.item.snippet.description,
+          v.channelName,
+          transcript,
+        );
+        return { v, result };
+      })
     );
     for (const r of extracted) {
       if (r.status === "fulfilled" && r.value.result.tickers.length > 0) {
@@ -314,6 +351,8 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
       }
     }
   }
+
+  console.log("INFLUENCER_TRANSCRIPT_COVERAGE", { videos: candidateVideos.length, withTranscript: transcriptHits });
 
   // Validate every extracted ticker for real liquidity (known names fast-pass, unknown
   // names checked against Yahoo). Drop anything that doesn't qualify, then drop signals
