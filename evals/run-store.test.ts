@@ -155,6 +155,74 @@ describe("mergeRunsByDate", () => {
     expect(exit.positions.map((p) => p.symbol)).toEqual(["GL", "ES"]);
   });
 
+  it("drops a re-recorded sell that exceeds what the day could possibly sell", () => {
+    // The real TER 2026-07-27 case: nothing held at the open, bought 1 share that morning,
+    // then ONE intraday stop-loss fill recorded twice — @$327.94 "filled" by the exit run and
+    // @$328.73 "submitted" by a second run. Ceiling = 0 held + 1 bought = 1, so the second
+    // record is provably phantom: it would add $328.73 to the day's tradeNetCash.
+    const prevDay = run({
+      date: "2026-07-24", timestamp: "2026-07-24T14:30:00.000Z",
+      positions: [pos("APA", "17"), pos("ROST", "2")],
+    });
+    const morning = run({
+      date: "2026-07-27", timestamp: "2026-07-27T14:30:00.000Z",
+      positions: [pos("APA", "17"), pos("ROST", "2"), pos("TER", "1")],
+      trades: [trade("GOOGL", "buy", "1", "326.37"), trade("TER", "buy", "1", "326.20")],
+    });
+    const exit = run({
+      date: "2026-07-27", timestamp: "2026-07-27T17:05:00.000Z",
+      trades: [{ symbol: "TER", side: "sell", quantity: "1", avgPrice: "327.94", state: "filled" }],
+    });
+    const reReport = run({
+      date: "2026-07-27", timestamp: "2026-07-27T18:05:00.000Z",
+      trades: [{ symbol: "TER", side: "sell", quantity: "1", avgPrice: "328.73", state: "submitted" }],
+    });
+    const merged = mergeRunsByDate([reReport, exit, morning, prevDay]);
+    const day = merged.find(r => r.date === "2026-07-27")!;
+    const terSells = (day.trades ?? []).filter(t => t.symbol === "TER" && t.side === "sell");
+    expect(terSells.length).toBe(1);
+    expect(terSells[0].avgPrice).toBe("327.94"); // keeps the "filled" record, drops "submitted"
+    // the real buys survive, and the sold-out position is still reconciled away
+    expect((day.trades ?? []).filter(t => t.side === "buy").map(t => t.symbol).sort()).toEqual(["GOOGL", "TER"]);
+    expect((day.positions ?? []).some(p => p.symbol === "TER")).toBe(false);
+  });
+
+  it("keeps genuine partial fills that stay within the sellable ceiling", () => {
+    // 17 APA held at the open, sold as 10 + 7 by two runs. Same symbol, same side, two
+    // records — but the total is exactly what was held, so nothing is phantom.
+    const prevDay = run({
+      date: "2026-07-24", timestamp: "2026-07-24T14:30:00.000Z", positions: [pos("APA", "17")],
+    });
+    const morning = run({
+      date: "2026-07-27", timestamp: "2026-07-27T14:30:00.000Z",
+      positions: [pos("APA", "17")],
+      trades: [trade("APA", "sell", "10", "35.40")],
+    });
+    const later = run({
+      date: "2026-07-27", timestamp: "2026-07-27T17:05:00.000Z",
+      trades: [trade("APA", "sell", "7", "35.55")],
+    });
+    const merged = mergeRunsByDate([later, morning, prevDay]);
+    const day = merged.find(r => r.date === "2026-07-27")!;
+    expect((day.trades ?? []).filter(t => t.symbol === "APA").length).toBe(2);
+  });
+
+  it("never drops a lone sell just because the prior snapshot is missing the name", () => {
+    // A stale/incomplete previous snapshot makes the ceiling wrong (0). With only ONE
+    // record there is no twin to fall back on, so real history must survive untouched.
+    const prevDay = run({
+      date: "2026-07-24", timestamp: "2026-07-24T14:30:00.000Z", positions: [pos("APA", "17")],
+    });
+    const today = run({
+      date: "2026-07-27", timestamp: "2026-07-27T14:30:00.000Z",
+      positions: [pos("APA", "17")],
+      trades: [trade("ILMN", "sell", "2", "191.49")],
+    });
+    const merged = mergeRunsByDate([today, prevDay]);
+    const day = merged.find(r => r.date === "2026-07-27")!;
+    expect((day.trades ?? []).length).toBe(1);
+  });
+
   it("leaves distinct dates untouched and sorts newest first", () => {
     const d1 = run({ date: "2026-06-21", timestamp: "2026-06-21T14:00:00.000Z" });
     const d2 = run({ date: "2026-06-22", timestamp: "2026-06-22T14:00:00.000Z" });
