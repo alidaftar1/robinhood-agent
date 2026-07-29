@@ -1,4 +1,4 @@
-import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, computeDailyReturn, backfillSleeveReturns } from "@/lib/run-store";
+import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, computeDailyReturn, backfillSleeveReturns, findReRecordedSells } from "@/lib/run-store";
 import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 
@@ -103,28 +103,41 @@ export async function GET(request: Request) {
   // Use when a run was injected with agenticDailyReturn=null but all position/trade data is present.
   if (url.searchParams.get("patchDate")) {
     const date = url.searchParams.get("patchDate")!;
+    // &unlock=1 recomputes even a returnLocked day — use ONLY after the artifact that caused the
+    // lock is fixed (e.g. the 07-27 re-recorded-sell phantom, fixed by findReRecordedSells). It
+    // clears the lock and recomputes from the DEDUPED trades so the phantom can't re-inflate it.
+    const unlock = url.searchParams.get("unlock") === "1";
     try {
       const runs = await getRuns(30);
       const run = runs.find(r => r.date === date);
       const prevRun = runs.find(r => r.date < date);
-      if (run?.returnLocked) {
-        results.patchDate = `${date}: skipped — return is locked (known artifact, won't recompute)`;
+      if (run?.returnLocked && !unlock) {
+        results.patchDate = `${date}: skipped — return is locked (known artifact, won't recompute). Pass &unlock=1 only after the artifact is fixed.`;
       } else if (!run || !run.portfolioAfter || !prevRun?.portfolioAfter) {
         results.patchDate = `run or prev not found for ${date}`;
       } else {
+        // Drop provably-impossible re-recorded sells (PR #7) before computing, so a double-recorded
+        // fill can't be counted as phantom proceeds — the same correction mergeRunsByDate applies.
+        const dropKeys = new Set(
+          findReRecordedSells(runs).filter(d => d.date === date).map(d => d.dropKey)
+        );
+        const tradeKeyOf = (t: { symbol: string; side: string; quantity: string; avgPrice: string }) =>
+          `${date}|${t.symbol}|${t.side}|${t.quantity}|${t.avgPrice}`;
+        const dedupedTrades = (run.trades ?? []).filter(t => !dropKeys.has(tradeKeyOf(t)));
         const result = computeDailyReturn(
           parseFloat(run.portfolioAfter.totalValue),
           parseFloat(prevRun.portfolioAfter.totalValue),
           run.positions, prevRun.positions,
-          run.trades ?? []
+          dedupedTrades
         );
         const patched = await updateRunByDate(date, r => ({
           ...r,
           agenticDailyReturn: result?.dailyReturn ?? null,
           agenticImpliedTransfer: result?.impliedTransfer ?? null,
+          ...(unlock ? { returnLocked: false } : {}),
         }));
         results.patchDate = patched
-          ? `${date}: return = ${result?.dailyReturn != null ? (result.dailyReturn * 100).toFixed(2) + "%" : "null"}`
+          ? `${date}: return = ${result?.dailyReturn != null ? (result.dailyReturn * 100).toFixed(2) + "%" : "null"}${dropKeys.size ? ` (dropped ${dropKeys.size} re-recorded sell)` : ""}${unlock ? " [unlocked]" : ""}`
           : `no run found for ${date}`;
       }
     } catch (e) {
