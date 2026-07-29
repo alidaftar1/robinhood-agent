@@ -365,9 +365,16 @@ export async function GET(request: Request) {
   // This week's raw influencer signals (buys / avoids / insights) from the 6am cache refresh —
   // informational visibility into what the creators are actually saying. Fail-safe.
   const influencerCache = await getInfluencerSignals().catch(() => null);
-  const topBuys = Object.entries(influencerCache?.tickerCounts ?? {})
+  const buyScores = influencerCache?.tickerCounts ?? {};
+  const avoidScores = influencerCache?.avoidCounts ?? {};
+  const topBuys = Object.entries(buyScores)
     .sort(([, a], [, b]) => b - a).slice(0, 8);
-  const topAvoids = Object.entries(influencerCache?.avoidCounts ?? {})
+  // A ticker can be BOTH bought and avoided across DIFFERENT creators (legit disagreement — the
+  // per-video extractor already bars a single video from listing it in both). Show it in Avoid ONLY
+  // when the bearish signal is NET dominant (avoid count > buy score) — otherwise a strong buy with
+  // one lone dissenter (MU 10-buy/1-avoid) reads as a contradictory "buy AND avoid".
+  const topAvoids = Object.entries(avoidScores)
+    .filter(([t, a]) => a > (buyScores[t] ?? 0))
     .sort(([, a], [, b]) => b - a).slice(0, 6);
   const insights = (influencerCache?.signals ?? [])
     .filter((s) => s.insight && s.insight.length > 0)
