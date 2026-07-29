@@ -538,6 +538,13 @@ export function computeSleeveReturns(
 export async function backfillSleeveReturns(): Promise<string[]> {
   const all = await getRuns(MAX_RUNS); // newest-first
   const changes: string[] = [];
+  // Drop provably-impossible re-recorded sells (same fill written twice) before recomputing sleeve
+  // returns, so a phantom proceeds figure can't distort a sleeve's day — the same correction
+  // mergeRunsByDate + patchDate apply. Without this, the 07-27 double-recorded TER sell would keep
+  // poisoning the MAIN sleeve's return even after the agentic return was fixed.
+  const dropKeys = new Set(findReRecordedSells(all).map(d => d.dropKey));
+  const dedupTrades = (run: TradeRun) =>
+    dropKeys.size === 0 ? (run.trades ?? []) : (run.trades ?? []).filter(t => !dropKeys.has(`${run.date}|${tradeKey(t)}`));
   const fmt = (x: number | null | undefined) => x == null ? "null" : (x * 100).toFixed(2) + "%";
   const approxEq = (a: number | null, b: number | null) =>
     (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 1e-9);
@@ -556,7 +563,7 @@ export async function backfillSleeveReturns(): Promise<string[]> {
     if (!prev) return run; // first return-bearing run has no prior baseline
     const raw = computeSleeveReturns(
       run.positions ?? [],
-      run.trades ?? [],
+      dedupTrades(run),
       run.influencerPositions ?? [],
       prev.influencerPositions ?? [],
       prev.positions ?? [],
