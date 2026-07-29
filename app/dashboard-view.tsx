@@ -385,6 +385,8 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
   const mainBeatRate = computeBeatRate(runs, r => r.mainDailyReturn);
+  // Same daily-alpha win rate for the influencer sleeve (vs SPY over the sleeve's own days).
+  const influencerBeatRate = computeBeatRate(runs, r => r.influencerDailyReturn);
 
   // Honest "is the active book beating just-holding-SPY, and for how long has it trailed?" verdict.
   const benchmarkVerdict = computeBenchmarkVerdict(runs);
@@ -489,6 +491,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </span>
             <span style={s.perfSince}>YouTube picks vs. S&P 500</span>
           </div>
+          {influencerBeatRate != null && (
+            <div style={s.perfStat}>
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Days Influencer Beat S&P" def="The share of trading days the YouTube-picks slice's daily return was higher than the S&P 500's." />
+              <span style={{ ...s.perfValue, color: returnColor(influencerBeatRate.rate * 100 - 50) }}>
+                {(influencerBeatRate.rate * 100).toFixed(0)}%
+              </span>
+              <span style={s.perfSince}>of {influencerBeatRate.n} trading days</span>
+            </div>
+          )}
           {influencerPositions.length > 0 && (
             <div style={s.perfStat}>
               <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Influencer Value" def="Current market value of the YouTube-picks holdings. The rest of the account (core holdings + cash) sits in the main book." />
