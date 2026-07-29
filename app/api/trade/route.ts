@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { buildSystemPrompt, buildV1AnalysisPrompt, SP500_UNIVERSE, type PortfolioContext } from "@/lib/strategy";
+import { buildSystemPrompt, buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
@@ -10,7 +10,7 @@ import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, t
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
-import { fitBuysToBudget, usableBuyBudget } from "@/lib/buy-sizing";
+import { fitBuysToBudget, usableBuyBudget, positionCapQty } from "@/lib/buy-sizing";
 import { getRecentStopouts } from "@/lib/stopouts";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
@@ -419,6 +419,47 @@ export async function GET(request: Request) {
       }
     }
 
+    // Sizing adjustments (buys shrunk/dropped by the cap guard or budget fit) — surfaced in the
+    // run + email so a trim/drop is never silent. Declared here so the position-cap guard can add to it.
+    let buySizingAdjustments: string[] = [];
+
+    // ── Hard cap: per-position TOP-UP guard (main book) ──────────────────────────
+    // The prompt's per-position cap (max_qty = floor(maxPos/price)) checks each BUY ORDER in
+    // isolation, so ADDING to an existing holding can push the position past the cap: on 2026-07-29
+    // the model topped up ROST to 3sh = $749 (30.2%) and APA sat at $617 (24.9%) vs the ~$496 (20%)
+    // cap. Soft prompt guidance doesn't reliably bind, so enforce the cap in code against
+    // existing-holding value + new-buy value. Reduce the buy qty to fit, or drop it. Buy-time guard
+    // only — it stops the breach GROWING; it never force-sells an already-over-cap position. Main
+    // book only (influencer positions have their own 2-slot + sizing framework).
+    {
+      const maxPos = maxPositionDollars(agenticBalance ? `$${agenticBalance.totalValue}` : portfolioCtx?.totalValue);
+      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
+        b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
+      const heldValueOf = (sym: string) => {
+        const p = (portfolioCtx?.positions ?? []).find(pp => pp.symbol === sym);
+        if (!p) return 0;
+        const price = priceMap.get(sym) ?? (parseFloat(p.avgCost) || 0);
+        return (parseFloat(p.quantity) || 0) * price;
+      };
+      const capNotes: string[] = [];
+      decision.buys = decision.buys.flatMap(b => {
+        if (isInfluencerBuy(b)) return [b];
+        const price = b.price || priceMap.get(b.symbol) || 0;
+        const maxQty = positionCapQty(heldValueOf(b.symbol), price, maxPos);
+        if (b.quantity <= maxQty) return [b];                 // within cap (or no price) — untouched
+        if (maxQty <= 0) {                                    // already at/over cap — drop the top-up
+          capNotes.push(`${b.symbol} buy DROPPED — position already at/over the $${maxPos.toFixed(0)} cap`);
+          return [];
+        }
+        capNotes.push(`${b.symbol} buy trimmed ${b.quantity}→${maxQty}sh — would exceed the $${maxPos.toFixed(0)} per-position cap`);
+        return [{ ...b, quantity: maxQty }];
+      });
+      if (capNotes.length > 0) {
+        console.log("V1_POSITION_CAP_GUARD", { maxPos, notes: capNotes });
+        buySizingAdjustments.push(...capNotes); // surface in the run/email like other sizing adjustments
+      }
+    }
+
     // ── Hard cap: max concurrent influencer positions ─────────────────────────
     // The influencer bucket is high-risk by design; limit concentration regardless
     // of what the model decides. Count positions we'd KEEP plus NEW influencer buys.
@@ -466,12 +507,11 @@ export async function GET(request: Request) {
 
     // ── Pre-flight buy sizing: fit buys into live settled buying power ────────────
     // (sells today settle T+1 → they don't fund today's buys; size against real BP)
-    let buySizingAdjustments: string[] = [];
     if (decision.buys.length > 0 && agenticBalance) {
       const { sized, adjustments } = fitBuysToBudget(decision.buys, agenticBalance.buyingPower);
       if (adjustments.length > 0) {
         console.log("BUY_SIZING_ADJUSTED", { settledBuyingPower: agenticBalance.buyingPower, adjustments });
-        buySizingAdjustments = adjustments; // persisted on the run below so a drop is never silent
+        buySizingAdjustments.push(...adjustments); // append — don't clobber the cap-guard notes above
       }
       decision.buys = sized;
     }

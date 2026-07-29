@@ -8,7 +8,7 @@ import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
-import { fitBuysToBudget, usableBuyBudget } from "@/lib/buy-sizing";
+import { fitBuysToBudget, usableBuyBudget, positionCapQty } from "@/lib/buy-sizing";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -273,6 +273,29 @@ describe("prevClose fallback: null regularMarketPreviousClose does not fall to a
   it("falls back to chartPreviousClose only when there is no second real close, then to price", () => {
     expect(resolvePrevClose(null, [327.01], 349.92, 329.81)).toBe(349.92); // single close → no [-2]
     expect(resolvePrevClose(null, [], null, 329.81)).toBe(329.81);         // nothing → price (change1d=0)
+  });
+});
+
+// ─── position-cap top-up guard (concentration control) ───────────────────────
+
+describe("positionCapQty: per-position top-up guard", () => {
+  const maxPos = 496; // ~20% of a $2481 book (the 2026-07-29 breach case)
+  it("blocks a top-up that would push a position over the cap (ROST 07-29)", () => {
+    // Already holding 2 ROST ≈ $499; the model wanted +1 @ $250 → would hit $749 (30.2%). Cap it.
+    expect(positionCapQty(499, 250, maxPos)).toBe(0); // no room left → drop the top-up
+  });
+  it("allows a partial top-up up to the remaining headroom", () => {
+    // Holding $200 of a $50 name, cap $496 → room $296 → floor(296/50)=5 more shares allowed.
+    expect(positionCapQty(200, 50, maxPos)).toBe(5);
+  });
+  it("allows a full new position within the cap", () => {
+    expect(positionCapQty(0, 100, maxPos)).toBe(4); // floor(496/100)
+  });
+  it("never returns negative when already over cap", () => {
+    expect(positionCapQty(700, 100, maxPos)).toBe(0);
+  });
+  it("does not block when price is unknown (returns Infinity → caller keeps the buy)", () => {
+    expect(positionCapQty(499, 0, maxPos)).toBe(Infinity);
   });
 });
 

@@ -67,3 +67,13 @@ export function fitBuysToBudget<T extends { symbol: string; quantity: number; pr
   }
   return { sized, adjustments };
 }
+
+// Per-position TOP-UP cap: the max NEW shares of `symbol` allowed before existing-holding value +
+// new-buy value would exceed `maxPos` (the ~20% per-position cap). Returns 0 if the position is
+// already at/over cap (drop the top-up). Pure arithmetic so the buy-time guard is unit-testable.
+// Buy-time only — it never implies selling an already-over-cap position.
+export function positionCapQty(heldValue: number, buyPrice: number, maxPos: number): number {
+  if (buyPrice <= 0) return Infinity; // can't reason without a price → don't block (caller keeps the buy)
+  const room = maxPos - heldValue;
+  return Math.max(0, Math.floor(room / buyPrice));
+}
