@@ -1,5 +1,4 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { YoutubeTranscript } from "youtube-transcript";
 import { createAnthropic } from "@/lib/anthropic";
 import { SP500_UNIVERSE } from "./strategy";
 
@@ -207,28 +206,6 @@ const TICKER_ALIASES: Record<string, string> = {
   FACEBOOK: "META",
 };
 
-// ~2k tokens of transcript to Haiku — bounds cost and captures the intro + main thesis,
-// where a finance creator states the pick. Longer videos are truncated to the start.
-const TRANSCRIPT_CHAR_CAP = 8000;
-
-// Fetch a video's caption transcript (no API key — scrapes YouTube's timedtext endpoint).
-// Fail-safe: returns null on any error or when the video has no captions, so the caller
-// falls back to title+description. Fragile by nature (unofficial endpoint), hence never throws.
-async function fetchTranscript(videoId: string): Promise<string | null> {
-  try {
-    // youtube-transcript has no timeout/signal option, so race it — a hung or rate-limited
-    // fetch from a serverless IP must not stall the whole refresh (falls back to title+desc).
-    const segments = await Promise.race([
-      YoutubeTranscript.fetchTranscript(videoId),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("transcript timeout")), 8000)),
-    ]);
-    const text = segments.map((s) => s.text).join(" ").replace(/\s+/g, " ").trim();
-    return text ? text.slice(0, TRANSCRIPT_CHAR_CAP) : null;
-  } catch {
-    return null;
-  }
-}
-
 interface ExtractedSignal {
   tickers: string[];                          // BUY / bullish
   confidence: "high" | "medium" | "low";      // conviction of the BUY list
@@ -241,22 +218,20 @@ async function extractSignal(
   title: string,
   description: string,
   channelName: string,
-  transcript: string | null,
 ): Promise<ExtractedSignal> {
   const EMPTY: ExtractedSignal = { tickers: [], confidence: "low", avoid: [], insight: "" };
   try {
-    // Prefer the actual spoken transcript (the real picks + stance live in the video, not the
-    // clickbait title). Fall back to title+description when no captions are available.
-    const source = transcript
-      ? `Channel: ${channelName}\nTitle: ${title}\nVIDEO TRANSCRIPT (may be truncated to the start of the video):\n${transcript}`
-      : `Channel: ${channelName}\nTitle: ${title}\nDescription: ${description.slice(0, 500)}`;
+    // Title + description only. (A transcript path was tried but YouTube blocks caption fetches
+    // from serverless IPs — 0/22 in prod — so it was removed; descriptions are the real signal,
+    // and finance creators routinely list the discussed stocks + timestamps there.)
+    const source = `Channel: ${channelName}\nTitle: ${title}\nDescription:\n${description.slice(0, 1500)}`;
     const res = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 400,
-      system: `Analyze what this YouTube finance creator says in this video. You get the video's TRANSCRIPT when available (otherwise just title + description) — base everything on what they actually SAY, not the clickbait title. Extract three things:
+      system: `You are given a YouTube finance video's TITLE and DESCRIPTION. Descriptions usually name the stocks discussed (often with timestamps like "2:30 Why I'm buying NVDA") — read them carefully; the title is often clickbait and may name no ticker. Extract three things:
 - buy: tickers the creator is BULLISH on (recommends buying, is buying/adding/holding, names a top pick, features positively in a portfolio update). ETFs count.
 - avoid: tickers the creator is BEARISH on or warns against (says to sell/avoid, is shorting, calls overvalued or a bad investment). A ticker must NEVER be in both lists.
-- insight: ONE concise sentence (≤160 chars) capturing the creator's main takeaway/thesis this video — a market/macro/sector view or the core reason behind a pick. Specific, plain, no hype. "" if there's no clear take.
+- insight: ONE concise sentence (≤160 chars) capturing the video's main takeaway/thesis — a market/macro/sector view or the core reason behind a pick. Specific, plain, no hype. "" if the title+description give no clear take.
 Convert company names to tickers ("Nvidia"→NVDA, "Palantir"→PLTR, "Tesla"→TSLA, "SpaceX"→SPCX).
 Output exactly one line: SIGNAL:{"buy":["NVDA"],"confidence":"high|medium|low","avoid":["INTC"],"insight":"..."}
 confidence (of the BUY list): high = explicit buy call ("I'm buying X", "my top pick"); medium = portfolio/holdings mention or soft positive; low = ambiguous or no buys.
@@ -328,23 +303,18 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   const videoIds = candidateVideos.map(v => v.item.id.videoId);
   const viewMap = await getVideoViews(videoIds);
 
-  // Extract tickers via Haiku (batch, but throttle to avoid rate limits). Each video's
-  // transcript is fetched first (fail-safe) so the extractor reads the actual spoken picks.
+  // Extract buy/avoid/insight via Haiku from each video's title+description (batch-throttled).
   const signals: InfluencerSignal[] = [];
-  let transcriptHits = 0;
   const BATCH = 5;
   for (let i = 0; i < candidateVideos.length; i += BATCH) {
     const batch = candidateVideos.slice(i, i + BATCH);
     const extracted = await Promise.allSettled(
       batch.map(async v => {
-        const transcript = await fetchTranscript(v.item.id.videoId);
-        if (transcript) transcriptHits++;
         const result = await extractSignal(
           anthropic,
           v.item.snippet.title,
           v.item.snippet.description,
           v.channelName,
-          transcript,
         );
         return { v, result };
       })
@@ -370,8 +340,6 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
       }
     }
   }
-
-  console.log("INFLUENCER_TRANSCRIPT_COVERAGE", { videos: candidateVideos.length, withTranscript: transcriptHits });
 
   // Validate every extracted ticker (buy AND avoid) for real liquidity (known names fast-pass,
   // unknown names checked against Yahoo). Drop non-qualifying tickers, then keep a signal if it
