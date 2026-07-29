@@ -114,6 +114,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
       "Is any single-day sleeve return (main or influencer) large in % BUT driven by a tiny prior-day base rather than a real price move? Signature: the sleeve's prior-day position value is a small fraction (<~10%) of its current-day value — i.e. the book was rebuilt from cash that day (mass liquidation the day before, then redeploy). That daily % is a denominator artifact and should be null (excluded from compounding), NOT counted as real P&L. Distinguish from a genuine loss by checking whether the held names actually moved that much.",
   },
   {
+    date: "2026-07-29",
+    title: "Rotation churn — selling a still-strong name as 'decayed', then rebuying it",
+    lesson:
+      "The V1 sell rule was a HARD shortlist cutoff ('not in the top-12 → decayed → SELL'), so names jostling at the rank boundary got churned on daily momentum noise. ILMN was sold 07-28 as 'momentum/quality decayed' at 65% momentum, then REBOUGHT 07-29 at the same 65% momentum for $193 (sold at $189) — the 'decay' was fiction, the number never moved; it just got out-ranked for one day. INCY was a 1-day hold (bought 07-28, sold 07-29 for the same 'decayed' reason it was bought). FIXED 2026-07-29: a hysteresis retention band keeps held names (marked ◆HELD) as long as momentum stays positive + quality-eligible; the prompt forbids selling a ◆HELD name for merely ranking below newer names and requires a specific real reason for every main-book sell.",
+    check:
+      "For each MAIN-book SELL in the run, does the thesis justify it with a SPECIFIC real reason (the name genuinely fell off the shortlist = momentum went negative / lost quality-eligibility, OR a ↓FIRM downgrade, sector-cap trim, or freeing a slot for a clearly higher-conviction new name)? Flag a sell whose only rationale is 'not on the shortlist' / 'decayed' / 'out-ranked' when the name's momentum is still positive — that's rationalized rotation churn. RED FLAG: a name SOLD in this run (or a recent run) that also appears BOUGHT within ~2 days at similar momentum — a sold-then-rebought round-trip means the 'decay' thesis was noise.",
+  },
+  {
     date: "2026-07-27",
     title: "Same-day round-trip — bought and stopped out the same day",
     lesson:

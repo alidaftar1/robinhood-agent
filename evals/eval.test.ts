@@ -4,7 +4,7 @@ import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
-import { computeStockBeta, resolvePrevClose } from "@/lib/market-data";
+import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
@@ -273,6 +273,42 @@ describe("prevClose fallback: null regularMarketPreviousClose does not fall to a
   it("falls back to chartPreviousClose only when there is no second real close, then to price", () => {
     expect(resolvePrevClose(null, [327.01], 349.92, 329.81)).toBe(349.92); // single close → no [-2]
     expect(resolvePrevClose(null, [], null, 329.81)).toBe(329.81);         // nothing → price (change1d=0)
+  });
+});
+
+// ─── hysteresis: held names retained past the buy-cutoff (anti-churn) ─────────
+
+describe("hysteresis: buildV1Shortlist retention band for held names", () => {
+  // 14 quality-eligible names with descending momentum. Buy shortlist is top-12; a held name
+  // ranked #13 (still positive momentum) must be RETAINED, not dropped — that drop is what caused
+  // the ILMN↔INCY churn (sold at 65% momentum as "decayed", rebought at 65% the next day).
+  const stocks = Array.from({ length: 14 }, (_, i) => ({
+    symbol: `S${i}`, price: 100, mom12_1: 100 - i * 5, // S0=100% … S13=35%, all positive
+    beta: 1, change1d: 0, change5d: 0, change14d: 0, change30d: 0, distFrom52wHigh: 0,
+    volatility30d: 0.2, sharpe5d: 0, sharpe14d: 0, relStrength1d: 0, earningsDate: null,
+  })) as unknown as import("@/lib/market-data").StockData[];
+  const eligible = new Set(stocks.map((s) => s.symbol));
+
+  it("a held name below the buy-cutoff is NOT in the buy-allowlist (buy list stays top-12)", () => {
+    const { buy } = buildV1Shortlist(stocks, eligible, { shortlistSize: 12, held: new Set(["S13"]) });
+    expect(buy.map((s) => s.symbol)).not.toContain("S13"); // render-only → not buyable
+  });
+
+  it("RETAINS a held name below the buy-cutoff (still positive momentum) as render-only", () => {
+    const { retained } = buildV1Shortlist(stocks, eligible, { shortlistSize: 12, held: new Set(["S13"]) });
+    expect(retained.map((s) => s.symbol)).toContain("S13"); // ◆HELD → retained, not churned
+  });
+
+  it("does NOT retain a held name whose momentum went negative (genuine decay → sell)", () => {
+    const decayed = stocks.map((s) => s.symbol === "S13" ? { ...s, mom12_1: -3 } : s);
+    const { buy, retained } = buildV1Shortlist(decayed, eligible, { shortlistSize: 12, held: new Set(["S13"]) });
+    expect([...buy, ...retained].map((s) => s.symbol)).not.toContain("S13"); // real decay: in neither list
+  });
+
+  it("marks retained holdings ◆HELD in the rendered table", () => {
+    const { buy, retained } = buildV1Shortlist(stocks, eligible, { shortlistSize: 12, held: new Set(["S13"]) });
+    const table = formatV1Shortlist([...buy, ...retained], {}, {}, {}, new Set(["S13"]));
+    expect(table).toMatch(/S13.*◆HELD/);
   });
 });
 

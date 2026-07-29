@@ -236,27 +236,42 @@ export function momentumScore(changePct: number, tradingDays: number, annualized
 // pick from: quality-eligible names with POSITIVE 12-1 momentum, ranked by that momentum, capped so no
 // sector exceeds the 40% cap of an N-name book. Because the shortlist itself is sector-capped, ANY N the
 // LLM picks from it respects the 40% cap by construction. See docs/strategy-quality-momentum.md.
+// Returns two lists with DIFFERENT roles (kept separate deliberately):
+//   buy      = the sector-capped top-`size` candidates. This is the BUY-ALLOWLIST — the ONLY names
+//              the main book may buy/add — and it stays sector-capped-by-construction, so buys still
+//              respect the 40% cap. The degenerate-data floor check must count THIS list only.
+//   retained = HELD names still eligible with positive momentum that got squeezed below the buy
+//              cutoff. RENDER-ONLY (marked ◆HELD) — shown to the LLM so it does NOT churn-sell them,
+//              but NOT buyable (kept out of the buy-allowlist so they can't bypass the sector cap or
+//              the influencer downtrend guard). A held name whose momentum went ≤0 or lost quality-
+//              eligibility is not in `ranked`, so it appears in NEITHER list → a genuine sell candidate.
+// Hysteresis rationale: without retention, held names jostling at the rank cutoff get sold and rebought
+// on daily momentum noise (the ILMN↔INCY 2026-07-28/29 whipsaw: sold at 65% momentum as "decayed",
+// rebought at 65% the next day). No rank cap on retention — any held name still trending up is kept.
 export function buildV1Shortlist(
   stocks: StockData[],
   eligible: Set<string>,
-  opts: { N?: number; shortlistSize?: number } = {},
-): StockData[] {
+  opts: { N?: number; shortlistSize?: number; held?: Set<string> } = {},
+): { buy: StockData[]; retained: StockData[] } {
   const N = opts.N ?? 6;
   const maxPerSector = Math.max(1, Math.floor(0.4 * N)); // N=6 → 2/sector
   const size = opts.shortlistSize ?? 12;
+  const held = opts.held ?? new Set<string>();
   const ranked = stocks
     .filter((s) => typeof s.mom12_1 === "number" && (s.mom12_1 as number) > 0 && eligible.has(s.symbol))
     .sort((a, b) => (b.mom12_1 as number) - (a.mom12_1 as number));
-  const picked: StockData[] = [];
+  const buy: StockData[] = [];
   const perSector: Record<string, number> = {};
   for (const s of ranked) {
-    if (picked.length >= size) break;
+    if (buy.length >= size) break;
     const sec = STOCK_SECTOR[s.symbol] ?? "?";
     if ((perSector[sec] ?? 0) >= maxPerSector) continue;
-    picked.push(s);
+    buy.push(s);
     perSector[sec] = (perSector[sec] ?? 0) + 1;
   }
-  return picked;
+  const buySet = new Set(buy.map((s) => s.symbol));
+  const retained = ranked.filter((s) => held.has(s.symbol) && !buySet.has(s.symbol));
+  return { buy, retained };
 }
 
 // Renders the V1 shortlist as a compact table for the analysis prompt. quality is the SEC-derived
@@ -266,6 +281,7 @@ export function formatV1Shortlist(
   quality: Record<string, { quality: number }>,
   insiderBuys: Record<string, InsiderBuy[]> = {},
   analystRatings: Record<string, AnalystRating[]> = {},
+  held: Set<string> = new Set(),
 ): string {
   // Re-surface the insider + analyst signals we fetch every run but V1 had dropped
   // from this table. Context flags — the model weighs them among the shortlist (a
@@ -290,9 +306,12 @@ export function formatV1Shortlist(
   const rows = shortlist.map((s) => {
     const q = quality[s.symbol]?.quality;
     const earn = s.earningsDate ? `  ⚠EARN ${s.earningsDate}` : "";
-    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${insFlag(s.symbol)}${analystFlag(s.symbol)}`;
+    // ◆HELD marks a name you currently hold that is still eligible + positive-momentum. It is
+    // RETAINED by the hysteresis band even if it slipped below the top buy names — do NOT rotate it.
+    const heldFlag = held.has(s.symbol) ? " ◆HELD" : "";
+    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${heldFlag}${insFlag(s.symbol)}${analystFlag(s.symbol)}`;
   });
-  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d]\n${rows.join("\n")}`;
+  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ◆HELD = a current holding retained by the hysteresis band (still positive momentum — do NOT rotate it out just for ranking below newer names) · ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d]\n${rows.join("\n")}`;
 }
 
 async function fetchQuote(symbol: string): Promise<(StockData & { _closes: number[] }) | null> {

@@ -126,8 +126,10 @@ export async function GET(request: Request) {
       const dryEligible = dryQuality
         ? new Set(Object.entries(dryQuality.scores).filter(([, v]) => v.eligible).map(([s]) => s))
         : new Set(marketData.stocks.map(s => s.symbol));
-      const dryShortlist = buildV1Shortlist(marketData.stocks, dryEligible);
-      const dryShortlistTable = formatV1Shortlist(dryShortlist, dryQuality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings);
+      const dryInfluencerHeld = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
+      const dryHeldMain = new Set((previousRun?.positions ?? []).map(p => p.symbol).filter(s => !dryInfluencerHeld.has(s)));
+      const { buy: dryBuy, retained: dryRetained } = buildV1Shortlist(marketData.stocks, dryEligible, { held: dryHeldMain });
+      const dryShortlistTable = formatV1Shortlist([...dryBuy, ...dryRetained], dryQuality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, dryHeldMain);
 
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
@@ -144,7 +146,7 @@ export async function GET(request: Request) {
 
       // Apply the same influencer cap + downtrend guard the real run uses (display only)
       const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !decision.sells.some(s => s.symbol === p.symbol)).length;
-      const dryShortlistSet = new Set(dryShortlist.map(s => s.symbol));
+      const dryShortlistSet = new Set(dryBuy.map(s => s.symbol)); // buy-allowlist (retained ◆HELD names excluded)
       const dryInfluencerCandidates = new Set(influencerMomentum.keys());
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) => b.strategy === "influencer" || (dryInfluencerCandidates.has(b.symbol) && !dryShortlistSet.has(b.symbol));
       const annotatedBuys = decision.buys.map(b => {
@@ -290,10 +292,15 @@ export async function GET(request: Request) {
     const eligible = quality
       ? new Set(Object.entries(quality.scores).filter(([, v]) => v.eligible).map(([s]) => s))
       : new Set(marketData.stocks.map(s => s.symbol));
-    const v1Shortlist = buildV1Shortlist(marketData.stocks, eligible);
-    const v1ShortlistSet = new Set(v1Shortlist.map(s => s.symbol));
-    const shortlistTable = formatV1Shortlist(v1Shortlist, quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings);
-    console.log("V1_SHORTLIST", { n: v1Shortlist.length, qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Shortlist.map(s => s.symbol) });
+    // Held MAIN-book names (exclude the influencer sleeve, which has its own rails) — fed to the
+    // shortlist so the hysteresis band retains them and the table marks them ◆HELD.
+    const influencerHeld = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
+    const heldMainSymbols = new Set((portfolioCtx?.positions ?? []).map(p => p.symbol).filter(s => !influencerHeld.has(s)));
+    // buy = the sector-capped buy-allowlist; retained = ◆HELD render-only names (not buyable).
+    const { buy: v1Buy, retained: v1Retained } = buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols });
+    const v1ShortlistSet = new Set(v1Buy.map(s => s.symbol)); // buy-allowlist — retained names excluded on purpose
+    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols);
+    console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
 
     // ── V1 DEGENERATE-DATA GUARD ──────────────────────────────────────────────
     // If the universe fetch came back badly partial (Yahoo throttling on the heavier 2y fetch) or the
@@ -301,13 +308,15 @@ export async function GET(request: Request) {
     // rotation/liquidation. Skip the run, leaving the existing book (and its −5% stops) untouched.
     const UNIVERSE_FLOOR = 350;   // normal ~432
     const SHORTLIST_FLOOR = 4;    // normal ~12
-    if (marketData.stocks.length < UNIVERSE_FLOOR || v1Shortlist.length < SHORTLIST_FLOOR) {
-      console.error("V1_DEGENERATE_DATA_SKIP", { universe: marketData.stocks.length, shortlist: v1Shortlist.length });
+    // Count the BUY candidates only — retained ◆HELD names must not pad this floor (they could
+    // mask a collapsed opportunity set and let the run trade on degenerate data).
+    if (marketData.stocks.length < UNIVERSE_FLOOR || v1Buy.length < SHORTLIST_FLOOR) {
+      console.error("V1_DEGENERATE_DATA_SKIP", { universe: marketData.stocks.length, shortlist: v1Buy.length });
       await sendAlert(
         `⚠️ V1 skipped trading — degenerate market data (${today})`,
-        `Universe=${marketData.stocks.length} (floor ${UNIVERSE_FLOOR}), shortlist=${v1Shortlist.length} (floor ${SHORTLIST_FLOOR}). Likely a Yahoo/SEC hiccup, not a real signal. Skipped the run to avoid a data-driven mass rotation; existing book untouched.`
+        `Universe=${marketData.stocks.length} (floor ${UNIVERSE_FLOOR}), shortlist=${v1Buy.length} (floor ${SHORTLIST_FLOOR}). Likely a Yahoo/SEC hiccup, not a real signal. Skipped the run to avoid a data-driven mass rotation; existing book untouched.`
       ).catch(() => {});
-      return Response.json({ skipped: true, reason: "degenerate market data", universe: marketData.stocks.length, shortlist: v1Shortlist.length });
+      return Response.json({ skipped: true, reason: "degenerate market data", universe: marketData.stocks.length, shortlist: v1Buy.length });
     }
 
     const runTimestamp = new Date().toISOString();
