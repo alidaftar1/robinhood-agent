@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeBookBeta } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -374,12 +374,27 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // (computeBeta) is kept in risk-metrics for a possible future "realized so far" secondary,
   // but is too noisy over a handful of days to headline — see 2026-07-04 discussion. Shows
   // "—" until a run carries one (older runs predate the field); never falls back to a stale day.
-  const bookBeta = current?.bookBeta ?? null;
+  // This panel is scoped to the MAIN BOOK — the influencer sleeve has its own risk card below,
+  // and its picks (PLTR/BTC) have no β in our data, so including them only fabricated a fake-1.0
+  // β and blended two unrelated strategies. Split out the influencer holdings here.
+  const influencerSyms = new Set((current?.influencerPositions ?? []).map(p => p.symbol));
+  const mainPositions = (current?.positions ?? []).filter(p => !influencerSyms.has(p.symbol));
+  // Main-book book β: recompute over the main holdings only, using the stored per-name βs
+  // (bySymbol holds exactly the known-β names, which are the main names). Drops the fake-1.0
+  // influencer contribution that was pulling the whole-book number off.
+  const storedBetaBySymbol = current?.bookBeta?.bySymbol ?? {};
+  const bookBeta = mainPositions.length > 0
+    ? computeBookBeta(
+        mainPositions.map(p => ({ symbol: p.symbol, value: parseFloat(p.quantity) * parseFloat(p.price) })),
+        s => storedBetaBySymbol[s],
+      )
+    : null;
   const t1Settling = current ? computeT1Settling(current) : null;
-  const concentration = current ? computeConcentration(current) : null;
-  // Max drawdown over the same co-indexed window for both series
-  const ddPoints = returnSeries.filter(p => p.agentic != null);
-  const agentDrawdown = computeMaxDrawdown(ddPoints.map(p => p.agentic!) as number[]);
+  const concentration = current ? computeConcentration({ ...current, positions: mainPositions }) : null;
+  // Worst Drop = the MAIN book's own equity-curve drawdown (not the blended account), over the
+  // same co-indexed window as SPY for a fair market comparison.
+  const ddPoints = returnSeries.filter(p => p.main != null);
+  const mainDrawdown = computeMaxDrawdown(ddPoints.map(p => p.main!) as number[]);
   const spyDrawdown = computeMaxDrawdown(ddPoints.filter(p => p.spy != null).map(p => p.spy!) as number[]);
 
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
@@ -575,7 +590,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
 
       {latest && (cashPct != null || sectorBreakdown.length > 0 || bookBeta) && (
         <div style={s.chartCard}>
-          <div style={s.chartTitle}>How risky is it? — a look under the hood</div>
+          <div style={s.chartTitle}>How risky is the main book? — a look under the hood <span style={{ color: "#666", fontWeight: 400, fontSize: 12 }}>· the influencer sleeve has its own risk card above</span></div>
           <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginBottom: sectorBreakdown.length > 0 ? 20 : 0 }}>
             <div style={{ ...s.perfStat, minWidth: 160 }}>
               <Tip style={s.perfLabel} label="Cash on Hand" def="Cash that's settled and ready to trade right now, as a % of the account. Does not include money from recent sales that hasn't cleared yet." />
@@ -596,7 +611,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 170 }}>
-              <Tip style={s.perfLabel} label="Swings vs. Market" def="Beta: how much the account tends to move with the market, based on what it currently holds. 1.0 = moves with the market; above 1 = bigger swings; below 1 = smaller swings." />
+              <Tip style={s.perfLabel} label="Swings vs. Market" def="Beta: how much the main book tends to move with the market, based on its current holdings (the influencer picks are excluded — they have no reliable beta). 1.0 = moves with the market; above 1 = bigger swings; below 1 = smaller swings; negative = moves opposite." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
                 {bookBeta ? `${bookBeta.beta.toFixed(2)}×` : "—"}
               </span>
@@ -605,16 +620,16 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <Tip style={s.perfLabel} label="Worst Drop" def="Max drawdown: the biggest drop from a high point to a low point over the period tracked. Lower is better." />
-              <span style={{ ...s.perfValue, color: agentDrawdown != null && spyDrawdown != null && agentDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
-                {agentDrawdown != null ? `−${agentDrawdown.toFixed(2)}%` : "—"}
+              <Tip style={s.perfLabel} label="Worst Drop" def="Max drawdown: the biggest drop from a high point to a low point the main book has suffered. Lower is better." />
+              <span style={{ ...s.perfValue, color: mainDrawdown != null && spyDrawdown != null && mainDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
+                {mainDrawdown != null ? `−${mainDrawdown.toFixed(2)}%` : "—"}
               </span>
               <span style={s.perfSince}>
                 {spyDrawdown != null ? `biggest fall from a high · market −${spyDrawdown.toFixed(2)}%` : "biggest fall from a high point"}
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <Tip style={s.perfLabel} label="Biggest Bet" def="How much of the account sits in its single biggest stock. A high number means more risk if that one stock drops." />
+              <Tip style={s.perfLabel} label="Biggest Bet" def="How much of the main book sits in its single biggest stock. A high number means more risk if that one stock drops." />
               <span style={{ ...s.perfValue, color: concentration && concentration.largestPct > 25 ? "#e8943a" : "#e5e5e5" }}>
                 {concentration ? `${concentration.largestPct.toFixed(0)}%` : "—"}
               </span>
