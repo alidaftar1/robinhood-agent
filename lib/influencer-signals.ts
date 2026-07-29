@@ -239,22 +239,30 @@ async function fetchTranscript(videoId: string): Promise<string | null> {
   if (!key) return null;
   const cached = await transcriptCacheGet(videoId);
   if (cached !== null) return cached === "" ? null : cached; // cache hit ("" = known-none)
-  try {
-    const res = await fetch(
-      `https://api.supadata.ai/v1/transcript?url=https://youtu.be/${videoId}`,
-      { headers: { "x-api-key": key }, signal: AbortSignal.timeout(20000) },
-    );
-    if (!res.ok) return null; // transient / quota — do NOT cache, retry next run
-    const data = await res.json() as { content?: Array<{ text?: string }> | string };
-    const text = typeof data.content === "string"
-      ? data.content
-      : (data.content ?? []).map((s) => s.text ?? "").join(" ");
-    const clean = text.replace(/\s+/g, " ").trim().slice(0, TRANSCRIPT_CHAR_CAP);
-    await transcriptCacheSet(videoId, clean); // cache the success (incl "" = no transcript)
-    return clean || null;
-  } catch {
-    return null;
+  const url = `https://api.supadata.ai/v1/transcript?url=https://youtu.be/${videoId}`;
+  // Retry on 429 with backoff: the free tier is 1 req/sec, and we fetch a batch concurrently,
+  // so most of a batch gets rate-limited on the first try — back off instead of dropping the
+  // video. (Whatever slips through still gets cached, so coverage also converges across runs.)
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { "x-api-key": key }, signal: AbortSignal.timeout(20000) });
+      if (res.status === 429) {
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+        continue;
+      }
+      if (!res.ok) return null; // other transient error — don't cache, retry next run
+      const data = await res.json() as { content?: Array<{ text?: string }> | string };
+      const text = typeof data.content === "string"
+        ? data.content
+        : (data.content ?? []).map((s) => s.text ?? "").join(" ");
+      const clean = text.replace(/\s+/g, " ").trim().slice(0, TRANSCRIPT_CHAR_CAP);
+      await transcriptCacheSet(videoId, clean); // cache the success (incl "" = no transcript)
+      return clean || null;
+    } catch {
+      return null; // timeout / network — don't cache
+    }
   }
+  return null; // exhausted 429 retries
 }
 
 interface ExtractedSignal {
