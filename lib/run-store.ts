@@ -167,6 +167,115 @@ function unionTrades(a: TradeSnapshot[], b: TradeSnapshot[]): TradeSnapshot[] {
   return out;
 }
 
+/** One sell record that a same-date run RE-RECORDED — the same real fill written twice
+ *  with two different price estimates, which unionTrades can't collapse. */
+export interface ReRecordedSell {
+  date: string;
+  symbol: string;
+  quantity: string;
+  keptPrice: string;    // the record we keep (highest-confidence state)
+  droppedPrice: string; // the phantom twin
+  phantomProceeds: number; // dollars the duplicate adds to the day's tradeNetCash
+  dropKey: string;      // `${date}|${tradeKey}` of the record to drop
+}
+
+// Confidence in a recorded fill's price, best first. drop-check overwrites a sell's
+// avgPrice with the detection-pass QUOTE while the trade route / earnings-exit keep the
+// model's self-reported number, so two runs observing the same fill land on two different
+// prices — and a "filled" report is closer to the real fill than a pre-fill "submitted" one.
+function sellConfidence(t: TradeSnapshot): number {
+  if (t.state === "filled") return 0;
+  if (t.state === "submitted") return 1;
+  return 2; // "inferred" and anything else — weakest
+}
+
+// A day cannot sell more shares of a symbol than it could possibly have held: the
+// start-of-day holding plus whatever it bought that day. When two same-date runs each
+// record the SAME real fill (an intraday exit run places the sell; a later run's
+// PORTFOLIO_SNAPSHOT reports the day's trades again, or the exit re-fires), the two
+// records differ only in avgPrice/state — so tradeKey sees two distinct fills, unionTrades
+// keeps both, and computeDailyReturn double-counts the proceeds as pure phantom P&L.
+//
+// TER on 2026-07-27: ONE real 1-share sell (live Robinhood: filled @ $327.74) was stored
+// twice — @ $327.94 "filled" and @ $328.73 "submitted" — against a position that started
+// the day at ZERO shares and was bought that morning (ceiling = 1). The extra $328.73 of
+// sell proceeds turned a true −0.08% day into +13.27% with a phantom −$331.57 "withdrawal".
+// Under the autopilot's 30% extreme-return threshold, so nothing flagged it; the day's
+// return was cleared instead (returnLocked) — a permanent hole in the compounded record.
+//
+// Deliberately narrow: a record is dropped ONLY when (a) the day's recorded sells for that
+// symbol exceed the provable ceiling, AND (b) it is a same-QUANTITY twin of a record we
+// keep. Genuine partial fills (10 + 7 of 17 held) never exceed the ceiling; a lone sell
+// against a stale/incomplete prior snapshot has no twin, so a wrong ceiling can't delete
+// real history. Returns [] when there is no earlier snapshot to derive a ceiling from.
+export function findReRecordedSells(runsNewestFirst: TradeRun[]): ReRecordedSell[] {
+  const byDate = new Map<string, TradeRun[]>();
+  for (const r of runsNewestFirst) {
+    const arr = byDate.get(r.date);
+    if (arr) arr.push(r); else byDate.set(r.date, [r]);
+  }
+
+  const out: ReRecordedSell[] = [];
+  for (const [date, dayRuns] of byDate) {
+    // The day's trades exactly as mergeRunsByDate would union them (same identity rule).
+    const trades: TradeSnapshot[] = [];
+    const seen = new Set<string>();
+    for (const r of dayRuns) {
+      for (const t of r.trades ?? []) {
+        const k = tradeKey(t);
+        if (!seen.has(k)) { seen.add(k); trades.push(t); }
+      }
+    }
+
+    // Start-of-day holdings = newest snapshot from an EARLIER date (getPreviousDayRun
+    // semantics). No prior snapshot → no provable ceiling → leave the day alone.
+    const prev = runsNewestFirst.find(r => r.date < date && (r.positions?.length ?? 0) > 0);
+    if (!prev) continue;
+    const qtyOf = (s: string) => parseFloat(s) || 0;
+    const held = new Map(prev.positions.map(p => [p.symbol, qtyOf(p.quantity)]));
+
+    const bought = new Map<string, number>();
+    const sellsBySymbol = new Map<string, TradeSnapshot[]>();
+    for (const t of trades) {
+      if (t.side === "buy") bought.set(t.symbol, (bought.get(t.symbol) ?? 0) + qtyOf(t.quantity));
+      else if (t.side === "sell") {
+        const arr = sellsBySymbol.get(t.symbol);
+        if (arr) arr.push(t); else sellsBySymbol.set(t.symbol, [t]);
+      }
+    }
+
+    for (const [symbol, sells] of sellsBySymbol) {
+      const ceiling = (held.get(symbol) ?? 0) + (bought.get(symbol) ?? 0);
+      let excess = sells.reduce((s, t) => s + qtyOf(t.quantity), 0) - ceiling;
+      if (excess <= 1e-9) continue; // sells fit what was sellable — nothing to prove
+
+      // Keep the highest-confidence records; stable on the union order for ties.
+      const ranked = sells
+        .map((t, i) => ({ t, i }))
+        .sort((a, b) => sellConfidence(a.t) - sellConfidence(b.t) || a.i - b.i);
+      const keptQtys: number[] = [];
+      for (const { t } of ranked) {
+        const qty = qtyOf(t.quantity);
+        const twin = excess > 1e-9 && qty <= excess + 1e-9
+          ? ranked.find(r => r.t !== t && qtyOf(r.t.quantity) === qty && keptQtys.includes(qtyOf(r.t.quantity)))
+          : undefined;
+        if (twin) {
+          out.push({
+            date, symbol, quantity: t.quantity,
+            keptPrice: twin.t.avgPrice, droppedPrice: t.avgPrice,
+            phantomProceeds: qty * (parseFloat(t.avgPrice) || 0),
+            dropKey: `${date}|${tradeKey(t)}`,
+          });
+          excess -= qty;
+          continue;
+        }
+        keptQtys.push(qty);
+      }
+    }
+  }
+  return out;
+}
+
 // Picks which of two same-date runs is the canonical record. A day can hold both
 // the main daily-trade run AND a thin intraday secondary run (stop-loss /
 // drop-check / earnings-exit). The OLD dedup kept whichever had the later
@@ -231,6 +340,17 @@ function reconcilePositions(run: TradeRun): TradeRun {
 // history, then reconciles positions against the day's sells (see
 // reconcilePositions). Pure + side-effect free so it can be unit-tested without Redis.
 export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
+  // Provably-impossible sell records (the same fill written twice by two same-date runs).
+  // Dropped BEFORE reconcilePositions so the position reconciliation and every downstream
+  // return calc see one record per real fill. Never silent — logged for the Vercel logs,
+  // and surfaced in the 8am email by dashboard-reconcile's re-recorded-sell check.
+  const reRecorded = findReRecordedSells(all);
+  const dropKeys = new Set(reRecorded.map(d => d.dropKey));
+  if (reRecorded.length > 0) {
+    console.warn("RE_RECORDED_SELL_DROPPED", reRecorded.map(d =>
+      `${d.date} ${d.symbol} x${d.quantity} @${d.droppedPrice} (duplicate of @${d.keptPrice}, +$${d.phantomProceeds.toFixed(2)} phantom proceeds)`));
+  }
+
   const byDate = new Map<string, TradeRun>();
   // Track the most-recent NON-EMPTY positions snapshot per date, keyed off the
   // ORIGINAL run timestamps (not the merged base's, which carries preferRun's
@@ -281,6 +401,9 @@ export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
     }
   }
   return [...byDate.values()]
+    .map(r => dropKeys.size === 0
+      ? r
+      : { ...r, trades: (r.trades ?? []).filter(t => !dropKeys.has(`${r.date}|${tradeKey(t)}`)) })
     .map(reconcilePositions)
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 }

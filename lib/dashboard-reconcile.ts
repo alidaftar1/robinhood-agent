@@ -1,4 +1,4 @@
-import { mergeRunsByDate, type TradeRun } from "./run-store";
+import { findReRecordedSells, mergeRunsByDate, type TradeRun } from "./run-store";
 import { SP500_UNIVERSE } from "./strategy";
 
 // Deterministic audit of the DASHBOARD's derived state — the one layer no other reviewer looks
@@ -70,6 +70,22 @@ export function reconcileDashboard(runsNewestFirst: TradeRun[]): ReconcileFindin
       severity: "medium",
       title: "Held position priced at cost basis (not marked to market)",
       detail: `${costBasisPriced.map(p => p.symbol).join(", ")} — snapshot price equals avgCost on a day the name was NOT bought, so the price likely fell back to cost basis instead of the live market price. This injects a phantom day-over-day move into the sleeve returns. Fix: /api/debug?patchPositionPrice=${latest.date}:SYM:REAL_PRICE then ?recomputeSleeves=1 (enrichPriceMap should prevent recurrence).`,
+    });
+  }
+
+  // 4. A same-day sell recorded TWICE (the same real fill written by two runs at two price
+  //    estimates). mergeRunsByDate now drops the phantom twin, but the drop must never be
+  //    silent: without it the duplicated proceeds land in tradeNetCash as pure phantom P&L
+  //    (TER 2026-07-27: +$328.73 → a true −0.08% day computed as +13.27%, under the 30%
+  //    extreme-return threshold, so the day's return was cleared instead of corrected).
+  //    Detected on the RAW runs — provably impossible (more shares sold than could be held),
+  //    so no false positives; it only reports what the merge already fixed.
+  const reRecorded = findReRecordedSells(runsNewestFirst);
+  if (reRecorded.length > 0) {
+    findings.push({
+      severity: "high",
+      title: "Same-day sell recorded twice (duplicate fill)",
+      detail: `${reRecorded.map(d => `${d.date} ${d.symbol} x${d.quantity} stored at both $${d.keptPrice} and $${d.droppedPrice} (only $${d.keptPrice} is real)`).join("; ")}. More shares recorded sold than could be held, so an intraday exit's fill was recorded twice — $${reRecorded.reduce((s, d) => s + d.phantomProceeds, 0).toFixed(2)} of phantom sell proceeds. The merge drops the duplicate; if a date's return was already cleared over this, recompute it (/api/debug?patchDate=DATE — needs the returnLocked flag cleared first). Check the Vercel logs for that date: if TWO exit runs each placed a sell order, the exit path needs an idempotency guard, not just this record fix.`,
     });
   }
 
