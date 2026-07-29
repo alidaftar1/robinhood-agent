@@ -222,8 +222,10 @@ export function computeStockBeta(stockCloses: number[], spyCloses: number[]): nu
 //   0.5 = HALF penalty (current) — a deliberate tilt toward higher-beta names so the book
 //         captures more of the market's green days, while keeping some risk adjustment
 //   0.0 = pure raw-momentum (chases the biggest movers; highest beta, riskiest)
-// Tune toward 1.0 to calm it down, toward 0.0 to get more aggressive. Watch the dashboard
-// beta tile — aim for ~0.9–1.0, not >1.2. (2026-06-30: lowered 1.0→0.5 per owner.)
+// Tune toward 1.0 to calm it down, toward 0.0 to get more aggressive. (2026-06-30: lowered
+// 1.0→0.5 per owner.) NOTE: this k knob affects the momentum-scoring vol penalty only — it is
+// NOT a book-β target. V1 does NOT target a book β (the β-regime overlay was retired 2026-07);
+// low/negative book β is expected (APA's inverse β). Do not read "aim for ~0.9–1.0" here.
 export const VOL_PENALTY_EXP = 0.5;
 
 export function momentumScore(changePct: number, tradingDays: number, annualizedVolPct: number): number {

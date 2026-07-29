@@ -68,10 +68,10 @@ export interface TradeRun {
    *  silent: the skeptical-reviewer and 8am email can cite the exact sizing reason instead of
    *  inferring it from idle cash. Absent when no sizing adjustment was needed. (2026-07-06) */
   buySizingAdjustments?: string[];
-  /** Market regime at trade time (β-overlay trial, 2026-07-06): is SPY above (riskOn) or below its
-   *  ~100-day average? Drives the day's book-β target (risk-on → ~1.0–1.3 to capture upside;
-   *  risk-off → ~0.4 defensive). Stored so we can review the experiment — did the book β actually
-   *  follow the regime, and did risk-on days capture the market. null when the signal was unavailable. */
+  /** Market regime at trade time: is SPY above (riskOn) or below its ~100-day average? RETIRED as a
+   *  β target — the β-regime overlay trial (2026-07-06) ended; V1 does NOT target a book β, and low/
+   *  negative β is expected (APA's inverse β). This field is now INFORMATIONAL only (still fed to the
+   *  drop-check sympathy judgment as a risk-on/off signal). null when the signal was unavailable. */
   regime?: { riskOn: boolean; spy: number; ma: number } | null;
   // Influencer sub-portfolio (added 2026-06-18)
   influencerPositions?: PositionSnapshot[];
