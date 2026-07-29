@@ -26,7 +26,12 @@ concurrency:
 jobs:
   autopilot:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 45 (was 25): the 07-27 and 07-28 runs were both killed mid-diagnosis at the 25-min cap
+    # (started ~15:01 UTC, cancelled ~15:26) before the email/journal steps — so no report went
+    # out those days. Diagnose + build-a-proposal (evals, tsc, build, dry-run, push, PR) needs
+    # more runway. --max-turns 50 still bounds a runaway. (The bot token can't push workflow
+    # changes — no `workflows` scope — so this had to be edited + pushed locally.)
+    timeout-minutes: 45
     env:
       APP_URL: https://robinhood-agent.vercel.app
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
