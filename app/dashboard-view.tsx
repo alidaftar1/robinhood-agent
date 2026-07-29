@@ -365,20 +365,16 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
 
   const cashPct = current ? computeCashPct(current) : null;
   const sectorBreakdown = current ? computeSectorBreakdown(current) : [];
-  // β-bucket view — how the book splits by market-swing risk, which the sector mix can't show
-  // (different sectors, same high-β growth risk). Empty until a run persists per-name β.
-  const betaBreakdown = current ? computeBetaBreakdown(current) : [];
-  // "Swings vs. Market" = holdings-based book β stored on `current` — the SAME run that drives
-  // the cash/sector stats on this card, so β always matches the holdings shown beside it (no
-  // stale-β-vs-fresh-positions mismatch). Meaningful from day one; the realized-regression β
-  // (computeBeta) is kept in risk-metrics for a possible future "realized so far" secondary,
-  // but is too noisy over a handful of days to headline — see 2026-07-04 discussion. Shows
-  // "—" until a run carries one (older runs predate the field); never falls back to a stale day.
   // This panel is scoped to the MAIN BOOK — the influencer sleeve has its own risk card below,
   // and its picks (PLTR/BTC) have no β in our data, so including them only fabricated a fake-1.0
-  // β and blended two unrelated strategies. Split out the influencer holdings here.
+  // β, an "Unknown" β-bucket, and blended two unrelated strategies. Split the influencer holdings
+  // out up front so EVERY metric here (β, β-breakdown, concentration) is main-book-only.
   const influencerSyms = new Set((current?.influencerPositions ?? []).map(p => p.symbol));
   const mainPositions = (current?.positions ?? []).filter(p => !influencerSyms.has(p.symbol));
+  const mainRun = current ? { ...current, positions: mainPositions } : null;
+  // β-bucket view — how the book splits by market-swing risk (main holdings only, so no
+  // "Unknown" bucket from the β-less influencer picks). Empty until a run persists per-name β.
+  const betaBreakdown = mainRun ? computeBetaBreakdown(mainRun) : [];
   // Main-book book β: recompute over the main holdings only, using the stored per-name βs
   // (bySymbol holds exactly the known-β names, which are the main names). Drops the fake-1.0
   // influencer contribution that was pulling the whole-book number off.
@@ -390,7 +386,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
       )
     : null;
   const t1Settling = current ? computeT1Settling(current) : null;
-  const concentration = current ? computeConcentration({ ...current, positions: mainPositions }) : null;
+  const concentration = mainRun ? computeConcentration(mainRun) : null;
   // Worst Drop = the MAIN book's own equity-curve drawdown (not the blended account), over the
   // same co-indexed window as SPY for a fair market comparison.
   const ddPoints = returnSeries.filter(p => p.main != null);
