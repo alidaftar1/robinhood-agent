@@ -422,12 +422,18 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
     }))
     .filter(s => s.tickers.length > 0 || (s.avoidTickers?.length ?? 0) > 0 || s.insight);
 
-  // Bullish counts weighted by confidence (the buy signal); bearish counts by mention (informational).
+  // BUY score weighted by conviction: high (explicit buy call) = 3, medium (holds/soft-positive) = 2,
+  // low (named but stance AMBIGUOUS) = 0 — a mere ambiguous mention is chatter, not a recommendation,
+  // so it must not accumulate into a buy signal. Avoids counted raw (1 each). See netScores() for how
+  // buy and avoid combine into the net conviction the sleeve buys on.
+  const CONF_WEIGHT: Record<string, number> = { high: 3, medium: 2, low: 0 };
   const tickerCounts: Record<string, number> = {};
   const avoidCounts: Record<string, number> = {};
   for (const sig of validatedSignals) {
-    const weight = sig.confidence === "high" ? 3 : sig.confidence === "medium" ? 2 : 1;
-    for (const t of sig.tickers) tickerCounts[t] = (tickerCounts[t] ?? 0) + weight;
+    const weight = CONF_WEIGHT[sig.confidence] ?? 0;
+    // weight>0 guard: a low-confidence-only ticker adds nothing AND shouldn't create a spurious
+    // 0-score entry (which would clutter the prompt list + email "Buys" with a non-buyable name).
+    if (weight > 0) for (const t of sig.tickers) tickerCounts[t] = (tickerCounts[t] ?? 0) + weight;
     for (const t of sig.avoidTickers ?? []) avoidCounts[t] = (avoidCounts[t] ?? 0) + 1;
   }
 
@@ -445,6 +451,22 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
 
 export async function getInfluencerSignals(): Promise<InfluencerCache | null> {
   return cacheGet();
+}
+
+// The buy threshold on the NET score. A pick qualifies for the sleeve at net ≥ 3.
+export const INFLUENCER_BUY_FLOOR = 3;
+
+// NET conviction per ticker = confidence-weighted BUY score − raw AVOID count. Nets creator
+// consensus against creator dissent so a name everyone agrees to buy outranks a contested one
+// (the per-video extractor already bars a single video from listing a ticker in both). This is
+// the ranking + buy-threshold signal — the single source of truth used by the analysis prompt
+// AND the attribution ledger. (Avoids are raw-counted for now; confidence-weighting them is a
+// future refinement, and channel-quality weighting waits on the ledger's forward-return data.)
+export function netScores(cache: InfluencerCache): Record<string, number> {
+  const net: Record<string, number> = {};
+  for (const [t, s] of Object.entries(cache.tickerCounts)) net[t] = s;
+  for (const [t, a] of Object.entries(cache.avoidCounts ?? {})) net[t] = (net[t] ?? 0) - a;
+  return net;
 }
 
 // Falling-knife screen for influencer picks. The signal measures popularity, not price
@@ -483,10 +505,13 @@ export function isInfluencerRecovering(m: MomentumSignal | undefined): boolean {
 export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>): string {
   if (!cache || cache.signals.length === 0) return "";
 
-  // Top tickers by weighted mention count
-  const sorted = Object.entries(cache.tickerCounts)
+  // Rank BUY-mentioned tickers by NET score (buy consensus − avoid dissent), highest first.
+  const net = netScores(cache);
+  const avoidOf = cache.avoidCounts ?? {};
+  const sorted = Object.keys(cache.tickerCounts)
+    .map((t) => [t, net[t] ?? 0] as [string, number])
     .sort(([, a], [, b]) => b - a)
-    .slice(0, 15);
+    .slice(0, 12); // matches the buy-allowlist slice in the trade route (shown ⇒ buyable)
 
   if (sorted.length === 0) return "";
 
@@ -505,7 +530,10 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     const momStr = mom != null
       ? ` 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${tag}`
       : "";
-    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(26)} score=${score}  channels: ${channels}`;
+    // Show the net score; when other creators warned against it, spell out the buy−avoid split.
+    const avoid = avoidOf[ticker] ?? 0;
+    const scoreStr = avoid > 0 ? `net=${score} (${cache.tickerCounts[ticker]} buy − ${avoid} avoid)` : `net=${score}`;
+    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(26)} ${scoreStr}  channels: ${channels}`;
   }).filter(Boolean).join("\n");
 
   if (!rows) return "";
@@ -518,11 +546,12 @@ allocated to following these creators' picks. It runs ALONGSIDE your main moment
 NOT instead of it. Do not skip it just because your momentum table looks better.
 
 ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
-• If ANY ticker below has score ≥ 3, you SHOULD buy 1–2 of them this run (target ~25% of the portfolio),
+• "net" = creator BUY consensus (confidence-weighted) MINUS any AVOID calls from other creators. A higher net = broader, less-contested agreement. When a row shows a "(X buy − Y avoid)" split, creators DISAGREE on it — treat it as weaker than a clean-consensus name of the same net.
+• If ANY ticker below has NET score ≥ 3, you SHOULD buy 1–2 of them this run (target ~25% of the portfolio),
   UNLESS every qualifying pick is disqualified (price above the per-position cap, ⚠⚠ imminent earnings, or no settled cash).
 • HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
 • Same per-position cap as the main strategy, min $50. Whole shares only.
-• Prefer the highest score; a score-6 pick is a strong, broadly-covered signal — do not ignore it.
+• Prefer the highest NET score; a net-6 pick is a strong, broadly-covered, uncontested signal — do not ignore it. Between two similar nets, prefer the one with NO avoid split (cleaner consensus).
 • DOWNTREND SCREEN: do NOT buy a pick marked ⛔DOWNTREND (down >${Math.abs(MOMENTUM_FLOOR_PCT)}% over 5d, OR >${Math.abs(DIST_FROM_HIGH_FLOOR)}% below its recent high). The row shows "5d:" (5-day change) and "hi:" (distance from recent high). These signals measure popularity, not price — a falling stock can be the most-talked-about one. The system rejects these buys anyway. A pick marked ↑RECOVERING dipped but has reclaimed its 5-day average (trend turned up) — it is allowed. Prefer a rising or ↑RECOVERING pick; never a ⛔DOWNTREND one.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".
 • Non-S&P-500 tickers here (e.g. SPCX, PLTR, COIN, HOOD) can ONLY be bought as influencer picks.

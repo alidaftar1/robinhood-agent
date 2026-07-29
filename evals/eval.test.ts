@@ -278,6 +278,26 @@ describe("prevClose fallback: null regularMarketPreviousClose does not fall to a
 
 // ─── position-cap top-up guard (concentration control) ───────────────────────
 
+describe("influencer scoring: net (buy − avoid) + low=0", () => {
+  const { netScores } = require("@/lib/influencer-signals");
+  const cache = (tickerCounts: Record<string, number>, avoidCounts: Record<string, number> = {}) =>
+    ({ refreshedAt: "2026-07-29", signals: [], tickerCounts, avoidCounts });
+
+  it("nets buy consensus against avoid dissent", () => {
+    const net = netScores(cache({ MU: 10, GOOGL: 10 }, { MU: 1 }));
+    expect(net.MU).toBe(9);     // 10 buy − 1 avoid
+    expect(net.GOOGL).toBe(10); // clean consensus untouched
+  });
+  it("drives a contested name below the buy floor", () => {
+    const net = netScores(cache({ X: 3 }, { X: 3 }));
+    expect(net.X).toBe(0); // 3 buy − 3 avoid → net 0 (< 3 floor → not buyable)
+  });
+  it("surfaces a net-bearish name (buy 0, avoided) as negative", () => {
+    const net = netScores(cache({}, { NVDA: 3 }));
+    expect(net.NVDA).toBe(-3);
+  });
+});
+
 describe("positionCapQty: per-position top-up guard", () => {
   const maxPos = 496; // ~20% of a $2481 book (the 2026-07-29 breach case)
   it("blocks a top-up that would push a position over the cap (ROST 07-29)", () => {

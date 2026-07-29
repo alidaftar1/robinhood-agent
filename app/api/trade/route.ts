@@ -6,7 +6,7 @@ import { buildSystemPrompt, buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDo
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
-import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, type MomentumSignal } from "@/lib/influencer-signals";
+import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, type MomentumSignal } from "@/lib/influencer-signals";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -205,10 +205,13 @@ export async function GET(request: Request) {
     const influencerMomentum = new Map<string, MomentumSignal>();
     const influencerCandidateSet = new Set<string>(); // symbols the LLM may buy as INFLUENCER picks (the rails allow these off-shortlist)
     if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
-      const topInfluencerTickers = Object.entries(influencerCache.tickerCounts)
-        .sort(([, a], [, b]) => b - a)
+      // Rank by NET score (buy − avoid), matching formatInfluencerSignals exactly, so every name the
+      // LLM is SHOWN is also in the buy-allowlist (no "shown but silently dropped" mismatch).
+      const inflNet = netScores(influencerCache);
+      const topInfluencerTickers = Object.keys(influencerCache.tickerCounts)
+        .sort((a, b) => (inflNet[b] ?? 0) - (inflNet[a] ?? 0))
         .slice(0, 12)
-        .map(([t]) => t);
+        .map((t) => t);
       topInfluencerTickers.forEach(t => influencerCandidateSet.add(t));
       const moms = await Promise.allSettled(topInfluencerTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
       for (const r of moms) {

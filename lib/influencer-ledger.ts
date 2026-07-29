@@ -17,15 +17,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { fetchQuoteLite } from "@/lib/market-data";
+import { netScores, INFLUENCER_BUY_FLOOR } from "@/lib/influencer-signals";
 import type { InfluencerCache } from "@/lib/influencer-signals";
 
 type Confidence = "high" | "medium" | "low";
 const CONF_RANK: Record<Confidence, number> = { low: 1, medium: 2, high: 3 };
 
 const LEDGER_KEY = "robinhood:influencer-ledger";
-// Only track picks that clear the same bar the sleeve buys on (score ≥ 3). Below that
-// the strategy never acts, so tracking it would just add noise to the channel stats.
-const MIN_SCORE = 3;
+// Track picks that clear the SAME bar the sleeve buys on: NET score (buy consensus − avoid
+// dissent) ≥ the buy floor. Kept in lock-step with the buy logic so the ledger measures exactly
+// what the strategy would act on. Below the floor the strategy never buys, so tracking would
+// just add noise to the channel stats.
+const MIN_SCORE = INFLUENCER_BUY_FLOOR;
 
 export interface LedgerPick {
   ticker: string;
@@ -124,9 +127,10 @@ export async function recordPicks(
   let recorded = 0;
   let updated = 0;
 
+  const net = netScores(cache); // buy consensus − avoid dissent — the actual buyable signal
   // Fetch baselines for genuinely-new qualifying tickers in parallel.
   const newTickers = [...byTicker.entries()].filter(
-    ([t]) => (cache.tickerCounts[t] ?? 0) >= MIN_SCORE && !ledger[t],
+    ([t]) => (net[t] ?? 0) >= MIN_SCORE && !ledger[t],
   );
   const prices = new Map(
     await Promise.all(
@@ -135,7 +139,7 @@ export async function recordPicks(
   );
 
   for (const [ticker, e] of byTicker) {
-    const score = cache.tickerCounts[ticker] ?? 0;
+    const score = net[ticker] ?? 0;
     if (score < MIN_SCORE) continue;
     const existing = ledger[ticker];
     if (existing) {
