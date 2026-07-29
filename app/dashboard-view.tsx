@@ -524,7 +524,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerDrawdown != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Max Drawdown" def="The biggest peak-to-trough drop the YouTube-picks slice suffered — how far it fell from its high point along the way. Bigger = wilder ride." />
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Worst Drop" def="The biggest fall from a high point to a low point the YouTube-picks slice suffered along the way. Bigger = wilder ride. (Technically, max drawdown.)" />
               <span style={{ ...s.perfValue, color: "#e8943a" }}>
                 −{influencerDrawdown.toFixed(2)}%
               </span>
@@ -533,11 +533,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Sharpe (annualized)" def="Return earned per unit of volatility — how well the slice is paid for the risk it takes. Above 1 is good; near 0 or negative means the swings aren't being rewarded. Small sample early." />
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) Above 1 is good; near 0 or negative means the swings aren't being rewarded. Small sample early." />
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>over {influencerSharpe.n} trading days</span>
+              <span style={s.perfSince}>higher = better paid · {influencerSharpe.n} days</span>
             </div>
           )}
           {influencerPositions.length > 0 && (
@@ -633,11 +633,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </div>
             {mainSharpe != null && (
               <div style={{ ...s.perfStat, minWidth: 175 }}>
-                <Tip style={s.perfLabel} label="Sharpe (annualized)" def="Return per unit of volatility for the current (V1 quality-momentum) strategy since the 07-09 switch. Above 1 is good, above 2 is strong; but this is a ~2-week sample, so read it as directional, not a verdict." />
+                <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) Above 1 is good, above 2 is strong; but this is a ~2-week sample, so read it as directional, not a verdict." />
                 <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                   {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
                 </span>
-                <span style={s.perfSince}>over {mainSharpe.n} days · small sample</span>
+                <span style={s.perfSince}>higher = better paid · {mainSharpe.n} days · small sample</span>
               </div>
             )}
             <div style={{ ...s.perfStat, minWidth: 175 }}>
