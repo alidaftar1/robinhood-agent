@@ -1,7 +1,7 @@
 import { refreshInfluencerSignals } from "@/lib/influencer-signals";
 import { recordPicks } from "@/lib/influencer-ledger";
 
-export const maxDuration = 120;
+export const maxDuration = 300; // transcripts (Supadata, incl. Whisper fallback) add latency per video
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");

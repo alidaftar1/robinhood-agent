@@ -206,6 +206,57 @@ const TICKER_ALIASES: Record<string, string> = {
   FACEBOOK: "META",
 };
 
+// ~2k tokens of transcript to Haiku — bounds cost and captures the intro + main thesis.
+const TRANSCRIPT_CHAR_CAP = 8000;
+const TRANSCRIPT_CACHE_TTL = 60 * 60 * 24 * 14; // 14d — a video ages out of the 7-day window well before this
+
+// Transcripts are immutable, and the 7-day refresh window re-sees the same videos daily, so cache
+// per videoId to avoid re-billing Supadata every run (cuts credit use ~5x → only NEW videos cost).
+// "" is a valid cached value = "known to have no transcript, don't re-fetch". null = not cached.
+async function transcriptCacheGet(videoId: string): Promise<string | null> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  try {
+    const res = await fetch(`${url}/get/robinhood:transcript:${videoId}`, { headers: { Authorization: `Bearer ${token}` } });
+    const json = await res.json() as { result: string | null };
+    return json.result;
+  } catch { return null; }
+}
+
+async function transcriptCacheSet(videoId: string, text: string): Promise<void> {
+  try {
+    await redisPost("pipeline", [["SET", `robinhood:transcript:${videoId}`, text, "EX", TRANSCRIPT_CACHE_TTL]]);
+  } catch { /* cache write is best-effort */ }
+}
+
+// Fetch a video's transcript via Supadata. Works from serverless IPs (Supadata proxies the
+// fetch from unblocked infra — direct YouTube caption scraping is blocked from datacenter IPs,
+// verified 0/22 in prod). Auto-Whispers videos with no captions. Fail-safe: returns null on any
+// error, timeout, or missing key → caller falls back to title+description.
+async function fetchTranscript(videoId: string): Promise<string | null> {
+  const key = process.env.SUPADATA_API_KEY;
+  if (!key) return null;
+  const cached = await transcriptCacheGet(videoId);
+  if (cached !== null) return cached === "" ? null : cached; // cache hit ("" = known-none)
+  try {
+    const res = await fetch(
+      `https://api.supadata.ai/v1/transcript?url=https://youtu.be/${videoId}`,
+      { headers: { "x-api-key": key }, signal: AbortSignal.timeout(20000) },
+    );
+    if (!res.ok) return null; // transient / quota — do NOT cache, retry next run
+    const data = await res.json() as { content?: Array<{ text?: string }> | string };
+    const text = typeof data.content === "string"
+      ? data.content
+      : (data.content ?? []).map((s) => s.text ?? "").join(" ");
+    const clean = text.replace(/\s+/g, " ").trim().slice(0, TRANSCRIPT_CHAR_CAP);
+    await transcriptCacheSet(videoId, clean); // cache the success (incl "" = no transcript)
+    return clean || null;
+  } catch {
+    return null;
+  }
+}
+
 interface ExtractedSignal {
   tickers: string[];                          // BUY / bullish
   confidence: "high" | "medium" | "low";      // conviction of the BUY list
@@ -218,20 +269,22 @@ async function extractSignal(
   title: string,
   description: string,
   channelName: string,
+  transcript: string | null,
 ): Promise<ExtractedSignal> {
   const EMPTY: ExtractedSignal = { tickers: [], confidence: "low", avoid: [], insight: "" };
   try {
-    // Title + description only. (A transcript path was tried but YouTube blocks caption fetches
-    // from serverless IPs — 0/22 in prod — so it was removed; descriptions are the real signal,
-    // and finance creators routinely list the discussed stocks + timestamps there.)
-    const source = `Channel: ${channelName}\nTitle: ${title}\nDescription:\n${description.slice(0, 1500)}`;
+    // Prefer the actual spoken transcript (the real picks + stance live in the video, not the
+    // clickbait title). Fall back to title+description (which usually lists the discussed stocks).
+    const source = transcript
+      ? `Channel: ${channelName}\nTitle: ${title}\nVIDEO TRANSCRIPT (may be truncated to the start of the video):\n${transcript}`
+      : `Channel: ${channelName}\nTitle: ${title}\nDescription:\n${description.slice(0, 1500)}`;
     const res = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 400,
-      system: `You are given a YouTube finance video's TITLE and DESCRIPTION. Descriptions usually name the stocks discussed (often with timestamps like "2:30 Why I'm buying NVDA") — read them carefully; the title is often clickbait and may name no ticker. Extract three things:
+      system: `You analyze a YouTube finance video. You get its TRANSCRIPT when available — base everything on what the creator actually SAYS, not the clickbait title. Otherwise you get the TITLE + DESCRIPTION (descriptions usually name the discussed stocks, often with timestamps). Extract three things:
 - buy: tickers the creator is BULLISH on (recommends buying, is buying/adding/holding, names a top pick, features positively in a portfolio update). ETFs count.
 - avoid: tickers the creator is BEARISH on or warns against (says to sell/avoid, is shorting, calls overvalued or a bad investment). A ticker must NEVER be in both lists.
-- insight: ONE concise sentence (≤160 chars) capturing the video's main takeaway/thesis — a market/macro/sector view or the core reason behind a pick. Specific, plain, no hype. "" if the title+description give no clear take.
+- insight: ONE concise sentence (≤160 chars) capturing the video's main takeaway/thesis — a market/macro/sector view or the core reason behind a pick. Specific, plain, no hype. "" if there's no clear take.
 Convert company names to tickers ("Nvidia"→NVDA, "Palantir"→PLTR, "Tesla"→TSLA, "SpaceX"→SPCX).
 Output exactly one line: SIGNAL:{"buy":["NVDA"],"confidence":"high|medium|low","avoid":["INTC"],"insight":"..."}
 confidence (of the BUY list): high = explicit buy call ("I'm buying X", "my top pick"); medium = portfolio/holdings mention or soft positive; low = ambiguous or no buys.
@@ -303,18 +356,23 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   const videoIds = candidateVideos.map(v => v.item.id.videoId);
   const viewMap = await getVideoViews(videoIds);
 
-  // Extract buy/avoid/insight via Haiku from each video's title+description (batch-throttled).
+  // For each video: fetch the transcript (Supadata, fail-safe) then extract buy/avoid/insight
+  // via Haiku. Transcript is the real signal; title+description is the fallback. Batch-throttled.
   const signals: InfluencerSignal[] = [];
+  let transcriptHits = 0;
   const BATCH = 5;
   for (let i = 0; i < candidateVideos.length; i += BATCH) {
     const batch = candidateVideos.slice(i, i + BATCH);
     const extracted = await Promise.allSettled(
       batch.map(async v => {
+        const transcript = await fetchTranscript(v.item.id.videoId);
+        if (transcript) transcriptHits++;
         const result = await extractSignal(
           anthropic,
           v.item.snippet.title,
           v.item.snippet.description,
           v.channelName,
+          transcript,
         );
         return { v, result };
       })
@@ -340,6 +398,8 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
       }
     }
   }
+
+  console.log("INFLUENCER_TRANSCRIPT_COVERAGE", { videos: candidateVideos.length, withTranscript: transcriptHits });
 
   // Validate every extracted ticker (buy AND avoid) for real liquidity (known names fast-pass,
   // unknown names checked against Yahoo). Drop non-qualifying tickers, then keep a signal if it
