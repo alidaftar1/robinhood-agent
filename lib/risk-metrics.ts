@@ -171,6 +171,24 @@ export function computeBeatRate(
   return { rate: wins / n, n };
 }
 
+// Annualized Sharpe ratio (return per unit of volatility) for a sleeve's daily returns.
+// mean/sd of daily returns × √252; risk-free ≈ 0 (a daily rf of ~0.017% is negligible next to
+// equity-sleeve vol). Units cancel in mean/sd, so fraction-vs-percent returns don't matter.
+// Path-aware — it PENALIZES the volatility a return was earned with, so a high-return but wildly
+// swinging sleeve can score worse than a steady one. getReturn selects the sleeve (default agentic).
+export function computeSharpe(
+  runs: TradeRun[],
+  getReturn: (r: TradeRun) => number | null | undefined = (r) => r.agenticDailyReturn,
+): { sharpe: number; n: number } | null {
+  const rets = [...runs].reverse().map(getReturn).filter((x): x is number => x != null);
+  if (rets.length < 5) return null; // too few days to be meaningful
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const variance = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length;
+  const sd = Math.sqrt(variance);
+  if (sd === 0) return null;
+  return { sharpe: (mean / sd) * Math.sqrt(252), n: rets.length };
+}
+
 // Weighted-average β of the CURRENT book vs SPY, using each holding's β from today's
 // market data (betaOf). Names not covered — rare, a holding that dropped out of the
 // fetched universe — default to 1.0 (market-like) so the estimate stays honest instead

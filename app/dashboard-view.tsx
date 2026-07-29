@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -387,6 +387,10 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const mainBeatRate = computeBeatRate(runs, r => r.mainDailyReturn);
   // Same daily-alpha win rate for the influencer sleeve (vs SPY over the sleeve's own days).
   const influencerBeatRate = computeBeatRate(runs, r => r.influencerDailyReturn);
+  // Path-aware risk metrics for the volatile sleeve: worst peak-to-trough fall of its own equity
+  // curve, and return-per-unit-of-volatility (annualized Sharpe).
+  const influencerDrawdown = computeMaxDrawdown(returnSeries.filter(p => p.influencer != null).map(p => p.influencer as number));
+  const influencerSharpe = computeSharpe(runs, r => r.influencerDailyReturn);
 
   // Honest "is the active book beating just-holding-SPY, and for how long has it trailed?" verdict.
   const benchmarkVerdict = computeBenchmarkVerdict(runs);
@@ -498,6 +502,24 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 {(influencerBeatRate.rate * 100).toFixed(0)}%
               </span>
               <span style={s.perfSince}>of {influencerBeatRate.n} trading days</span>
+            </div>
+          )}
+          {influencerDrawdown != null && (
+            <div style={s.perfStat}>
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Max Drawdown" def="The biggest peak-to-trough drop the YouTube-picks slice suffered — how far it fell from its high point along the way. Bigger = wilder ride." />
+              <span style={{ ...s.perfValue, color: "#e8943a" }}>
+                −{influencerDrawdown.toFixed(2)}%
+              </span>
+              <span style={s.perfSince}>biggest fall from a high</span>
+            </div>
+          )}
+          {influencerSharpe != null && (
+            <div style={s.perfStat}>
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Sharpe (annualized)" def="Return earned per unit of volatility — how well the slice is paid for the risk it takes. Above 1 is good; near 0 or negative means the swings aren't being rewarded. Small sample early." />
+              <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
+                {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
+              </span>
+              <span style={s.perfSince}>over {influencerSharpe.n} trading days</span>
             </div>
           )}
           {influencerPositions.length > 0 && (
