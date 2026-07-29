@@ -387,11 +387,18 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
     : null;
   const t1Settling = current ? computeT1Settling(current) : null;
   const concentration = mainRun ? computeConcentration(mainRun) : null;
-  // Worst Drop = the MAIN book's own equity-curve drawdown (not the blended account), over the
-  // same co-indexed window as SPY for a fair market comparison.
-  const ddPoints = returnSeries.filter(p => p.main != null);
-  const mainDrawdown = computeMaxDrawdown(ddPoints.map(p => p.main!) as number[]);
-  const spyDrawdown = computeMaxDrawdown(ddPoints.filter(p => p.spy != null).map(p => p.spy!) as number[]);
+  // Worst Drop + Sharpe = the CURRENT (V1 quality-momentum) main book only, since the strategy
+  // switch (V1_TRACK_START) — full history is dragged by the retired pre-V1 strategy (it flips the
+  // Sharpe negative). Small sample (~2 weeks), labeled as such. SPY drawdown over the same window.
+  const v1MainRuns = runsChronological.filter(r => r.date >= V1_TRACK_START && typeof r.mainDailyReturn === "number");
+  const mainDrawdown = (() => {
+    if (v1MainRuns.length < 2) return null;
+    let idx = 100; const vals: number[] = [];
+    for (const r of v1MainRuns) { idx *= (1 + (r.mainDailyReturn as number)); vals.push(idx); }
+    return computeMaxDrawdown(vals);
+  })();
+  const spyDrawdown = computeMaxDrawdown(v1MainRuns.map(r => r.spyPrice).filter((x): x is number => typeof x === "number"));
+  const mainSharpe = computeSharpe(v1MainRuns, r => r.mainDailyReturn);
 
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
@@ -616,14 +623,23 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <Tip style={s.perfLabel} label="Worst Drop" def="Max drawdown: the biggest drop from a high point to a low point the main book has suffered. Lower is better." />
+              <Tip style={s.perfLabel} label="Worst Drop" def="Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. Small sample (~2 weeks). Lower is better." />
               <span style={{ ...s.perfValue, color: mainDrawdown != null && spyDrawdown != null && mainDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
                 {mainDrawdown != null ? `−${mainDrawdown.toFixed(2)}%` : "—"}
               </span>
               <span style={s.perfSince}>
-                {spyDrawdown != null ? `biggest fall from a high · market −${spyDrawdown.toFixed(2)}%` : "biggest fall from a high point"}
+                {spyDrawdown != null ? `market −${spyDrawdown.toFixed(2)}% · small sample` : "biggest fall · small sample"}
               </span>
             </div>
+            {mainSharpe != null && (
+              <div style={{ ...s.perfStat, minWidth: 175 }}>
+                <Tip style={s.perfLabel} label="Sharpe (annualized)" def="Return per unit of volatility for the current (V1 quality-momentum) strategy since the 07-09 switch. Above 1 is good, above 2 is strong; but this is a ~2-week sample, so read it as directional, not a verdict." />
+                <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
+                  {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
+                </span>
+                <span style={s.perfSince}>over {mainSharpe.n} days · small sample</span>
+              </div>
+            )}
             <div style={{ ...s.perfStat, minWidth: 175 }}>
               <Tip style={s.perfLabel} label="Biggest Bet" def="How much of the main book sits in its single biggest stock. A high number means more risk if that one stock drops." />
               <span style={{ ...s.perfValue, color: concentration && concentration.largestPct > 25 ? "#e8943a" : "#e5e5e5" }}>
