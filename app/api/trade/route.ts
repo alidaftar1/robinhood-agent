@@ -303,10 +303,12 @@ export async function GET(request: Request) {
     // buy = the sector-capped buy-allowlist; retained = ◆HELD render-only names (not buyable).
     const { buy: v1Buy, retained: v1Retained } = buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols });
     const v1ShortlistSet = new Set(v1Buy.map(s => s.symbol)); // buy-allowlist — retained names excluded on purpose
-    // Material per-stock news (Finnhub → Haiku) for the shortlist + held names — the event tail
-    // (M&A/litigation/guidance/product/regulatory). Fail-safe: empty map on any failure/missing key.
-    const newsSignals = await fetchNewsSignals([...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols])
-      .catch(() => new Map<string, { direction: string; summary: string }>());
+    // Material per-stock news (Finnhub → Haiku) for the shortlist + ALL held names (main AND
+    // influencer) — the event tail (M&A/litigation/guidance/product/regulatory). Held influencer
+    // names matter MOST here (high-variance sleeve). Fail-safe: empty map on any failure/missing key.
+    const newsSignals = await fetchNewsSignals([
+      ...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld,
+    ]).catch(() => new Map<string, { direction: string; summary: string }>());
     const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals);
     console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
 
@@ -354,7 +356,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string]))),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string])), newsSignals),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );

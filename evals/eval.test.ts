@@ -295,6 +295,14 @@ describe("per-stock news: material-event flag renders in the shortlist", () => {
     const news = new Map([["NVDA", { direction: "+", summary: "won $2B supply contract" }]]);
     expect(formatV1Shortlist([stock("NVDA")], {}, {}, {}, new Set(), news)).toMatch(/NVDA.*⚡NEWS↑/);
   });
+  it("flags material news on a HELD influencer position (not just the shortlist) + the trim rule", () => {
+    const { buildV1AnalysisPrompt } = require("@/lib/strategy");
+    const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [{ symbol: "PLTR", quantity: "2", avgCost: "120", price: "125", heldDays: 5 }] };
+    const news = new Map([["PLTR", { direction: "-", summary: "DoD contract under review" }]]);
+    const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR"], [], [], {}, news);
+    expect(prompt).toMatch(/PLTR.*⚡NEWS↓ "DoD contract under review"/); // held influencer name gets it
+    expect(prompt).toMatch(/\(2\) NEWS — if it shows a bearish ⚡NEWS/);   // influencer trim exception
+  });
 });
 
 describe("staleness time-stop: flat holdings flagged ⏳STALE (main + influencer clocks)", () => {
