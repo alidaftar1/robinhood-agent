@@ -90,6 +90,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
       "From the current positions, does any single sector look like it exceeds ~40% of equity? Flag concentration drift even though the cap is 'soft'.",
   },
   {
+    date: "2026-07-14",
+    title: "Per-position cap breach: buy-time guard never retroactively trims",
+    lesson:
+      "The prompt's per-position cap (max_qty = floor(maxPos/price), maxPos = max($400, 20%×totalValue)) was only enforced per-BUY, assuming zero existing shares — so top-ups drifted a held name past cap uncaught: APA built to ~24% by 07-14, ROST to ~30% by 07-29 (2 independent names over cap at once). Fixed 2026-07-29 with `positionCapQty` (lib/buy-sizing.ts), a deterministic buy-time guard wired into app/api/trade/route.ts that clamps/drops a top-up so (existing $held + new shares) ≤ maxPos, recording the clamp/drop in buySizingAdjustments. Residual: it is a BUY-TIME guard only — it stops a breach from GROWING via a new top-up, but never forces a sell, so a position that was already over cap before 07-29 (or that drifts over cap later from pure price appreciation, with no new buy at all) stays over cap indefinitely with no code path that trims it. That is by design (never force a sell the model didn't choose), not a bug — but it means the breach is invisible unless someone independently checks current position values against the cap each morning.",
+    check:
+      "From current positions + totalValue, does any single position's value exceed max($400, 20%×totalValue)? If yes: (a) is it EXPLAINED — it predates the 2026-07-29 guard deploy, or its rise since is pure price appreciation with no new buy of that symbol in the run — in which case it's an expected residual, not a regression; or (b) did the run's TRADE_DECISION.buys include a NEW top-up of that already-over-cap symbol with no matching 'trimmed'/'DROPPED' note in buySizingAdjustments — that WOULD be a guard bug (e.g. a heldValueOf lookup miss) and should be escalated. Do not flag the standing APA/ROST breaches themselves as new issues absent a fresh, un-guarded top-up.",
+  },
+  {
     date: "2026-07-01",
     title: "Decided buy dropped by T+1 rotation squeeze (idle cash)",
     lesson:
