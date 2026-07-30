@@ -10,41 +10,6 @@ export async function GET(request: Request) {
 
   const results: Record<string, string> = {};
 
-  // ── FMP per-ticker news probe (?fmpNewsProbe=1) ──────────────────────────────
-  // One-off diagnostic: does per-ticker company news work on the current FMP plan, and does
-  // it cover mid-caps (not just sample large-caps)? Tests a few endpoints × a large-cap + a
-  // mid-cap held name. Read-only; remove after we've decided on the news source.
-  if (new URL(request.url).searchParams.get("fmpNewsProbe") === "1") {
-    const key = process.env.FMP_API_KEY ?? "";
-    const eps = [
-      "stable/news/stock?symbols=AAPL&limit=3",
-      "stable/news/stock?symbols=ROST&limit=3",       // mid-cap held name — coverage test
-      "stable/news/press-releases?symbols=AAPL&limit=3",
-      "stable/news/stock-latest?limit=3",
-      "v3/stock_news?tickers=AAPL&limit=3",
-    ];
-    for (const ep of eps) {
-      try {
-        const sep = ep.includes("?") ? "&" : "?";
-        const res = await fetch(`https://financialmodelingprep.com/${ep}${sep}apikey=${key}`, { signal: AbortSignal.timeout(8000) });
-        const body = await res.json().catch(() => null) as unknown;
-        const label = ep.split("?")[0];
-        if (Array.isArray(body)) {
-          const first = body[0] as { title?: string; text?: string; publishedDate?: string; date?: string; symbol?: string } | undefined;
-          results[`fmp:${label}`] = `HTTP ${res.status} · items=${body.length}` +
-            (first ? ` · latest="${(first.title ?? first.text ?? "").slice(0, 60)}" @${first.publishedDate ?? first.date ?? "?"}` : " · (empty)");
-        } else {
-          const msg = (body as { ["Error Message"]?: string })?.["Error Message"] ?? JSON.stringify(body).slice(0, 100);
-          results[`fmp:${label}`] = `HTTP ${res.status} · ${msg}`;
-        }
-      } catch (e) {
-        results[`fmp:${ep.split("?")[0]}`] = `error: ${e instanceof Error ? e.message : String(e)}`;
-      }
-    }
-    results.fmpKeyPresent = key ? `yes (…${key.slice(-4)})` : "NO — FMP_API_KEY empty";
-    return Response.json(results);
-  }
-
   // Test Yahoo Finance
   try {
     const res = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d", {

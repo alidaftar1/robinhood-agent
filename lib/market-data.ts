@@ -284,7 +284,16 @@ export function formatV1Shortlist(
   insiderBuys: Record<string, InsiderBuy[]> = {},
   analystRatings: Record<string, AnalystRating[]> = {},
   held: Set<string> = new Set(),
+  news: Map<string, { direction: string; summary: string }> = new Map(),
 ): string {
+  // Material corporate-event news (M&A/litigation/guidance/product/regulatory) — the event tail the
+  // structured signals miss. Only material events are in the map (Haiku already filtered the noise).
+  const newsFlag = (sym: string): string => {
+    const n = news.get(sym);
+    if (!n) return "";
+    const arrow = n.direction === "+" ? "↑" : n.direction === "-" ? "↓" : "";
+    return ` ⚡NEWS${arrow} "${n.summary}"`;
+  };
   // Re-surface the insider + analyst signals we fetch every run but V1 had dropped
   // from this table. Context flags — the model weighs them among the shortlist (a
   // ↓FIRM is a risk headwind, a ★INS/⚡↑ raises conviction); they do NOT override the
@@ -311,9 +320,9 @@ export function formatV1Shortlist(
     // ◆HELD marks a name you currently hold that is still eligible + positive-momentum. It is
     // RETAINED by the hysteresis band even if it slipped below the top buy names — do NOT rotate it.
     const heldFlag = held.has(s.symbol) ? " ◆HELD" : "";
-    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${heldFlag}${insFlag(s.symbol)}${analystFlag(s.symbol)}`;
+    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${heldFlag}${insFlag(s.symbol)}${analystFlag(s.symbol)}${newsFlag(s.symbol)}`;
   });
-  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ◆HELD = a current holding retained by the hysteresis band (still positive momentum — do NOT rotate it out just for ranking below newer names) · ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d]\n${rows.join("\n")}`;
+  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ◆HELD = a current holding retained by the hysteresis band (still positive momentum — do NOT rotate it out just for ranking below newer names) · ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d · ⚡NEWS↑/↓ = a MATERIAL corporate event (M&A/litigation/guidance/product/regulatory) with the event quoted — a bullish event raises conviction, a bearish one is a real trim/avoid reason even on strong momentum; cite it in your thesis when it drives a decision]\n${rows.join("\n")}`;
 }
 
 async function fetchQuote(symbol: string): Promise<(StockData & { _closes: number[] }) | null> {

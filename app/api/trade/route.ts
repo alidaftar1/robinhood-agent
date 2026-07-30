@@ -12,6 +12,7 @@ import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty } from "@/lib/buy-sizing";
 import { getRecentStopouts } from "@/lib/stopouts";
+import { fetchNewsSignals } from "@/lib/news";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -302,7 +303,11 @@ export async function GET(request: Request) {
     // buy = the sector-capped buy-allowlist; retained = ◆HELD render-only names (not buyable).
     const { buy: v1Buy, retained: v1Retained } = buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols });
     const v1ShortlistSet = new Set(v1Buy.map(s => s.symbol)); // buy-allowlist — retained names excluded on purpose
-    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols);
+    // Material per-stock news (Finnhub → Haiku) for the shortlist + held names — the event tail
+    // (M&A/litigation/guidance/product/regulatory). Fail-safe: empty map on any failure/missing key.
+    const newsSignals = await fetchNewsSignals([...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols])
+      .catch(() => new Map<string, { direction: string; summary: string }>());
+    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals);
     console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
 
     // ── V1 DEGENERATE-DATA GUARD ──────────────────────────────────────────────

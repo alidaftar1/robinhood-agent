@@ -278,6 +278,25 @@ describe("prevClose fallback: null regularMarketPreviousClose does not fall to a
 
 // ─── position-cap top-up guard (concentration control) ───────────────────────
 
+describe("per-stock news: material-event flag renders in the shortlist", () => {
+  const stock = (symbol: string) => ({
+    symbol, price: 100, mom12_1: 50, beta: 1, change1d: 0, change5d: 0, change14d: 0,
+    change30d: 0, distFrom52wHigh: 0, volatility30d: 0.2, sharpe5d: 0, sharpe14d: 0,
+    relStrength1d: 0, earningsDate: null,
+  }) as unknown as import("@/lib/market-data").StockData;
+
+  it("shows ⚡NEWS↓ with the quoted event for a bearish material event, and nothing for a name with none", () => {
+    const news = new Map([["GOOGL", { direction: "-", summary: "Reddit may exit $60M AI content deal" }]]);
+    const table = formatV1Shortlist([stock("GOOGL"), stock("APA")], {}, {}, {}, new Set(), news);
+    expect(table).toMatch(/GOOGL.*⚡NEWS↓ "Reddit may exit \$60M AI content deal"/);
+    expect(table).not.toMatch(/APA.*⚡NEWS/); // no event → no flag
+  });
+  it("uses ↑ for a bullish event", () => {
+    const news = new Map([["NVDA", { direction: "+", summary: "won $2B supply contract" }]]);
+    expect(formatV1Shortlist([stock("NVDA")], {}, {}, {}, new Set(), news)).toMatch(/NVDA.*⚡NEWS↑/);
+  });
+});
+
 describe("staleness time-stop: flat holdings flagged ⏳STALE (main + influencer clocks)", () => {
   const { buildV1AnalysisPrompt } = require("@/lib/strategy");
   const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
