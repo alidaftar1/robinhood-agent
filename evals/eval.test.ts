@@ -278,6 +278,35 @@ describe("prevClose fallback: null regularMarketPreviousClose does not fall to a
 
 // ─── position-cap top-up guard (concentration control) ───────────────────────
 
+describe("staleness time-stop: flat holdings flagged ⏳STALE (main + influencer clocks)", () => {
+  const { buildV1AnalysisPrompt } = require("@/lib/strategy");
+  const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
+    { symbol: "PLTR", quantity: "2", avgCost: "120", price: "123", heldDays: 12 }, // infl 12d/+2.5% → stale (≥10d, <8%)
+    { symbol: "BTC",  quantity: "1", avgCost: "27",  price: "40",  heldDays: 20 }, // infl +48% → caught a move → not stale
+    { symbol: "ROST", quantity: "3", avgCost: "240", price: "242", heldDays: 16 }, // main 16d/+0.8% → stale (≥15d, <3%)
+    { symbol: "GE",   quantity: "1", avgCost: "300", price: "300", heldDays: 8 },  // main only 8d → too new
+  ]};
+  const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR", "BTC"], [], [], {});
+  const lineFor = (s: string) => prompt.split("\n").find((l: string) => l.trim().startsWith(s)) ?? "";
+
+  it("flags a flat influencer holding on the 2-week clock", () => {
+    expect(lineFor("PLTR")).toMatch(/⏳STALE/);
+  });
+  it("does NOT flag an influencer holding that caught a big move", () => {
+    expect(lineFor("BTC")).not.toMatch(/⏳STALE/);
+  });
+  it("flags a flat main holding on the 3-week clock", () => {
+    expect(lineFor("ROST")).toMatch(/⏳STALE/);
+  });
+  it("does NOT flag a main holding that's too new (< STALE_DAYS)", () => {
+    expect(lineFor("GE")).not.toMatch(/⏳STALE/);
+  });
+  it("carries both rotation rules (main time-stop + influencer stale carve-out)", () => {
+    expect(prompt).toMatch(/TIME-STOP \(staleness/);
+    expect(prompt).toMatch(/STALE — if it's tagged ⏳STALE/);
+  });
+});
+
 describe("earnings hold-judgment: held names flagged, rules present (main + influencer)", () => {
   const { buildV1AnalysisPrompt } = require("@/lib/strategy");
   const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
@@ -297,8 +326,8 @@ describe("earnings hold-judgment: held names flagged, rules present (main + infl
     expect(prompt).toMatch(/EARNINGS ON A HELD NAME \(judgment call/);
     expect(prompt).toMatch(/Do NOT blanket-sell before earnings/);
   });
-  it("carries the influencer carve-out to the don't-sell rule", () => {
-    expect(prompt).toMatch(/ONE EXCEPTION: if an influencer holding shows ⚠⚠ IMMINENT/);
+  it("carries the influencer carve-out to the don't-sell rule (earnings exception)", () => {
+    expect(prompt).toMatch(/EARNINGS — if it shows ⚠⚠ IMMINENT EARNINGS/);
   });
 });
 

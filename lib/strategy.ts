@@ -84,8 +84,12 @@ export interface PortfolioContext {
 // Staleness time-stop (adapted from a mean-reversion time-stop to fit a MOMENTUM book):
 // a position held this long that's still roughly flat is dead money — free it — UNLESS it's a
 // genuine winner or still has strong momentum (let winners run). Soft rule, model applies judgment.
-export const STALE_DAYS = 15;        // ~3 trading weeks
+export const STALE_DAYS = 15;        // ~3 trading weeks (main book)
 export const STALE_RETURN_PCT = 3;   // "flat" = up less than this since entry
+// Influencer sleeve is on a TIGHTER clock: only 2 slots (scarce), and it exists to catch BIG
+// moves — a name that's gone flat for ~2 weeks is failing that purpose and blocking a fresher pick.
+export const INFLUENCER_STALE_DAYS = 10;       // ~2 trading weeks
+export const INFLUENCER_STALE_RETURN_PCT = 8;  // "flat" = never caught a move (still up less than this)
 
 // Per-position dollar cap: a $400 floor that scales to 20% of the portfolio as the
 // account grows, so larger deposits get larger positions instead of forcing dozens
@@ -296,12 +300,21 @@ A stopped name may reappear on the shortlist — that alone is NOT a reason to r
         const avg = parseFloat(p.avgCost);
         const ret = p.price && avg > 0 ? ((p.price - avg) / avg) * 100 : null;
         const retStr = ret != null ? `, ${ret >= 0 ? "+" : ""}${ret.toFixed(1)}% since entry` : "";
-        const tag = influencerHeld.includes(p.symbol) ? "  [INFLUENCER SLEEVE — do not sell here]" : "";
+        const isInfl = influencerHeld.includes(p.symbol);
+        const tag = isInfl ? "  [INFLUENCER SLEEVE — do not sell here]" : "";
+        const ageStr = p.heldDays != null ? `, held ${p.heldDays}d` : "";
+        // Staleness flag: a name held long enough that's still roughly flat has not done its job
+        // (the −5% stop covers the downside; this is the flat middle). Influencer names are on a
+        // tighter clock (scarce 2 slots, meant to catch BIG moves) than the steadier main book.
+        const staleDays = isInfl ? INFLUENCER_STALE_DAYS : STALE_DAYS;
+        const staleRet = isInfl ? INFLUENCER_STALE_RETURN_PCT : STALE_RETURN_PCT;
+        const staleTag = p.heldDays != null && ret != null && p.heldDays >= staleDays && ret < staleRet
+          ? `  ⏳STALE (held ${p.heldDays}d, ${ret >= 0 ? "+" : ""}${ret.toFixed(1)}% — flat)` : "";
         const dte = daysToEarnings(p.symbol);
         const earnTag = dte == null || dte < 0 || dte > 10 ? ""
           : dte <= 3 ? `  ⚠⚠ IMMINENT EARNINGS ${earningsDates[p.symbol]} (${dte}d)`
           : `  ⚠EARN ${earningsDates[p.symbol]} (${dte}d)`;
-        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${tag}${earnTag}`;
+        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${ageStr}${tag}${staleTag}${earnTag}`;
       }).join("\n")
     : "  (none — full cash)";
 
@@ -325,7 +338,8 @@ T+1 SETTLEMENT RULE: cash account — sell proceeds do NOT settle until tomorrow
 STRATEGY — QUALITY-MOMENTUM (main book):
 - BUY: pick up to 6 MAIN-book names from the shortlist above — your highest-conviction (strongest 12-month momentum + solid quality). Size them meaningfully (a concentrated ~6-name book beats a long thin tail). You may ONLY buy MAIN-book names that appear in the shortlist — nothing else.
 - SELL (HYSTERESIS — do not churn on ranking noise): a held MAIN-book name still on the shortlist STAYS. Names marked ◆HELD are current holdings the retention band deliberately kept — they still have positive momentum and passed quality; they were kept even though newer names out-rank them. A ◆HELD name is NOT a rotation candidate: do NOT sell it just because it ranks below fresher names, and do NOT call it "decayed" — its momentum is still positive (that is WHY it's ◆HELD). Ranking below newer names is boundary noise, not a thesis change. SELL a held MAIN name ONLY when: (a) it has genuinely FALLEN OFF the shortlist entirely (its momentum went negative or it lost quality-eligibility — it won't appear above at all), or (b) a specific real reason applies — a ↓FIRM downgrade, a sector-cap trim, or you need to free a slot for a clearly higher-conviction NEW name and this is the weakest holding. "Off the top few" or "another name out-ranks it" is NOT a valid sell reason for a ◆HELD name. For each MAIN holding you DO sell, state the specific reason in your thesis (which of a/b, with the number).
-- DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −5%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist. ONE EXCEPTION: if an influencer holding shows ⚠⚠ IMMINENT EARNINGS (≤3 days), the same earnings hold-judgment applies — you MAY trim/exit it (these names are already high-variance and can gap ±10%+ on the print), or let a high-conviction one ride through. State your call. If you exit an influencer holding for earnings, tag the sell "strategy":"influencer".
+- TIME-STOP (staleness — free dead capital): a MAIN holding tagged ⏳STALE (held ≥ ${STALE_DAYS} trading days and still up less than +${STALE_RETURN_PCT}% since entry) is dead money — the thesis has had weeks to work and the capital is earning nothing. Rotate it into a stronger shortlist name, UNLESS it currently shows strong momentum (high on the shortlist) or a fresh ★INS/⚡↑ signal worth waiting on — let genuine winners run, cut the stale flat ones. State the time-stop decision in your thesis for any ⏳STALE holding.
+- DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −5%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist. TWO EXCEPTIONS where you MAY trim/exit an influencer holding (tag the sell "strategy":"influencer"): (1) EARNINGS — if it shows ⚠⚠ IMMINENT EARNINGS (≤3 days), the earnings hold-judgment applies (these names gap ±10%+ on the print) — trim/exit, or let a high-conviction one ride. (2) STALE — if it's tagged ⏳STALE (held ≥ ${INFLUENCER_STALE_DAYS} trading days and still up less than +${INFLUENCER_STALE_RETURN_PCT}%), it has NOT caught a move: the sleeve exists to catch BIG momentum and has only 2 scarce slots, so a flat name is dead weight blocking a fresher pick — ROTATE it out (into a qualifying higher-net influencer pick if one exists, else to cash), UNLESS it's showing renewed momentum (rising / ↑RECOVERING). State your call for any ⏳STALE influencer holding.
 - The shortlist already limits NEW picks to ≤2 per sector. Still, if adding a name would push a sector (counting your CURRENT holdings) past ~40% of the book, prefer another shortlist name from a lighter sector.
 - Do NOT chase names that just spiked; the shortlist is already the right, evidence-backed set. Conviction goes into SIZE among these names.
 

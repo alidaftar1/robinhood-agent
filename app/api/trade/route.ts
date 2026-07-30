@@ -238,20 +238,20 @@ export async function GET(request: Request) {
         positions = (previousRun?.positions ?? []).filter(p => !soldSymbols.has(p.symbol));
         console.log("LIVE_POSITIONS_MISSING — using previous run estimate", { count: positions.length });
       }
-      // Holding age per MAIN-book position (for the staleness time-stop): how many recent trading
-      // days each symbol has been held, from the per-date run history. Wrapped so a bad/legacy
-      // history record can never abort the trade run (degrades to no ages → rule omitted). Influencer
-      // names are EXCLUDED — their own ±band framework governs exits, not the daily time-stop. The
-      // streak tolerates an isolated 1-day snapshot gap (routine here) and only breaks on a real exit.
+      // Holding age per position (for the staleness time-stop): how many recent trading days each
+      // symbol has been held, from the per-date run history. Wrapped so a bad/legacy history record
+      // can never abort the trade run (degrades to no ages → rule omitted). BOTH books now — the
+      // sleeve has its own (tighter) staleness rotation too. The streak tolerates an isolated 1-day
+      // snapshot gap (routine here) and only breaks on a real exit.
       let heldDaysOf: (symbol: string) => number | undefined = () => undefined;
       try {
         const history = mergeRunsByDate(await getRuns(60)); // newest-first, one run per date
-        const influencerSyms = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
         heldDaysOf = (symbol: string) => {
-          if (influencerSyms.has(symbol)) return undefined; // main book only
           let held = 0, absent = 0;
           for (const run of history) {
-            if ((run.positions ?? []).some(p => p.symbol === symbol)) { held++; absent = 0; }
+            const inMain = (run.positions ?? []).some(p => p.symbol === symbol);
+            const inInfl = (run.influencerPositions ?? []).some(p => p.symbol === symbol);
+            if (inMain || inInfl) { held++; absent = 0; }
             else if (++absent >= 2) break; // tolerate one missing day; two = a real exit
           }
           return held;
