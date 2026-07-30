@@ -260,7 +260,7 @@ Rules:
 // in lib/market-data buildV1Shortlist). The model may ONLY buy MAIN-book names from that shortlist — a
 // hard filter in the trade route enforces this regardless of what the model outputs. The influencer
 // sleeve is unchanged (≤2 slots on its own signal). Kept separate from buildAnalysisPrompt for rollback.
-export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = []): string {
+export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}): string {
   // MACRO-REGIME context only (Phase 0 news). The analysis is otherwise macro-blind,
   // yet it's asked to judge whether a move is broad-market SYMPATHY vs name-specific.
   // These are general business headlines — regime read only, NOT per-name, NOT a buy
@@ -283,13 +283,25 @@ ${recentStopouts.map(s => `  ${s.symbol} — stopped ${s.date} at ${s.changePct.
 A stopped name may reappear on the shortlist — that alone is NOT a reason to re-enter (the list ranks 12-month momentum + quality, which a one-day breakdown barely moves). DEFAULT: leave a recently-stopped name OUT and let the weakness resolve. Re-buy one ONLY with a SPECIFIC reason the breakdown no longer applies — a confirmed reversal, a fresh catalyst (★INS / ⚡↑), or clear evidence it was broad-market sympathy selling that has since reversed — NOT "high quality/momentum" (that's merely why it's on the list). If you re-buy a stopped name, your thesis MUST justify it explicitly.
 `
     : "";
+  // Days until a held name's earnings (from the FMP-backfilled dates), so the model can SEE which
+  // holdings — MAIN or influencer — are approaching earnings and apply the hold-judgment rule.
+  const daysToEarnings = (sym: string): number | null => {
+    const d = earningsDates[sym];
+    if (!d) return null;
+    const n = Math.round((Date.parse(d) - Date.parse(today)) / 86_400_000);
+    return Number.isFinite(n) ? n : null;
+  };
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => {
         const avg = parseFloat(p.avgCost);
         const ret = p.price && avg > 0 ? ((p.price - avg) / avg) * 100 : null;
         const retStr = ret != null ? `, ${ret >= 0 ? "+" : ""}${ret.toFixed(1)}% since entry` : "";
         const tag = influencerHeld.includes(p.symbol) ? "  [INFLUENCER SLEEVE — do not sell here]" : "";
-        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${tag}`;
+        const dte = daysToEarnings(p.symbol);
+        const earnTag = dte == null || dte < 0 || dte > 10 ? ""
+          : dte <= 3 ? `  ⚠⚠ IMMINENT EARNINGS ${earningsDates[p.symbol]} (${dte}d)`
+          : `  ⚠EARN ${earningsDates[p.symbol]} (${dte}d)`;
+        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${tag}${earnTag}`;
       }).join("\n")
     : "  (none — full cash)";
 
@@ -313,7 +325,7 @@ T+1 SETTLEMENT RULE: cash account — sell proceeds do NOT settle until tomorrow
 STRATEGY — QUALITY-MOMENTUM (main book):
 - BUY: pick up to 6 MAIN-book names from the shortlist above — your highest-conviction (strongest 12-month momentum + solid quality). Size them meaningfully (a concentrated ~6-name book beats a long thin tail). You may ONLY buy MAIN-book names that appear in the shortlist — nothing else.
 - SELL (HYSTERESIS — do not churn on ranking noise): a held MAIN-book name still on the shortlist STAYS. Names marked ◆HELD are current holdings the retention band deliberately kept — they still have positive momentum and passed quality; they were kept even though newer names out-rank them. A ◆HELD name is NOT a rotation candidate: do NOT sell it just because it ranks below fresher names, and do NOT call it "decayed" — its momentum is still positive (that is WHY it's ◆HELD). Ranking below newer names is boundary noise, not a thesis change. SELL a held MAIN name ONLY when: (a) it has genuinely FALLEN OFF the shortlist entirely (its momentum went negative or it lost quality-eligibility — it won't appear above at all), or (b) a specific real reason applies — a ↓FIRM downgrade, a sector-cap trim, or you need to free a slot for a clearly higher-conviction NEW name and this is the weakest holding. "Off the top few" or "another name out-ranks it" is NOT a valid sell reason for a ◆HELD name. For each MAIN holding you DO sell, state the specific reason in your thesis (which of a/b, with the number).
-- DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −5%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist.
+- DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −5%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist. ONE EXCEPTION: if an influencer holding shows ⚠⚠ IMMINENT EARNINGS (≤3 days), the same earnings hold-judgment applies — you MAY trim/exit it (these names are already high-variance and can gap ±10%+ on the print), or let a high-conviction one ride through. State your call. If you exit an influencer holding for earnings, tag the sell "strategy":"influencer".
 - The shortlist already limits NEW picks to ≤2 per sector. Still, if adding a name would push a sector (counting your CURRENT holdings) past ~40% of the book, prefer another shortlist name from a lighter sector.
 - Do NOT chase names that just spiked; the shortlist is already the right, evidence-backed set. Conviction goes into SIZE among these names.
 
@@ -322,6 +334,7 @@ CONSTRAINTS:
 - Max $${maxPos} per position (compute max_qty = floor(${maxPos} / price)), min $50. Whole shares only.
 - MAIN-book buys ONLY from the shortlist above; INFLUENCER buys ONLY from the INFLUENCER SIGNALS section.
 - Never buy a name flagged with earnings ≤3 days away (⚠EARN with a date within 3 days).
+- EARNINGS ON A HELD NAME (judgment call, NOT an automatic exit): if a name you HOLD shows ⚠EARN within ~3 days, decide whether to trim/exit or ride through. A high-conviction momentum winner can ride through — post-earnings drift tends to favor established winners — but TRIM or exit if the position is oversized (near the per-position cap) or its thesis is weak. State your call and reason for any held name with imminent earnings. Do NOT blanket-sell before earnings; the point is a considered decision, not a reflex.
 - HARD LIMIT: total cost of all buys ≤ ${bp} (settled buying power). Fixed — selling today does NOT increase it.
 ${stopoutBlock}${influencerSection ?? ""}
 

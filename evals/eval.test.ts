@@ -278,6 +278,30 @@ describe("prevClose fallback: null regularMarketPreviousClose does not fall to a
 
 // ─── position-cap top-up guard (concentration control) ───────────────────────
 
+describe("earnings hold-judgment: held names flagged, rules present (main + influencer)", () => {
+  const { buildV1AnalysisPrompt } = require("@/lib/strategy");
+  const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
+    { symbol: "PLTR", quantity: "2", avgCost: "120", price: "125" }, // influencer, imminent earnings
+    { symbol: "APA", quantity: "17", avgCost: "33", price: "36" },    // main, far-off earnings
+  ]};
+  const prompt = buildV1AnalysisPrompt("2026-07-30", "(table)", ctx, "", "", ["PLTR"], [], [],
+    { PLTR: "2026-08-01", APA: "2026-09-15" });
+
+  it("flags a held name with imminent (≤3d) earnings", () => {
+    expect(prompt).toMatch(/PLTR.*IMMINENT EARNINGS 2026-08-01/);
+  });
+  it("does NOT flag a held name whose earnings are far off (>10d)", () => {
+    expect(prompt).not.toMatch(/APA.*(IMMINENT|⚠EARN)/);
+  });
+  it("carries the main-book hold-judgment rule (trim/ride, not auto-exit)", () => {
+    expect(prompt).toMatch(/EARNINGS ON A HELD NAME \(judgment call/);
+    expect(prompt).toMatch(/Do NOT blanket-sell before earnings/);
+  });
+  it("carries the influencer carve-out to the don't-sell rule", () => {
+    expect(prompt).toMatch(/ONE EXCEPTION: if an influencer holding shows ⚠⚠ IMMINENT/);
+  });
+});
+
 describe("influencer scoring: net (buy − avoid) + low=0", () => {
   const { netScores } = require("@/lib/influencer-signals");
   const cache = (tickerCounts: Record<string, number>, avoidCounts: Record<string, number> = {}) =>

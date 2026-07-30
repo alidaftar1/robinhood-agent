@@ -134,7 +134,7 @@ export async function GET(request: Request) {
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 3000,
-        system: buildV1AnalysisPrompt(today, dryShortlistTable, portfolioCtx, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol)),
+        system: buildV1AnalysisPrompt(today, dryShortlistTable, portfolioCtx, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), [], [], Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string]))),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -349,7 +349,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string]))),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
