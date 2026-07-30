@@ -301,9 +301,10 @@ describe("staleness time-stop: flat holdings flagged ⏳STALE (main + influencer
   it("does NOT flag a main holding that's too new (< STALE_DAYS)", () => {
     expect(lineFor("GE")).not.toMatch(/⏳STALE/);
   });
-  it("carries both rotation rules (main time-stop + influencer stale carve-out)", () => {
-    expect(prompt).toMatch(/TIME-STOP \(staleness/);
-    expect(prompt).toMatch(/STALE — if it's tagged ⏳STALE/);
+  it("carries both rotation rules as FORCED-DEFAULT (main + influencer)", () => {
+    expect(prompt).toMatch(/TIME-STOP \(staleness — DEFAULT IS ROTATE/);
+    expect(prompt).toMatch(/STALE \(DEFAULT IS ROTATE\)/);
+    expect(prompt).toMatch(/is NOT a valid keep-reason/); // justify-to-keep has teeth
   });
 });
 

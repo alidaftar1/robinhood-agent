@@ -114,6 +114,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
       "Is any single-day sleeve return (main or influencer) large in % BUT driven by a tiny prior-day base rather than a real price move? Signature: the sleeve's prior-day position value is a small fraction (<~10%) of its current-day value — i.e. the book was rebuilt from cash that day (mass liquidation the day before, then redeploy). That daily % is a denominator artifact and should be null (excluded from compounding), NOT counted as real P&L. Distinguish from a genuine loss by checking whether the held names actually moved that much.",
   },
   {
+    date: "2026-07-30",
+    title: "Stale holding kept without a justified exception (dead-money squat)",
+    lesson:
+      "The staleness time-stop is forced-default: a holding held ≥ its clock (main 15 trading days / influencer 10) that's still roughly flat (main up <+3%, influencer <+8%) MUST be rotated UNLESS the thesis names a specific re-acceleration signal (ranks high now / ↑RECOVERING / rising momentum) or a fresh ★INS/⚡↑ catalyst. The failure mode is the model KEEPING a flat, long-held name on a vague 'it might move' / 'still like it' — dead money squatting a slot (doubly costly for the 2-slot influencer sleeve). The −5% stop covers losers and +40% covers winners; this rule covers the flat middle nothing else does.",
+    check:
+      "For each holding that has been present in the positions snapshot for ≥ its stale window (roughly: main ≥15 recent runs / influencer ≥10) AND is still roughly flat since entry (main up <+3%, influencer <+8%, and not stopped out), was it SOLD this run? If it was KEPT, does the thesis give a SPECIFIC keep-reason — a named re-acceleration signal (high shortlist rank / ↑RECOVERING / rising momentum) or a fresh ★INS/⚡↑? Flag (medium) any long-held flat name kept with only a vague reason ('might move', 'still like it', 'hasn't lost money') or no mention — that's a dead-money squat the time-stop is supposed to rotate.",
+  },
+  {
     date: "2026-07-29",
     title: "Rotation churn — selling a still-strong name as 'decayed', then rebuying it",
     lesson:
