@@ -13,6 +13,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty } from "@/lib/buy-sizing";
 import { getRecentStopouts } from "@/lib/stopouts";
 import { fetchNewsSignals } from "@/lib/news";
+import { fetchEarningsForSymbols } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -303,6 +304,24 @@ export async function GET(request: Request) {
     // buy = the sector-capped buy-allowlist; retained = ◆HELD render-only names (not buyable).
     const { buy: v1Buy, retained: v1Retained } = buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols });
     const v1ShortlistSet = new Set(v1Buy.map(s => s.symbol)); // buy-allowlist — retained names excluded on purpose
+
+    // RELIABLE per-symbol earnings for the names that actually drive the ⚠⚠ judgment (shortlist +
+    // held). The bulk calendar's 1500-row cap drops near-term dates in peak season (PLTR 08-03 was
+    // silently missing 2026-07-31 → the earnings judgment never fired on a held name 3 days out).
+    // Patch these onto marketData.stocks so BOTH the shortlist ⚠EARN column and the positions tags
+    // are correct. Fail-safe.
+    const earnSymbols = [...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld];
+    const perSymbolEarnings = await fetchEarningsForSymbols(earnSymbols).catch(() => new Map<string, string>());
+    for (const s of marketData.stocks) {
+      const d = perSymbolEarnings.get(s.symbol);
+      if (d && (!s.earningsDate || d < s.earningsDate)) s.earningsDate = d; // nearest upcoming wins
+    }
+    // earnings map for the positions tags — per-symbol (reliable) over the bulk backfill; covers a
+    // held name even if it's not in marketData.stocks.
+    const earningsDatesMap: Record<string, string> = {
+      ...Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string])),
+      ...Object.fromEntries(perSymbolEarnings),
+    };
     // Material per-stock news (Finnhub → Haiku) for the shortlist + ALL held names (main AND
     // influencer) — the event tail (M&A/litigation/guidance/product/regulatory). Held influencer
     // names matter MOST here (high-variance sleeve). Fail-safe: empty map on any failure/missing key.
@@ -356,7 +375,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string])), newsSignals),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
