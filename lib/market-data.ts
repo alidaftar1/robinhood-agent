@@ -192,11 +192,18 @@ function dailyReturns(closes: number[]): number[] {
 // would make positional pairing mix non-contemporaneous days and corrupt the covariance).
 // null means "unknown", distinct from a real reading of 0 or a negative (inverse) β, both
 // of which are legitimate and must flow through to the caller.
+// Beta vs SPY from daily returns. Uses the FULL window passed in (now ~1 year) — a 22-day window
+// produced noisy, economically-wrong betas (energy names like APA/TRGP showed spurious −1.5 betas
+// over a few weeks; over a year they're a sensible −0.6/−0.1). Aligns the two series to the shorter
+// one so a name with less history than SPY still resolves; null under ~3 months (too few points for
+// a meaningful estimate — the book-β math treats null as "unknown", not a fake 1.0).
 export function computeStockBeta(stockCloses: number[], spyCloses: number[]): number | null {
-  const s = dailyReturns(stockCloses);
-  const m = dailyReturns(spyCloses);
-  if (s.length !== m.length || s.length < 5) return null;
-  const n = s.length;
+  const sAll = dailyReturns(stockCloses);
+  const mAll = dailyReturns(spyCloses);
+  const n = Math.min(sAll.length, mAll.length);
+  if (n < 60) return null; // ~3 months minimum
+  const s = sAll.slice(-n);
+  const m = mAll.slice(-n);
   const meanS = s.reduce((a, b) => a + b, 0) / n;
   const meanM = m.reduce((a, b) => a + b, 0) / n;
   let cov = 0, varM = 0;
@@ -449,7 +456,7 @@ async function getPriceData(): Promise<{
       const { _closes, ...s } = r.value!;
       return {
         ...s,
-        beta: computeStockBeta(_closes.slice(-22), spyCloses.slice(-22)), // ~1mo window (fetch is now 1y)
+        beta: computeStockBeta(_closes, spyCloses), // full ~1y window (short 22d windows gave noisy/wrong betas)
         relStrength1d: s.change1d - spyChange1d,
         relStrength5d: s.change5d - spyChange5d,
         relStrength14d: s.change14d - spyChange14d,

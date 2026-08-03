@@ -484,34 +484,33 @@ describe("judge-the-judge: insider LLM-judge sanity", () => {
 // No LLM — pure math + prompt-content assertions, so these never flake.
 
 describe("benchmark-awareness: beta math", () => {
+  // Beta now uses ~1yr of returns (was a noisy 22-day window), so the math tests need a realistic
+  // window length (≥60 returns). Build a repeating SPY return pattern, then derive the stock.
+  const PAT = [0.01, -0.005, 0.02, -0.01, 0.008, -0.003, 0.015, -0.007];
+  const buildSpy = (n: number) => { const c = [100]; for (let i = 0; i < n; i++) c.push(c[c.length - 1] * (1 + PAT[i % PAT.length])); return c; };
+  const spy = buildSpy(80); // 81 closes → 80 returns
+  const derive = (mult: number) => { const c = [100]; for (let i = 0; i < 80; i++) c.push(c[c.length - 1] * (1 + mult * PAT[i % PAT.length])); return c; };
+
   it("computeStockBeta ≈ 2 when the stock moves 2× SPY each day", () => {
-    const spy = [100, 102, 101, 104, 103, 106, 105, 108];
-    const spyR = spy.slice(1).map((c, i) => c / spy[i] - 1);
-    let px = 100;
-    const stock = [px];
-    for (const r of spyR) { px = px * (1 + 2 * r); stock.push(px); }
-    const beta = computeStockBeta(stock, spy);
+    const beta = computeStockBeta(derive(2), spy);
     expect(beta).toBeGreaterThan(1.9);
     expect(beta).toBeLessThan(2.1);
   });
 
-  it("computeStockBeta returns null (unknown) with insufficient history", () => {
+  it("computeStockBeta returns null (unknown) with insufficient history (< ~3mo)", () => {
     expect(computeStockBeta([100, 101], [100, 101])).toBeNull();
+    expect(computeStockBeta(buildSpy(30), buildSpy(30))).toBeNull(); // ~30 returns still too few
   });
 
-  it("computeStockBeta returns null when the two series lengths disagree (misaligned bars)", () => {
-    const spy = [100, 102, 101, 104, 103, 106, 105, 108];
-    const stock = [50, 51, 50.5, 52, 51.5, 53, 52.5]; // one fewer close → can't trust positional pairing
-    expect(computeStockBeta(stock, spy)).toBeNull();
+  it("computeStockBeta aligns to the shorter series' tail (a name with less history still resolves)", () => {
+    const shorter = derive(2).slice(-71); // 70 returns, ends today like SPY
+    const beta = computeStockBeta(shorter, spy);
+    expect(beta).not.toBeNull();
+    expect(beta!).toBeGreaterThan(1.9);
   });
 
   it("computeStockBeta preserves a real negative (inverse) beta", () => {
-    const spy = [100, 102, 101, 104, 103, 106, 105, 108];
-    const spyR = spy.slice(1).map((c, i) => c / spy[i] - 1);
-    let px = 100;
-    const stock = [px];
-    for (const r of spyR) { px = px * (1 - r); stock.push(px); } // moves opposite SPY
-    const beta = computeStockBeta(stock, spy);
+    const beta = computeStockBeta(derive(-1), spy); // moves opposite SPY
     expect(beta).not.toBeNull();
     expect(beta!).toBeLessThan(0); // inverse correlation → negative β, must NOT be nulled
   });
