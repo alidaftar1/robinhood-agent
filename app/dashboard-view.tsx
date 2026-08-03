@@ -329,6 +329,17 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
     if (v1.length === 0) return null;
     return (v1.reduce((idx, r) => idx * (1 + (r.mainDailyReturn as number)), 1) - 1) * 100;
   })();
+  // SPY over the SAME V1 window, so the quality-momentum alpha compares matched periods. v1MainReturn
+  // compounds daily returns from the first V1 run, so its implicit baseline is the run JUST BEFORE it
+  // (that day's close) — use that run's SPY price as the baseline, latest SPY as the end.
+  const v1Alpha = (() => {
+    const firstV1 = runsChronological.find(r => r.date >= V1_TRACK_START && typeof r.mainDailyReturn === "number");
+    const baseline = firstV1 ? [...runsChronological].reverse().find(r => r.date < firstV1.date && r.spyPrice != null) : null;
+    const ls = latest?.spyPrice, bs = baseline?.spyPrice;
+    if (v1MainReturn == null || !ls || !bs) return null;
+    const spyV1 = ((ls - bs) / bs) * 100;
+    return v1MainReturn - spyV1;
+  })();
 
   const latestInfluencer = returnSeries[returnSeries.length - 1]?.influencer;
   const influencerCumReturn = latestInfluencer != null ? latestInfluencer - 100 : null;
@@ -454,6 +465,13 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               {v1MainReturn != null ? fmtPct(v1MainReturn) : "—"}
             </span>
             <span style={s.perfSince}>{v1MainReturn != null ? "since strategy update · 2026-07-09" : "since 2026-07-09 · book building"}</span>
+          </div>
+          <div style={s.perfStat}>
+            <Tip style={s.perfLabel} label="Quality-Momentum vs S&P" def="The NEW quality-momentum strategy's return minus the S&P 500's over the SAME window (since the 2026-07-09 switch). This isolates whether the CURRENT strategy is beating the market — unlike 'Main Book vs S&P 500' to the right, which spans the whole account history including the retired pre-V1 strategy." />
+            <span style={{ ...s.perfValue, color: returnColor(v1Alpha) }}>
+              {v1Alpha != null ? fmtPct(v1Alpha) : "—"}
+            </span>
+            <span style={s.perfSince}>quality-momentum vs. market · since 2026-07-09</span>
           </div>
           <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="S&P 500 Return" def="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'" />
