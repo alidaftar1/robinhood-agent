@@ -39,6 +39,7 @@ h. **DO NOT deploy, merge, or push `main`.**
 - **Proposed a guardrail:** subject `🤖 Autopilot proposal — <date>: <title>` — root cause, the fix, PR link, eval + dry-run before/after, and: *"Review + merge to accept, then deploy (or ask Claude to)."*
 - **Strategy hypothesis (no code change):** subject `🤖 Autopilot — <date>: 📊 strategy watch: <short>` — the pattern, the data over N days, your hypothesis, and that **no change was made — it's the owner's call.**
 - **Nothing:** subject `🤖 Autopilot — <date>: ✅ reviewed, nothing to propose`.
+- **HYPERLINK every PR reference** in the email body (the standing-open-PRs section and any proposal link) as a real clickable HTML anchor: `<a href="https://github.com/alidaftar1/robinhood-agent/pull/<n>">PR #<n></a>`. Plain "PR #6" text is not clickable in email (unlike the GitHub Journal, which auto-links it) — so the report is self-contained and the Journal notification can be muted without losing the PR-review nudge.
 ```
 curl -s -X POST https://api.resend.com/emails \
   -H "Authorization: Bearer $RESEND_API_KEY" -H "Content-Type: application/json" \
