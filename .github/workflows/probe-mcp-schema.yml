@@ -1,0 +1,24 @@
+# One-off, manually-triggered probe: introspect the Robinhood MCP place_equity_order schema.
+# Uses the repo's CRON_SECRET (write-only Sensitive var, unreadable from the CLI/dashboard) to call
+# the read-only /api/debug?mcpToolSchema=1 endpoint and print the JSON to the Action log. This is a
+# `tools/list` metadata call — it places NO order and mutates nothing. Run with:
+#   gh workflow run probe-mcp-schema.yml   (then: gh run watch / gh run view --log)
+name: probe-mcp-schema
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      APP_URL: https://robinhood-agent.vercel.app
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+    steps:
+      - name: Fetch place_equity_order input schema
+        run: |
+          echo "Calling $APP_URL/api/debug?mcpToolSchema=1 ..."
+          curl -sS "$APP_URL/api/debug?mcpToolSchema=1" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            --max-time 60 \
+          | python3 -m json.tool
