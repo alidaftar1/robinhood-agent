@@ -1,6 +1,22 @@
 import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, computeDailyReturn, backfillSleeveReturns, findReRecordedSells } from "@/lib/run-store";
 import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
+import { getValidAccessToken } from "@/lib/robinhood-auth";
+
+const MCP_URL = "https://agent.robinhood.com/mcp/trading";
+
+// Parse a Streamable-HTTP MCP response body, which is either plain JSON or an SSE stream
+// (event: message\ndata: {json}). Returns the last JSON-RPC payload found. Metadata only.
+function parseMcpBody(text: string): any {
+  const t = text.trim();
+  if (t.startsWith("{") || t.startsWith("[")) { try { return JSON.parse(t); } catch { /* fall through */ } }
+  let last: any = null;
+  for (const line of t.split(/\r?\n/)) {
+    const m = line.match(/^data:\s*(.+)$/);
+    if (m) { try { last = JSON.parse(m[1]); } catch { /* skip non-JSON data lines */ } }
+  }
+  return last;
+}
 
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -51,6 +67,68 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
+
+  // READ-ONLY MCP tool-schema introspection. Answers "does place_equity_order support fractional /
+  // dollar-based (notional) orders?" by listing the tools and dumping place_equity_order's
+  // inputSchema. This is a `tools/list` metadata call — it places NO order and mutates nothing.
+  // Uses getValidAccessToken() (Redis-first; MAY refresh+persist if within the 5-min expiry buffer —
+  // safe: prod also reads Redis-first, so this cannot break the cron's auth).
+  if (url.searchParams.get("mcpToolSchema") === "1") {
+    const dbg: Record<string, unknown> = {};
+    try {
+      const accessToken = await getValidAccessToken();
+      const headers: Record<string, string> = {
+        "Authorization": `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2025-06-18",
+      };
+      const post = (body: unknown, extra: Record<string, string> = {}) =>
+        fetch(MCP_URL, { method: "POST", headers: { ...headers, ...extra }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
+
+      // 1) initialize (Streamable-HTTP handshake) — capture any session id the server hands back.
+      const initRes = await post({
+        jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "schema-probe", version: "1.0" } },
+      });
+      const sessionId = initRes.headers.get("mcp-session-id") ?? initRes.headers.get("Mcp-Session-Id") ?? "";
+      const initText = await initRes.text();
+      dbg.initStatus = initRes.status;
+      dbg.sessionId = sessionId ? "present" : "none";
+      const sess: Record<string, string> = sessionId ? { "Mcp-Session-Id": sessionId } : {};
+      // best-effort initialized notification (some servers require it before tools/list)
+      try { await post({ jsonrpc: "2.0", method: "notifications/initialized" }, sess); } catch { /* optional */ }
+
+      // 2) tools/list — the metadata we actually want.
+      const listRes = await post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, sess);
+      dbg.listStatus = listRes.status;
+      const listText = await listRes.text();
+      const parsed = parseMcpBody(listText);
+      const tools: Array<{ name: string; description?: string; inputSchema?: unknown }> = parsed?.result?.tools ?? [];
+
+      if (tools.length) {
+        dbg.toolNames = tools.map(t => t.name);
+        const order = tools.find(t => t.name === "place_equity_order");
+        dbg.place_equity_order = order
+          ? { description: order.description, inputSchema: order.inputSchema }
+          : "place_equity_order not found in tool list";
+        // Also surface review_equity_order — it previews an order and may expose the same param shape.
+        const review = tools.find(t => t.name === "review_equity_order");
+        if (review) dbg.review_equity_order = { description: review.description, inputSchema: review.inputSchema };
+      } else {
+        // Handshake likely needs a different shape — return raw bodies so a single trigger diagnoses it.
+        dbg.note = "no tools parsed — raw handshake bodies included for diagnosis";
+        // Redact any Bearer/long-token-shaped strings before echoing raw bodies (defense-in-depth:
+        // the token is only ever sent in a request header, but a reflecting proxy must not leak it).
+        const redact = (s: string) => s.replace(/Bearer\s+[\w.\-]+/gi, "Bearer [REDACTED]").replace(/[A-Za-z0-9_-]{40,}/g, "[REDACTED]");
+        dbg.initBodyRaw = redact(initText.slice(0, 2000));
+        dbg.listBodyRaw = redact(listText.slice(0, 4000));
+      }
+    } catch (e) {
+      dbg.error = String(e);
+    }
+    return Response.json({ mcpToolSchema: dbg });
+  }
 
   // Infer missing sell records and recompute return for the latest run.
   // Needed when the sell session timed out after orders were already placed on Robinhood.
