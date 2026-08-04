@@ -3,7 +3,7 @@ import { SCENARIOS, formatFixtureMarketData } from "./fixtures";
 import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
-import { buildSystemPrompt, buildAnalysisPrompt } from "@/lib/strategy";
+import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
@@ -651,6 +651,115 @@ describe("benchmark-awareness: beta math", () => {
     expect(pick({ bookBeta: null })).toBeNull();  // current predates the field → "—", not a stale day's β
     expect(pick(null)).toBeNull();                // no current run yet → "—"
   });
+});
+
+// ─── V1 NOTIONAL analysis-path coverage (PR2) ─────────────────────────────────
+// The legacy scenario suite exercises buildAnalysisPrompt (whole-share). These cover the LIVE V1
+// path (buildV1AnalysisPrompt) after the notional migration: (a) deterministic — the prompt
+// instructs dollar-amount buys / intent sells and renders fractional positions; (b) LLM — the model
+// emits a VALID notional decision (dollarAmount buys within budget+cap+rails, valid sell intent).
+
+// Minimal StockData for the shortlist table — only the fields formatV1Shortlist reads matter.
+function mkStock(symbol: string, price: number, mom12_1: number, earningsDate: string | null = null) {
+  return { symbol, price, change1d: 0, change5d: 0, change14d: 0, change30d: 0, distFrom52wHigh: 0,
+    volatility30d: 20, sharpe5d: 0, sharpe14d: 0, sharpe30d: 0, mom12_1, beta: 1, earningsDate,
+    relStrength1d: 0, relStrength5d: 0, relStrength14d: 0, relStrength30d: 0 } as any;
+}
+
+function buildV1Prompt(opts: {
+  shortlist: Array<{ symbol: string; price: number; mom: number; earnings?: string }>;
+  buyingPower: string; totalValue: string;
+  positions?: Array<{ symbol: string; quantity: string; avgCost: string; price?: number; heldDays?: number }>;
+  earningsDates?: Record<string, string>;
+}): string {
+  const stocks = opts.shortlist.map(s => mkStock(s.symbol, s.price, s.mom, s.earnings ?? null));
+  const quality = Object.fromEntries(opts.shortlist.map(s => [s.symbol, { quality: 0.8 }]));
+  const table = formatV1Shortlist(stocks, quality);
+  const portfolio = { buyingPower: opts.buyingPower, totalValue: opts.totalValue, positions: opts.positions ?? [] };
+  return buildV1AnalysisPrompt(TODAY, table, portfolio as any, "", "", [], [], [], opts.earningsDates ?? {});
+}
+
+// Validate a NOTIONAL decision against the same rails the prompt states. Returns failure strings.
+function notionalDecisionFails(decision: any, budget: number, cap: number, shortlistSyms: string[], heldSyms: string[]): string[] {
+  const fails: string[] = [];
+  if (!decision) return ["no decision parsed"];
+  const buys = decision.buys ?? [];
+  const sells = decision.sells ?? [];
+  for (const b of buys) {
+    if (typeof b.dollarAmount !== "number" || !(b.dollarAmount > 0)) fails.push(`buy ${b.symbol}: missing/invalid dollarAmount`);
+    else {
+      if (b.dollarAmount > cap + 1) fails.push(`buy ${b.symbol}: $${b.dollarAmount} > cap $${cap}`);
+      if (b.dollarAmount < 50 - 1) fails.push(`buy ${b.symbol}: $${b.dollarAmount} < $50 min`);
+    }
+    if (!shortlistSyms.includes(b.symbol)) fails.push(`buy ${b.symbol}: off-shortlist (not on the rails)`);
+    if (b.quantity != null) fails.push(`buy ${b.symbol}: emitted a share quantity instead of dollarAmount`);
+  }
+  const spend = buys.reduce((s: number, b: any) => s + (Number(b.dollarAmount) || 0), 0);
+  if (spend > budget + 1) fails.push(`total spend $${spend.toFixed(0)} > budget $${budget}`);
+  for (const s of sells) {
+    if (!heldSyms.includes(s.symbol)) fails.push(`sell ${s.symbol}: not a held position`);
+    const validIntent = s.exit === "all" || (typeof s.fraction === "number" && s.fraction > 0 && s.fraction < 1);
+    if (!validIntent) fails.push(`sell ${s.symbol}: invalid intent (need exit:"all" or 0<fraction<1)`);
+  }
+  return fails;
+}
+
+describe("V1 notional prompt (deterministic — no LLM)", () => {
+  const prompt = buildV1Prompt({
+    shortlist: [{ symbol: "AAPL", price: 230, mom: 40 }, { symbol: "MSFT", price: 420, mom: 35 }],
+    buyingPower: "$1000", totalValue: "$2500",
+    positions: [{ symbol: "NVDA", quantity: "2.371", avgCost: "100", price: 120, heldDays: 5 }],
+  });
+
+  it("instructs DOLLAR-AMOUNT buys, not a share count", () => {
+    expect(prompt).toMatch(/Size each buy as a DOLLAR AMOUNT/);
+    expect(prompt).toMatch(/"dollarAmount":D/);
+    expect(prompt).not.toMatch(/Whole shares only/);          // the whole-share rule is gone from V1
+    expect(prompt).not.toMatch(/compute max_qty = floor/);
+  });
+  it("instructs INTENT sells (exit:\"all\" / fraction), not a share count", () => {
+    expect(prompt).toMatch(/"sells":\[\{"symbol":"X","exit":"all"\}\]/);
+    expect(prompt).toMatch(/Partial TRIM.*fraction/);
+  });
+  it("renders a FRACTIONAL held quantity verbatim (no truncation)", () => {
+    const line = prompt.split("\n").find(l => l.trim().startsWith("NVDA")) ?? "";
+    expect(line).toContain("2.371");                          // the exact fraction the model must be able to exit
+  });
+});
+
+describe("V1 notional analysis (LLM) — the model emits a valid notional decision", () => {
+  const CAP = maxPositionDollars("$2500"); // 20% of $2500 = $500
+
+  it("full-cash: dollarAmount buys within budget, cap, and rails — never a share count", async () => {
+    const shortlist = [
+      { symbol: "AAPL", price: 230, mom: 45 }, { symbol: "MSFT", price: 420, mom: 40 },
+      { symbol: "NVDA", price: 120, mom: 60 }, { symbol: "JPM", price: 210, mom: 30 },
+      { symbol: "XOM", price: 110, mom: 25 },
+    ];
+    const budget = 900;
+    const prompt = buildV1Prompt({ shortlist, buyingPower: `$${budget}`, totalValue: "$2500" });
+    const { decision } = await runAnalysisAgent(prompt);
+    console.log("\n── V1 notional buy ──\n", JSON.stringify(decision?.buys));
+    const fails = notionalDecisionFails(decision, budget, CAP, shortlist.map(s => s.symbol), []);
+    expect(fails).toEqual([]);
+    expect((decision?.buys ?? []).length).toBeGreaterThan(0); // full cash → it should deploy
+    // every buy is dollar-sized, and every symbol is a real S&P 500 name
+    for (const b of decision?.buys ?? []) expect(SP500_UNIVERSE.includes((b as any).symbol)).toBe(true);
+  }, 120_000);
+
+  it("does NOT buy a shortlist name flagged with imminent (≤3d) earnings", async () => {
+    const earn = (() => { const d = new Date(TODAY); d.setUTCDate(d.getUTCDate() + 2); return d.toISOString().slice(0, 10); })();
+    const shortlist = [
+      { symbol: "NVDA", price: 120, mom: 60, earnings: earn },   // top momentum BUT earnings in 2 days
+      { symbol: "AAPL", price: 230, mom: 45 }, { symbol: "MSFT", price: 420, mom: 40 },
+      { symbol: "JPM", price: 210, mom: 30 },
+    ];
+    const prompt = buildV1Prompt({ shortlist, buyingPower: "$900", totalValue: "$2500", earningsDates: { NVDA: earn } });
+    const { decision } = await runAnalysisAgent(prompt);
+    console.log("\n── V1 imminent-earnings no-buy ──\n", JSON.stringify(decision?.buys));
+    const imminentBuys = (decision?.buys ?? []).filter((b: any) => b.symbol === "NVDA");
+    expect(imminentBuys).toEqual([]); // the ⚠EARN ≤3d hard rule must bind
+  }, 120_000);
 });
 
 describe("notional (dollar_amount) buy sizing + safe sell resolution", () => {
