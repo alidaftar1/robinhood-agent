@@ -808,6 +808,14 @@ describe("notional (dollar_amount) buy sizing + safe sell resolution", () => {
   it("resolveSellQuantity: nothing held → null (drop the sell)", () => {
     expect(resolveSellQuantity({ exit: "all" }, "0")).toBeNull();
   });
+  it("resolveSellQuantity: a MALFORMED fraction skips (null) — never falls through to a full liquidation", () => {
+    expect(resolveSellQuantity({ fraction: 1.5 }, "3")).toBeNull();  // >1 (e.g. mistyped 150%)
+    expect(resolveSellQuantity({ fraction: 50 }, "3")).toBeNull();   // read "50" as 50%
+    expect(resolveSellQuantity({ fraction: 0 }, "3")).toBeNull();    // 0 → nothing to sell, not "all"
+  });
+  it("resolveSellQuantity: exit:\"all\" takes precedence over a stray fraction (full exit, not a trim)", () => {
+    expect(resolveSellQuantity({ exit: "all", fraction: 0.5 }, "2.4")).toBe("2.4");
+  });
 
   it("usableNotionalBudget reserves only the broker buffer (no whole-share price cushion)", () => {
     expect(usableNotionalBudget(1000)).toBeCloseTo(970, 5); // 3% buffer, no 2% cushion

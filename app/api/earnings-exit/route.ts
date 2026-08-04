@@ -85,7 +85,7 @@ This is a targeted mid-day run triggered because the following held positions ha
   ${imminentNames}
 
 INSTRUCTIONS — deviate from standard process:
-1. SELL the positions listed above IMMEDIATELY. No exceptions regardless of momentum.
+1. SELL the positions listed above IMMEDIATELY. No exceptions regardless of momentum. Sell the ENTIRE held quantity of each, INCLUDING any fractional shares (quantities may be fractional, e.g. 2.371) — sell the exact amount held, do NOT round down to whole shares (that would leave a fraction exposed through the earnings gap this run exists to eliminate). Use place_equity_order type=market, market_hours=regular_hours.
 2. Keep ALL other positions UNCHANGED — do not sell or add to them.
 3. With the freed cash, buy ONE high-conviction alternative: best momentum, no imminent earnings, price ≤ $400.
 4. Emit PORTFOLIO_SNAPSHOT as usual.

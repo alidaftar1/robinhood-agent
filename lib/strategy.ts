@@ -180,7 +180,7 @@ CONSTRAINTS:
 - Max $${maxPos} per position. For each buy, compute max_qty = floor(${maxPos} / price). Never order more than max_qty shares. If max_qty = 0 (price > $${maxPos}), skip the stock entirely.
 - Min position size: $50 (skip a stock if 1 share costs less than $50).
 - Only trade symbols shown in the market data table above — all are S&P 500 constituents.
-- Whole shares only — no fractional shares.
+- Whole shares only for BUYS — no fractional BUY orders. (SELLS may be fractional: to exit a position, sell the EXACT quantity held, including any fractional shares — never round a sell down to whole shares, that leaves a dangling fraction.)
 - HARD RULE: Never buy a stock marked ⚠⚠ IMMINENT (earnings ≤3 days away). No exceptions regardless of momentum.
 
 REASONING: Your written thesis (step 3 above) must appear in your response before any orders are placed. Do not start your response with an execution table — start with your thesis.

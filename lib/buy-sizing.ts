@@ -11,6 +11,11 @@
 export const BUY_BUFFER_PCT = 0.03;   // leave 3% of settled buying power unspent (broker buffer)
 export const BUY_PRICE_CUSHION = 1.02; // budget each buy 2% above the thesis price (live tick)
 
+// NOTE: fitBuysToBudget / usableBuyBudget / positionCapQty (below) are the WHOLE-SHARE sizers. The
+// live V1 path uses the notional versions (fitNotionalBuysToBudget etc.). These are retained on
+// purpose as the one-commit ROLLBACK target for the fractional/notional migration + the whole-share
+// FALLBACK math — do not delete. (See docs/plan-fractional-notional-orders.md.)
+
 // The spend limit to hand the ANALYSIS so it never "decides" a buy the pre-flight
 // then silently drops (the GOOGL-07-24 case: $322 chosen, dropped for being $0.82
 // over the buffered budget, cash left idle). Reserves BOTH the broker buffer and the
@@ -139,11 +144,16 @@ export function resolveSellQuantity(
 ): string | null {
   const held = parseFloat(heldQtyStr) || 0;
   if (held <= 0) return null;
-  if (intent.fraction != null && intent.fraction > 0 && intent.fraction < 1) {
+  // exit:"all" takes precedence over any other field — a full exit must never be down-graded to a
+  // trim by a stray/hedged `fraction`.
+  if (intent.exit === "all") return heldQtyStr;
+  if (intent.fraction != null) {
+    // A malformed fraction (≥1, ≤0, NaN) must NOT fall through to a full liquidation — skip it. The
+    // model was told 0<F<1; anything else is a mistake we refuse to guess (fail toward inaction).
+    if (!(intent.fraction > 0 && intent.fraction < 1)) return null;
     const q = (held * intent.fraction).toFixed(6).replace(/\.?0+$/, "");
     return (parseFloat(q) || 0) > 0 ? q : null;
   }
-  if (intent.exit === "all") return heldQtyStr;
   if (intent.quantity != null && intent.quantity > 0) return String(Math.min(intent.quantity, held));
-  return heldQtyStr; // no intent given → full exit
+  return heldQtyStr; // no intent field at all → full exit (safe default)
 }

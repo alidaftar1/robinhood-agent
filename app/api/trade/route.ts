@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { buildSystemPrompt, buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, type PortfolioContext } from "@/lib/strategy";
+import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
@@ -147,7 +147,9 @@ export async function GET(request: Request) {
       if (m) { try { decision = JSON.parse(m[1]); } catch { /* keep empty */ } }
 
       // Apply the same influencer cap + downtrend guard the real run uses (display only)
-      const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !decision.sells.some(s => s.symbol === p.symbol)).length;
+      const isFullExit = (s: { exit?: string; fraction?: number; quantity?: number }) =>
+        s.exit === "all" || (s.exit == null && s.fraction == null && s.quantity == null);
+      const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !decision.sells.some(s => s.symbol === p.symbol && isFullExit(s))).length;
       const dryShortlistSet = new Set(dryBuy.map(s => s.symbol)); // buy-allowlist (retained ◆HELD names excluded)
       const dryInfluencerCandidates = new Set(influencerMomentum.keys());
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) => b.strategy === "influencer" || (dryInfluencerCandidates.has(b.symbol) && !dryShortlistSet.has(b.symbol));
@@ -261,11 +263,10 @@ export async function GET(request: Request) {
       } catch (e) {
         console.error("HELD_DAYS_ENRICHMENT_FAILED — skipping time-stop ages", e);
       }
-      // Budget the analysis against the USABLE spend limit (broker buffer + price
-      // cushion already reserved), not the raw settled figure — otherwise it picks a
-      // name that barely fits the raw number but the pre-flight sizer then drops,
-      // stranding the cash (GOOGL 07-24). fitBuysToBudget below still runs on the raw
-      // buyingPower and applies the same reserves, so the two stay in sync.
+      // Budget the analysis against the USABLE spend limit (broker buffer reserved; notional needs
+      // no price cushion — we specify dollars, not shares), not the raw settled figure. fitNotional-
+      // BuysToBudget below runs on the raw buyingPower and applies the same broker buffer, so the two
+      // stay in sync.
       portfolioCtx = {
         buyingPower: `$${usableNotionalBudget(agenticBalance.buyingPower).toFixed(2)} (settled, buffer-reserved spend limit)`,
         totalValue: `$${agenticBalance.totalValue.toFixed(2)} (live from Robinhood)`,
@@ -468,6 +469,17 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── Notional buy sanitation ───────────────────────────────────────────────
+    // A buy MUST carry a positive numeric dollarAmount ≥ the $50 min. Enforce it deterministically:
+    // (a) a missing/NaN dollarAmount would otherwise crash the notional buy-line builder (which runs
+    // before its try block) AFTER sells already executed; (b) a sub-$50 amount violates the
+    // min-position rule the prompt states. Runs on the RAW model output, before cap/budget sizing.
+    {
+      const before = decision.buys.length;
+      decision.buys = decision.buys.filter(b => typeof b.dollarAmount === "number" && isFinite(b.dollarAmount) && b.dollarAmount >= MIN_BUY_DOLLARS);
+      if (decision.buys.length !== before) console.warn("NOTIONAL_BUYS_DROPPED_INVALID_OR_DUST", { before, after: decision.buys.length });
+    }
+
     // Sizing adjustments (buys shrunk/dropped by the cap guard or budget fit) — surfaced in the
     // run + email so a trim/drop is never silent. Declared here so the position-cap guard can add to it.
     let buySizingAdjustments: string[] = [];
@@ -513,7 +525,11 @@ export async function GET(request: Request) {
     // of what the model decides. Count positions we'd KEEP plus NEW influencer buys.
     const MAX_INFLUENCER_POSITIONS = 2;
     {
-      const soldSet = new Set(decision.sells.map(s => s.symbol));
+      // A slot only frees up on a FULL exit — a partial trim (fraction/legacy-qty) still HOLDS the
+      // position, so counting it as sold would wrongly raise allowedNew and admit a 3rd influencer name.
+      const isFullExit = (s: { exit?: string; fraction?: number; quantity?: number }) =>
+        s.exit === "all" || (s.exit == null && s.fraction == null && s.quantity == null);
+      const soldSet = new Set(decision.sells.filter(isFullExit).map(s => s.symbol));
       const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !soldSet.has(p.symbol)).length;
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
         b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
