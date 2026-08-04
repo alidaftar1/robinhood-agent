@@ -550,7 +550,7 @@ ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
 • If ANY ticker below has NET score ≥ 3, you SHOULD buy 1–2 of them this run (target ~25% of the portfolio),
   UNLESS every qualifying pick is disqualified (price above the per-position cap, ⚠⚠ imminent earnings, or no settled cash).
 • HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
-• Same per-position cap as the main strategy, min $50. Whole shares only.
+• Same per-position cap as the main strategy, min $50. Size each buy as a DOLLAR AMOUNT ("dollarAmount") — the broker fills fractional shares; do not compute a share count.
 • Prefer the highest NET score; a net-6 pick is a strong, broadly-covered, uncontested signal — do not ignore it. Between two similar nets, prefer the one with NO avoid split (cleaner consensus).
 • DOWNTREND SCREEN: do NOT buy a pick marked ⛔DOWNTREND (down >${Math.abs(MOMENTUM_FLOOR_PCT)}% over 5d, OR >${Math.abs(DIST_FROM_HIGH_FLOOR)}% below its recent high). The row shows "5d:" (5-day change) and "hi:" (distance from recent high). These signals measure popularity, not price — a falling stock can be the most-talked-about one. The system rejects these buys anyway. A pick marked ↑RECOVERING dipped but has reclaimed its 5-day average (trend turned up) — it is allowed. Prefer a rising or ↑RECOVERING pick; never a ⛔DOWNTREND one.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".

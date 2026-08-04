@@ -161,6 +161,13 @@ function ReturnChart({ points }: { points: ReturnPoint[] }) {
 
 // ─── Markdown renderer ───────────────────────────────────────────────────────
 
+// Share quantities can now be fractional (notional/dollar buys). Show whole shares as integers and
+// fractional shares trimmed to ≤4 dp — never truncate a fraction to 0 with toFixed(0).
+function fmtQty(q: string | number): string {
+  const n = parseFloat(String(q)) || 0;
+  return Number.isInteger(n) ? String(n) : n.toFixed(4).replace(/\.?0+$/, "");
+}
+
 function renderInline(text: string): React.ReactNode[] {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((p, i) =>
@@ -747,7 +754,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                     {(run.trades ?? []).map((t, j) => (
                       <span key={j} style={t.side === "buy" ? s.tradeBuy : s.tradeSell}>
                         <span>{t.side === "buy" ? "▲ BUY" : "▼ SELL"}</span>
-                        <span>{t.symbol} ×{parseFloat(t.quantity).toFixed(0)} @ ${parseFloat(t.avgPrice || "0").toFixed(2)}</span>
+                        <span>{t.symbol} ×{fmtQty(t.quantity)} @ ${parseFloat(t.avgPrice || "0").toFixed(2)}</span>
                         {t.strategy === "influencer" && <span style={{ fontSize: 10, opacity: 0.7 }}>📺</span>}
                       </span>
                     ))}
@@ -761,7 +768,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                   <div style={{ ...s.posRow, marginBottom: 14 }}>
                     {run.positions.map((p) => (
                       <span key={p.symbol} style={s.pos}>
-                        {p.symbol} × {parseFloat(p.quantity).toFixed(0)} @ ${parseFloat(p.avgCost).toFixed(2)}
+                        {p.symbol} × {fmtQty(p.quantity)} @ ${parseFloat(p.avgCost).toFixed(2)}
                       </span>
                     ))}
                   </div>

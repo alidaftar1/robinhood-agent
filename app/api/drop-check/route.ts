@@ -153,7 +153,7 @@ These held positions hit an exit trigger and must be SOLD:
   ${droppedNames}
 ${hasStop ? `• stop-loss = down ≥${Math.abs(DROP_THRESHOLD_PCT)}% (thesis breakdown — cut it).\n` : ""}${hasProfit ? `• TAKE-PROFIT = an influencer pick up ≥${TAKE_PROFIT_PCT}% from buy. Lock the gain — these are hype names that round-trip; do NOT let it ride.\n` : ""}
 INSTRUCTIONS — deviate from standard process. This is a SELL-ONLY capital-preservation run:
-1. SELL every position listed above — both stop-loss and take-profit exits.
+1. SELL every position listed above — both stop-loss and take-profit exits. Sell the ENTIRE held quantity of each, INCLUDING any fractional shares — quantities may be fractional (e.g. 2.371); sell the exact amount held, do NOT round down to whole shares (that would leave a dangling fraction and an incomplete exit). Use place_equity_order with type=market, time_in_force=gfd, market_hours=regular_hours.
    - Exception (STOP-LOSS only): if it's clearly sympathy selling (broad market down, fundamentals unchanged), you may use judgment and HOLD the position. A TAKE-PROFIT exit is NOT optional — always lock the gain.
 ${regimeLine}
 2. Keep ALL other positions UNCHANGED.

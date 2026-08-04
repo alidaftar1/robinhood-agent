@@ -77,3 +77,73 @@ export function positionCapQty(heldValue: number, buyPrice: number, maxPos: numb
   const room = maxPos - heldValue;
   return Math.max(0, Math.floor(room / buyPrice));
 }
+
+// ── Notional (dollar_amount) sizing ──────────────────────────────────────────
+// With fractional/notional orders the broker fills exact dollars, so there is NO indivisible
+// whole-share to strand — the entire idle-cash / dropped-buy problem the whole-share sizer works
+// around disappears. These are the notional counterparts used by the V1 notional path.
+
+export const MIN_BUY_DOLLARS = 50; // per-buy floor (avoids dust positions); matches the prompt rule
+
+// Spend limit handed to the ANALYSIS for a notional book: reserve only the broker buffer (no
+// whole-share price cushion needed — we specify dollars, not shares, so nothing rounds up).
+export function usableNotionalBudget(settledBuyingPower: number): number {
+  return settledBuyingPower * (1 - BUY_BUFFER_PCT);
+}
+
+// Fit dollar-notional buys to settled buying power. No indivisibility → walk the buys in the
+// model's (conviction) order, allot each its full dollarAmount while budget remains, SHRINK the
+// marginal buy to the remaining dollars (kept only if ≥ MIN_BUY_DOLLARS, else dropped as dust).
+// Deterministic + pure. Unlike the whole-share sizer, a buy is only ever dropped when < the $50
+// floor remains — cash deploys down to the last ~$50, never a whole-share remainder.
+export function fitNotionalBuysToBudget<T extends { symbol: string; dollarAmount: number }>(
+  buys: T[],
+  settledBuyingPower: number,
+  minBuy: number = MIN_BUY_DOLLARS,
+): { sized: T[]; adjustments: string[] } {
+  let budget = settledBuyingPower * (1 - BUY_BUFFER_PCT);
+  const sized: T[] = [];
+  const adjustments: string[] = [];
+  for (const b of buys) {
+    const want = b.dollarAmount;
+    if (!(want > 0)) { adjustments.push(`${b.symbol} skipped — non-positive dollarAmount`); continue; }
+    if (budget < minBuy) { adjustments.push(`${b.symbol} DROPPED — only $${budget.toFixed(2)} settled buying power left (< $${minBuy} min)`); continue; }
+    if (want <= budget) {
+      sized.push(b);
+      budget -= want;
+    } else {
+      // Shrink the marginal buy to the remaining budget (still ≥ min here since budget ≥ minBuy).
+      sized.push({ ...b, dollarAmount: Number(budget.toFixed(2)) });
+      adjustments.push(`${b.symbol} $${want.toFixed(0)}→$${budget.toFixed(0)} (shrunk to fit budget; no share stranded)`);
+      budget = 0;
+    }
+  }
+  return { sized, adjustments };
+}
+
+// Per-position TOP-UP cap in DOLLARS: remaining room before existing-holding value + new buy would
+// exceed `maxPos`. Returns 0 if already at/over cap. The notional analogue of positionCapQty — no
+// floor-to-shares, so the cap is exact. Buy-time only; never implies selling an over-cap position.
+export function positionCapDollars(heldValue: number, maxPos: number): number {
+  return Math.max(0, maxPos - heldValue);
+}
+
+// Resolve a SELL intent to a concrete share-quantity string against the LIVE held quantity. The
+// model emits intent (exit:"all" / fraction) — NEVER a raw share count — so it can't mistype and
+// over/under-sell. Rules: full exit → the EXACT held string (no float drift, no dust remainder);
+// fraction (0<F<1) → held×F trimmed; legacy numeric quantity → clamped to held (never over-sell);
+// nothing specified → full exit (safe default). Returns null if nothing is held. Pure + testable.
+export function resolveSellQuantity(
+  intent: { exit?: string; fraction?: number; quantity?: number },
+  heldQtyStr: string,
+): string | null {
+  const held = parseFloat(heldQtyStr) || 0;
+  if (held <= 0) return null;
+  if (intent.fraction != null && intent.fraction > 0 && intent.fraction < 1) {
+    const q = (held * intent.fraction).toFixed(6).replace(/\.?0+$/, "");
+    return (parseFloat(q) || 0) > 0 ? q : null;
+  }
+  if (intent.exit === "all") return heldQtyStr;
+  if (intent.quantity != null && intent.quantity > 0) return String(Math.min(intent.quantity, held));
+  return heldQtyStr; // no intent given → full exit
+}

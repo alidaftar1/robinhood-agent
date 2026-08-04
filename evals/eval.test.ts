@@ -8,7 +8,7 @@ import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
-import { fitBuysToBudget, usableBuyBudget, positionCapQty } from "@/lib/buy-sizing";
+import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -650,6 +650,59 @@ describe("benchmark-awareness: beta math", () => {
     expect(pick({ bookBeta: { beta: 0.74, coveragePct: 90 } })!.beta).toBe(0.74);
     expect(pick({ bookBeta: null })).toBeNull();  // current predates the field → "—", not a stale day's β
     expect(pick(null)).toBeNull();                // no current run yet → "—"
+  });
+});
+
+describe("notional (dollar_amount) buy sizing + safe sell resolution", () => {
+  it("fitNotionalBuysToBudget deploys full dollars with no indivisible-share strand", () => {
+    // Two buys summing to $500; settled BP $467.6 (3% buffer → $453.57 usable). No whole-share
+    // remainder: the marginal buy shrinks to the remaining dollars, nothing is dropped/stranded.
+    const { sized, adjustments } = fitNotionalBuysToBudget(
+      [{ symbol: "AAPL", dollarAmount: 300 }, { symbol: "MSFT", dollarAmount: 200 }],
+      467.6,
+    );
+    const bySym = Object.fromEntries(sized.map(b => [b.symbol, b.dollarAmount]));
+    expect(bySym.AAPL).toBe(300);                              // first buy funded in full
+    expect(bySym.MSFT).toBeCloseTo(453.57 - 300, 1);          // marginal buy shrunk to remaining $
+    const spent = sized.reduce((s, b) => s + b.dollarAmount, 0);
+    expect(spent).toBeLessThanOrEqual(467.6 * 0.97 + 0.01);   // within buffered budget
+    expect(spent).toBeGreaterThan(467.6 * 0.97 - 1);          // deploys ~all of it (no idle whole-share)
+    expect(adjustments.some(a => a.includes("MSFT"))).toBe(true);
+  });
+
+  it("fitNotionalBuysToBudget drops a marginal buy only when < the $50 min remains (as dust)", () => {
+    const { sized, adjustments } = fitNotionalBuysToBudget(
+      [{ symbol: "A", dollarAmount: 480 }, { symbol: "B", dollarAmount: 100 }],
+      500, // usable ~$485 → A takes 480, only ~$5 left (< $50) → B dropped, not a sub-$50 dust buy
+    );
+    expect(sized.map(b => b.symbol)).toEqual(["A"]);
+    expect(adjustments.some(a => a.includes("B") && a.includes("DROPPED"))).toBe(true);
+  });
+
+  it("positionCapDollars caps top-up to exact remaining room (no floor-to-shares)", () => {
+    expect(positionCapDollars(300, 496)).toBe(196);  // $196 room, exact
+    expect(positionCapDollars(500, 496)).toBe(0);    // already over cap → no room
+  });
+
+  it("resolveSellQuantity: full exit sells the EXACT held qty (fractional, no dust)", () => {
+    expect(resolveSellQuantity({ exit: "all" }, "2.371")).toBe("2.371"); // clean full exit
+    expect(resolveSellQuantity({}, "2.371")).toBe("2.371");              // no intent → full exit default
+  });
+  it("resolveSellQuantity: fraction trims held × F", () => {
+    expect(resolveSellQuantity({ fraction: 0.5 }, "3")).toBe("1.5");
+    expect(resolveSellQuantity({ fraction: 0.5 }, "2.4")).toBe("1.2");
+  });
+  it("resolveSellQuantity: legacy numeric quantity is clamped to held (never over-sell)", () => {
+    expect(resolveSellQuantity({ quantity: 5 }, "2.371")).toBe("2.371"); // asked 5, hold 2.371 → sell 2.371
+    expect(resolveSellQuantity({ quantity: 1 }, "3")).toBe("1");
+  });
+  it("resolveSellQuantity: nothing held → null (drop the sell)", () => {
+    expect(resolveSellQuantity({ exit: "all" }, "0")).toBeNull();
+  });
+
+  it("usableNotionalBudget reserves only the broker buffer (no whole-share price cushion)", () => {
+    expect(usableNotionalBudget(1000)).toBeCloseTo(970, 5); // 3% buffer, no 2% cushion
+    expect(MIN_BUY_DOLLARS).toBe(50);
   });
 });
 

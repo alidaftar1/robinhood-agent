@@ -10,7 +10,7 @@ import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, n
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
-import { fitBuysToBudget, usableBuyBudget, positionCapQty } from "@/lib/buy-sizing";
+import { fitNotionalBuysToBudget, usableNotionalBudget, positionCapDollars, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts } from "@/lib/stopouts";
 import { fetchNewsSignals } from "@/lib/news";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord } from "@/lib/earnings";
@@ -116,7 +116,7 @@ export async function GET(request: Request) {
 
       const buyingPower = simulateCash ? parseFloat(simulateCash) : parseFloat(previousRun?.portfolioAfter?.cash ?? "0");
       const portfolioCtx: PortfolioContext = {
-        buyingPower: `$${usableBuyBudget(buyingPower).toFixed(2)} (SIMULATED dry run — buffer-reserved spend limit)`,
+        buyingPower: `$${usableNotionalBudget(buyingPower).toFixed(2)} (SIMULATED dry run — buffer-reserved spend limit)`,
         totalValue: `$${previousRun?.portfolioAfter?.totalValue ?? "0"} (estimated)`,
         positions: (previousRun?.positions ?? []).map(p => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost })),
       };
@@ -141,7 +141,7 @@ export async function GET(request: Request) {
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
 
-      type DryDecision = { thesis: string; sells: Array<{ symbol: string; quantity: number }>; buys: Array<{ symbol: string; quantity: number; price: number; strategy?: string }> };
+      type DryDecision = { thesis: string; sells: Array<{ symbol: string; exit?: string; fraction?: number; quantity?: number; strategy?: string }>; buys: Array<{ symbol: string; dollarAmount: number; strategy?: string }> };
       let decision: DryDecision = { thesis: "", sells: [], buys: [] };
       const m = analysisText.match(/^TRADE_DECISION:(.+)$/m);
       if (m) { try { decision = JSON.parse(m[1]); } catch { /* keep empty */ } }
@@ -158,8 +158,8 @@ export async function GET(request: Request) {
       });
       const influencerBuys = annotatedBuys.filter(b => b.resolvedStrategy === "influencer");
       const allowedNew = Math.max(0, 2 - keptInfluencer);
-      // Preview the pre-flight buy sizing the real run now applies.
-      const { sized: sizedBuys, adjustments: sizingAdjustments } = fitBuysToBudget(decision.buys, buyingPower);
+      // Preview the pre-flight NOTIONAL buy sizing the real run now applies.
+      const { sized: sizedBuys, adjustments: sizingAdjustments } = fitNotionalBuysToBudget(decision.buys, buyingPower);
 
       return Response.json({
         dryRun: true,
@@ -169,7 +169,7 @@ export async function GET(request: Request) {
         influencerSectionInjected: influencerSection.length > 0,
         decision: { thesis: decision.thesis, sells: decision.sells, buys: annotatedBuys },
         influencerCap: { keptInfluencer, allowedNew, influencerBuysRequested: influencerBuys.length, wouldTrim: Math.max(0, influencerBuys.length - allowedNew) },
-        buySizing: { settledBuyingPower: buyingPower, adjustments: sizingAdjustments, sizedBuys: sizedBuys.map(b => ({ symbol: b.symbol, quantity: b.quantity, price: b.price })) },
+        buySizing: { settledBuyingPower: buyingPower, adjustments: sizingAdjustments, sizedBuys: sizedBuys.map(b => ({ symbol: b.symbol, dollarAmount: b.dollarAmount })) },
         thesisPreview: analysisText.slice(0, 1200),
       });
     }
@@ -267,7 +267,7 @@ export async function GET(request: Request) {
       // stranding the cash (GOOGL 07-24). fitBuysToBudget below still runs on the raw
       // buyingPower and applies the same reserves, so the two stay in sync.
       portfolioCtx = {
-        buyingPower: `$${usableBuyBudget(agenticBalance.buyingPower).toFixed(2)} (settled, buffer-reserved spend limit)`,
+        buyingPower: `$${usableNotionalBudget(agenticBalance.buyingPower).toFixed(2)} (settled, buffer-reserved spend limit)`,
         totalValue: `$${agenticBalance.totalValue.toFixed(2)} (live from Robinhood)`,
         positions: positions.map(p => ({
           symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost,
@@ -404,7 +404,10 @@ export async function GET(request: Request) {
     textContent = analysisText;
 
     // Parse TRADE_DECISION
-    type TradeDecision = { thesis: string; sells: Array<{ symbol: string; quantity: number }>; buys: Array<{ symbol: string; quantity: number; price: number; strategy?: string }> };
+    // Buys are NOTIONAL (dollarAmount). Sells express INTENT (exit:"all" for a full exit, fraction
+    // for a trim) resolved to a concrete share qty from the LIVE held position below — the model
+    // never types a fractional share count. `quantity` kept optional as a legacy fallback.
+    type TradeDecision = { thesis: string; sells: Array<{ symbol: string; exit?: string; fraction?: number; quantity?: number; strategy?: string }>; buys: Array<{ symbol: string; dollarAmount: number; strategy?: string }> };
     let decision: TradeDecision = { thesis: "", sells: [], buys: [] };
     const decisionMatch = analysisText.match(/^TRADE_DECISION:(.+)$/m);
     if (decisionMatch) {
@@ -490,15 +493,14 @@ export async function GET(request: Request) {
       const capNotes: string[] = [];
       decision.buys = decision.buys.flatMap(b => {
         if (isInfluencerBuy(b)) return [b];
-        const price = b.price || priceMap.get(b.symbol) || 0;
-        const maxQty = positionCapQty(heldValueOf(b.symbol), price, maxPos);
-        if (b.quantity <= maxQty) return [b];                 // within cap (or no price) — untouched
-        if (maxQty <= 0) {                                    // already at/over cap — drop the top-up
+        const room = positionCapDollars(heldValueOf(b.symbol), maxPos); // exact $ headroom, no floor-to-shares
+        if (b.dollarAmount <= room) return [b];               // within cap — untouched
+        if (room < MIN_BUY_DOLLARS) {                         // no meaningful room — drop the top-up
           capNotes.push(`${b.symbol} buy DROPPED — position already at/over the $${maxPos.toFixed(0)} cap`);
           return [];
         }
-        capNotes.push(`${b.symbol} buy trimmed ${b.quantity}→${maxQty}sh — would exceed the $${maxPos.toFixed(0)} per-position cap`);
-        return [{ ...b, quantity: maxQty }];
+        capNotes.push(`${b.symbol} buy trimmed $${b.dollarAmount.toFixed(0)}→$${room.toFixed(0)} — would exceed the $${maxPos.toFixed(0)} per-position cap`);
+        return [{ ...b, dollarAmount: Number(room.toFixed(2)) }];
       });
       if (capNotes.length > 0) {
         console.log("V1_POSITION_CAP_GUARD", { maxPos, notes: capNotes });
@@ -551,15 +553,33 @@ export async function GET(request: Request) {
       }
     }
 
-    // ── Pre-flight buy sizing: fit buys into live settled buying power ────────────
-    // (sells today settle T+1 → they don't fund today's buys; size against real BP)
+    // ── Pre-flight buy sizing: fit NOTIONAL buys into live settled buying power ────
+    // (sells today settle T+1 → they don't fund today's buys; size against real BP). Notional has
+    // no indivisible whole-share to strand — cash deploys down to the last ~$50, nothing idle.
     if (decision.buys.length > 0 && agenticBalance) {
-      const { sized, adjustments } = fitBuysToBudget(decision.buys, agenticBalance.buyingPower);
+      const { sized, adjustments } = fitNotionalBuysToBudget(decision.buys, agenticBalance.buyingPower);
       if (adjustments.length > 0) {
         console.log("BUY_SIZING_ADJUSTED", { settledBuyingPower: agenticBalance.buyingPower, adjustments });
         buySizingAdjustments.push(...adjustments); // append — don't clobber the cap-guard notes above
       }
       decision.buys = sized;
+    }
+
+    // ── Resolve sell INTENT → concrete share quantity from the LIVE held position ──
+    // The model emits intent (exit:"all" / fraction), NEVER a fractional share count, so it can't
+    // mistype and over/under-sell. A full exit sells the EXACT held qty (no dust remainder); a trim
+    // sells fraction × held. A legacy numeric `quantity` is clamped to what's held. Names we don't
+    // actually hold are dropped. Fractional quantities are fine (market + regular_hours sells).
+    const sellsToExecute: Array<{ symbol: string; quantity: string; strategy?: string }> = [];
+    for (const s of decision.sells) {
+      const pos = (portfolioCtx?.positions ?? []).find(p => p.symbol === s.symbol);
+      if (!pos) { console.warn("SELL_SKIPPED_NOT_HELD", { symbol: s.symbol }); continue; }
+      const qtyStr = resolveSellQuantity(s, pos.quantity);
+      if (qtyStr && (parseFloat(qtyStr) || 0) > 0) sellsToExecute.push({ symbol: s.symbol, quantity: qtyStr, strategy: s.strategy });
+      else console.warn("SELL_SKIPPED_NOT_HELD", { symbol: s.symbol });
+    }
+    if (sellsToExecute.length !== decision.sells.length) {
+      console.log("SELLS_RESOLVED", { requested: decision.sells.length, executable: sellsToExecute.length });
     }
 
     const mcpServer = { type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken };
@@ -571,16 +591,16 @@ export async function GET(request: Request) {
     const sellStrategyTag = (sym: string) =>
       (previousRun?.trades ?? []).find(t => t.side === "buy" && t.symbol === sym)?.strategy;
 
-    async function runSellSession(sells: Array<{ symbol: string; quantity: number }>, timeoutMs: number): Promise<boolean> {
+    async function runSellSession(sells: Array<{ symbol: string; quantity: string }>, timeoutMs: number): Promise<boolean> {
       if (sells.length === 0) return true;
-      const lines = sells.map(s => `- sell ${s.symbol} ${s.quantity} shares`).join("\n");
+      const lines = sells.map(s => `- sell ${s.quantity} shares of ${s.symbol}`).join("\n");
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
         const resp = await (anthropic.beta.messages as any).create({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 1024,
-          system: `Place these market sell orders one at a time for account ${ACCOUNT} using place_equity_order. Use type=market, time_in_force=gfd. Place each order sequentially and wait for confirmation before the next. Do not skip any. Do not analyze — just execute.\n${lines}\nOutput: SELLS_DONE`,
+          system: `Place these market sell orders one at a time for account ${ACCOUNT} using place_equity_order. Use type=market, time_in_force=gfd, market_hours=regular_hours. Quantities may be fractional (e.g. 2.37) — pass the exact quantity given. Place each order sequentially and wait for confirmation before the next. Do not skip any. Do not analyze — just execute.\n${lines}\nOutput: SELLS_DONE`,
           messages: [{ role: "user", content: "Execute the sells now, one at a time." }],
           mcp_servers: [mcpServer],
           betas: ["mcp-client-2025-04-04"],
@@ -623,20 +643,20 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       }
     }
 
-    if (decision.sells.length > 0) {
-      const ok = await runSellSession(decision.sells, 120_000);
+    if (sellsToExecute.length > 0) {
+      const ok = await runSellSession(sellsToExecute, 120_000);
       if (ok) {
         let verified = await verifySells();
-        let missing = decision.sells.filter(s => !verified.has(s.symbol));
+        let missing = sellsToExecute.filter(s => !verified.has(s.symbol));
         if (missing.length > 0) {
           console.warn("SELL_VERIFY_MISSING — retrying", { missing: missing.map(s => s.symbol) });
           await runSellSession(missing, 90_000); // retry only the dropped orders
           verified = await verifySells();
-          missing = decision.sells.filter(s => !verified.has(s.symbol));
+          missing = sellsToExecute.filter(s => !verified.has(s.symbol));
         }
         // Record ONLY confirmed sells. A decided sell with no confirmed order didn't
         // execute — leave it unrecorded (the position stays held) and alert.
-        for (const s of decision.sells) {
+        for (const s of sellsToExecute) {
           const v = verified.get(s.symbol);
           if (!v) continue;
           const fill = parseFloat(v.avgPrice) > 0 ? v.avgPrice : String(priceMap.get(s.symbol) ?? 0);
@@ -661,14 +681,20 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     type VerifiedBuy = { symbol: string; quantity: string; avgPrice: string; state: string };
     async function runBuySession(buys: typeof decision.buys, timeoutMs: number): Promise<boolean> {
       if (buys.length === 0) return true;
-      const lines = buys.map(b => `- buy ${b.symbol} ${b.quantity} shares`).join("\n");
+      // Each buy is NOTIONAL ($ amount). Include a per-share price hint so the executor can compute
+      // the whole-share FALLBACK if a name turns out not to be fractional/dollar-eligible.
+      const lines = buys.map(b => {
+        const px = priceMap.get(b.symbol) ?? 0;
+        const hint = px > 0 ? ` (fallback if not fractional-eligible: buy ${Math.floor(b.dollarAmount / px)} whole shares at ~$${px.toFixed(2)})` : "";
+        return `- buy $${b.dollarAmount.toFixed(2)} of ${b.symbol}${hint}`;
+      }).join("\n");
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
         const resp = await (anthropic.beta.messages as any).create({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 1024,
-          system: `Place these market buy orders one at a time for account ${ACCOUNT} using place_equity_order. Use type=market, time_in_force=gfd. Place each order sequentially and wait for confirmation before the next. Do not skip any. Do not analyze — just execute.\n${lines}\nOutput: BUYS_DONE`,
+          system: `Place these market buy orders one at a time for account ${ACCOUNT} using place_equity_order. For each: type=market, dollar_amount=<the $ amount>, time_in_force=gfd, market_hours=regular_hours (a dollar-based/notional order — the broker fills fractional shares). If a dollar_amount order is REJECTED because the stock is not eligible for fractional/dollar-based orders, retry that SAME symbol as a whole-share order instead: type=market, quantity=<the fallback whole-share count shown for it>, time_in_force=gfd (skip it only if the fallback count is 0). Place each order sequentially and wait for confirmation before the next. Do not skip any. Do not analyze — just execute.\n${lines}\nOutput: BUYS_DONE`,
           messages: [{ role: "user", content: "Execute the buys now, one at a time." }],
           mcp_servers: [mcpServer],
           betas: ["mcp-client-2025-04-04"],

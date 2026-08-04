@@ -35,24 +35,17 @@ export function computeDecisionScores(
 ): Record<string, number> {
   const scores: Record<string, number> = {};
   if (!decision) return scores;
-  const buys = (Array.isArray(decision.buys) ? decision.buys : []) as Array<{ symbol?: unknown; quantity?: unknown; price?: unknown }>;
-  const sells = (Array.isArray(decision.sells) ? decision.sells : []) as Array<{ quantity?: unknown }>;
+  const buys = (Array.isArray(decision.buys) ? decision.buys : []) as Array<{ symbol?: unknown; dollarAmount?: unknown }>;
 
-  // Whole, positive share quantities across all orders.
-  const orders = [...buys, ...sells];
-  if (orders.length > 0) {
-    scores.whole_shares = orders.every((o) => { const q = num(o.quantity); return Number.isInteger(q) && q > 0; }) ? 1 : 0;
-  }
-
-  // Position sizing + budget — only over buys that carry a usable price.
-  const priced = buys.filter((b) => Number.isFinite(num(b.price)) && num(b.price) > 0);
-  if (priced.length > 0) {
+  // Notional position sizing + budget — buys are dollar amounts (no share count).
+  const sized = buys.filter((b) => Number.isFinite(num(b.dollarAmount)) && num(b.dollarAmount) > 0);
+  if (sized.length > 0) {
     const cap = maxPositionDollars(run?.portfolioAfter?.totalValue);        // dynamic prod cap, not the eval's fixed $400
-    scores.position_cap = priced.every((b) => num(b.quantity) * num(b.price) <= cap + 1) ? 1 : 0;
-    scores.min_position_size = priced.every((b) => num(b.quantity) * num(b.price) >= 50 - 1) ? 1 : 0;
+    scores.position_cap = sized.every((b) => num(b.dollarAmount) <= cap + 1) ? 1 : 0;
+    scores.min_position_size = sized.every((b) => num(b.dollarAmount) >= 50 - 1) ? 1 : 0;
     const bp = num(buyingPower);
     if (Number.isFinite(bp)) {
-      const spend = priced.reduce((s, b) => s + num(b.quantity) * num(b.price), 0);
+      const spend = sized.reduce((s, b) => s + num(b.dollarAmount), 0);
       scores.buys_within_budget = spend <= bp + 1 ? 1 : 0;                  // sell proceeds don't count — same HARD LIMIT as the prompt
     }
   }
