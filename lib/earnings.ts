@@ -93,3 +93,39 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30): Pro
   }
   return out;
 }
+
+/** A name's recent earnings-surprise track record — the base rate for "beat vs coin flip"
+ *  when deciding whether to ride a HELD name through its earnings (PEAD favors serial beaters). */
+export interface EarningsBeatRecord { beats: number; total: number; avgSurprisePct: number }
+
+// Earnings-surprise history (Finnhub) for a set of symbols — how many of the last ~8 quarters the
+// company BEAT estimates, and by how much on average. Feeds the earnings hold-judgment so a serial
+// beater (e.g. PLTR: 4/4, +15% avg) reads as a ride-through candidate, not a coin flip. Fail-safe.
+export async function fetchEarningsBeatHistory(symbols: string[]): Promise<Map<string, EarningsBeatRecord>> {
+  const out = new Map<string, EarningsBeatRecord>();
+  const key = process.env.FINNHUB_API_KEY;
+  const uniq = [...new Set(symbols)].filter(Boolean);
+  if (!key || uniq.length === 0) return out;
+  const BATCH = 10;
+  for (let i = 0; i < uniq.length; i += BATCH) {
+    await Promise.all(uniq.slice(i, i + BATCH).map(async sym => {
+      try {
+        const res = await fetch(`https://finnhub.io/api/v1/stock/earnings?symbol=${sym}&token=${key}`, { signal: AbortSignal.timeout(6000) });
+        if (!res.ok) return;
+        const data = await res.json() as Array<{ surprisePercent?: number; period?: string }>;
+        if (!Array.isArray(data)) return;
+        // Finnhub returns newest-first, but sort by period desc defensively so a reorder can never
+        // feed the OLDEST 8 quarters (a stale base rate) into a live ride-through decision.
+        const recent = [...data]
+          .sort((a, b) => (b.period ?? "").localeCompare(a.period ?? ""))
+          .slice(0, 8)
+          .filter(e => typeof e.surprisePercent === "number");
+        if (recent.length < 2) return; // need a couple of quarters for a meaningful record
+        const beats = recent.filter(e => (e.surprisePercent as number) > 0).length;
+        const avg = recent.reduce((s, e) => s + (e.surprisePercent as number), 0) / recent.length;
+        out.set(sym, { beats, total: recent.length, avgSurprisePct: avg });
+      } catch { /* fail-safe per symbol */ }
+    }));
+  }
+  return out;
+}

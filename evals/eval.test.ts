@@ -359,6 +359,38 @@ describe("earnings hold-judgment: held names flagged, rules present (main + infl
   });
 });
 
+describe("earnings-beat record: serial-beater base rate on a held name into earnings", () => {
+  const { buildV1AnalysisPrompt } = require("@/lib/strategy");
+  const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
+    { symbol: "PLTR", quantity: "2", avgCost: "120", price: "121", heldDays: 23 }, // stale + imminent earnings + serial beater
+    { symbol: "APA",  quantity: "17", avgCost: "33", price: "36" },                 // far-off earnings → no record shown
+  ]};
+  const beat = new Map([
+    ["PLTR", { beats: 4, total: 4, avgSurprisePct: 15.0 }],
+    ["APA",  { beats: 2, total: 4, avgSurprisePct: -1.0 }],
+  ]);
+  const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR"], [], [],
+    { PLTR: "2026-08-01", APA: "2026-09-15" }, new Map(), beat);
+  const lineFor = (s: string) => prompt.split("\n").find((l: string) => l.trim().startsWith(s)) ?? "";
+
+  it("renders the 📈EARN-RECORD on a held name approaching earnings", () => {
+    expect(lineFor("PLTR")).toMatch(/📈EARN-RECORD beat 4\/4, avg \+15% surprise/);
+  });
+  it("does NOT render a record on a name whose earnings are far off (no earnTag)", () => {
+    expect(lineFor("APA")).not.toMatch(/EARN-RECORD/);
+  });
+  it("carries the ride-through-vs-coin-flip rule that uses the record", () => {
+    expect(prompt).toMatch(/USE THE 📈EARN-RECORD/);
+    expect(prompt).toMatch(/can OVERRIDE the stale-rotation default/);
+  });
+  it("renders no record tag on the position line when no beat history is supplied (fail-safe)", () => {
+    const bare = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR"], [], [],
+      { PLTR: "2026-08-01" });
+    const bareLine = bare.split("\n").find((l: string) => l.trim().startsWith("PLTR")) ?? "";
+    expect(bareLine).not.toMatch(/EARN-RECORD/); // the rules text still mentions it; the position line must not
+  });
+});
+
 describe("influencer scoring: net (buy − avoid) + low=0", () => {
   const { netScores } = require("@/lib/influencer-signals");
   const cache = (tickerCounts: Record<string, number>, avoidCounts: Record<string, number> = {}) =>

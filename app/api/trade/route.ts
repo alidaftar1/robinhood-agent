@@ -13,7 +13,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty } from "@/lib/buy-sizing";
 import { getRecentStopouts } from "@/lib/stopouts";
 import { fetchNewsSignals } from "@/lib/news";
-import { fetchEarningsForSymbols } from "@/lib/earnings";
+import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -331,6 +331,23 @@ export async function GET(request: Request) {
     const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals);
     console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
 
+    // Earnings-BEAT track record for HELD names approaching earnings — the base rate that lets the
+    // hold-judgment tell a serial beater (ride through, PEAD favors it) from a coin flip (trim if
+    // oversized). Only held names into imminent earnings need it: PLTR was sold as "stale + earnings"
+    // while being a 4/4 serial beater (+15% avg surprise) — exactly the ride-through exception the
+    // rule couldn't see. Scoped to ≤15d-out held names (usually 0-2), so it's a couple of cheap
+    // Finnhub calls. Fail-safe: empty map → the position line simply omits the record.
+    const heldIntoEarnings = [...heldMainSymbols, ...influencerHeld].filter(sym => {
+      const d = earningsDatesMap[sym];
+      if (!d) return false;
+      const days = Math.round((new Date(d + "T00:00:00Z").getTime() - new Date(today + "T00:00:00Z").getTime()) / 86400000);
+      return days >= 0 && days <= 10; // match the ≤10d earnTag render gate — a record only shows next to an earnings tag
+
+    });
+    const beatHistory = heldIntoEarnings.length
+      ? await fetchEarningsBeatHistory(heldIntoEarnings).catch(() => new Map<string, EarningsBeatRecord>())
+      : new Map<string, EarningsBeatRecord>();
+
     // ── V1 DEGENERATE-DATA GUARD ──────────────────────────────────────────────
     // If the universe fetch came back badly partial (Yahoo throttling on the heavier 2y fetch) or the
     // shortlist is too small to form a book, DO NOT trade — a data glitch must NEVER drive a mass
@@ -375,7 +392,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
