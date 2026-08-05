@@ -331,7 +331,7 @@ export async function GET(request: Request) {
     // influencer) — the event tail (M&A/litigation/guidance/product/regulatory). Held influencer
     // names matter MOST here (high-variance sleeve). Fail-safe: empty map on any failure/missing key.
     const newsSignals = await fetchNewsSignals([
-      ...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld,
+      ...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld, ...influencerCandidateSet,
     ]).catch(() => new Map<string, { direction: string; summary: string }>());
     // change1d for HELD names (for the 📊REPORTED reaction on position lines) — from the universe
     // fetch, then FALL BACK to influencer momentum so non-S&P sleeve holds (PLTR/SPCX/COIN — absent
@@ -341,9 +341,9 @@ export async function GET(request: Request) {
     );
     for (const [sym, m] of influencerMomentum) if (!(sym in change1dOfHeld)) change1dOfHeld[sym] = m.change1d;
     const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings);
-    // Build the influencer section HERE (once) — after recentEarnings, so the 📊REPORTED flag is
-    // included. formatInfluencerSignals returns "" when there's no cache/signals.
-    influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings);
+    // Build the influencer section HERE (once) — after recentEarnings/news, so candidates carry the
+    // SAME universal risk flags as the main book: 📊REPORTED, ⚠EARN/⚠⚠ IMMINENT (upcoming), ⚡NEWS.
+    influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings, perSymbolEarnings, today, newsSignals);
     console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
 
     // Earnings-BEAT track record for HELD names approaching earnings — the base rate that lets the

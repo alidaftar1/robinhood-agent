@@ -503,7 +503,7 @@ export function isInfluencerRecovering(m: MomentumSignal | undefined): boolean {
  *  @param priceMap optional live prices for influencer tickers (fetched in trade route)
  *  @param momentum optional 5-day % change per ticker (downtrend screen)
  */
-export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>, recentEarnings?: Map<string, import("./earnings").RecentEarnings>): string {
+export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>, recentEarnings?: Map<string, import("./earnings").RecentEarnings>, upcomingEarnings?: Map<string, string>, today?: string, news?: Map<string, { direction: string; summary: string }>): string {
   if (!cache || cache.signals.length === 0) return "";
 
   // Rank BUY-mentioned tickers by NET score (buy consensus − avoid dissent), highest first.
@@ -535,10 +535,22 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     // post-earnings entry — a fresh pop is a late/risky momentum chase, not durable trend.
     const re = recentEarnings?.get(ticker);
     const earnStr = re ? formatPostEarnings(re, mom?.change1d, mom?.change5d) : "";
+    // Upcoming earnings — the "never buy into imminent earnings" rule applies to the sleeve too, so
+    // render ⚠EARN / ⚠⚠ IMMINENT on candidates (data already fetched for this set). Same as the shortlist.
+    const ud = upcomingEarnings?.get(ticker);
+    let upEarnStr = "";
+    if (ud && today) {
+      const dte = Math.round((Date.parse(ud) - Date.parse(today)) / 86_400_000);
+      if (dte >= 0 && dte <= 30) upEarnStr = dte <= 3 ? `  ⚠⚠ IMMINENT EARNINGS ${ud} (${dte}d)` : `  ⚠EARN ${ud} (${dte}d)`;
+    }
+    // Material corporate-event news — a bearish event (lawsuit/cut guidance/deal collapse/regulatory)
+    // is a real AVOID reason even on strong influencer consensus. Universal risk flag, same as the shortlist.
+    const nw = news?.get(ticker);
+    const newsStr = nw ? `  ⚡NEWS${nw.direction === "+" ? "↑" : nw.direction === "-" ? "↓" : ""} "${nw.summary}"` : "";
     // Show the net score; when other creators warned against it, spell out the buy−avoid split.
     const avoid = avoidOf[ticker] ?? 0;
     const scoreStr = avoid > 0 ? `net=${score} (${cache.tickerCounts[ticker]} buy − ${avoid} avoid)` : `net=${score}`;
-    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(30)} ${scoreStr}${earnStr}  channels: ${channels}`;
+    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(30)} ${scoreStr}${upEarnStr}${earnStr}${newsStr}  channels: ${channels}`;
   }).filter(Boolean).join("\n");
 
   if (!rows) return "";
@@ -558,6 +570,7 @@ ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
 • Same per-position cap as the main strategy, min $50. Size each buy as a DOLLAR AMOUNT ("dollarAmount") — the broker fills fractional shares; do not compute a share count.
 • Prefer the highest NET score; a net-6 pick is a strong, broadly-covered, uncontested signal — do not ignore it. Between two similar nets, prefer the one with NO avoid split (cleaner consensus).
 • POST-EARNINGS SCREEN: a pick marked 📊REPORTED just had earnings — read the REACTION (up, DOWN, or flat), not just the net score. A big UP move = a one-time earnings GAP you'd be chasing LATE (local high, gaps give back), NOT durable trend — high-risk, prefer to skip unless it's a serial beater whose beat can keep drifting up. A big DOWN move = the print DISAPPOINTED; creators may be hyping a fallen name — respect the ⛔DOWNTREND screen, do not catch the knife. Either way a fresh post-earnings reaction is a CONSIDERED decision: say in your thesis how the outcome informs the buy. The sleeve catches durable momentum, not one-day earnings spikes or falling knives.
+• NEWS + EARNINGS (same universal risk flags as the main book, now shown on candidates): a bearish ⚡NEWS↓ (a material event — lawsuit / cut guidance / deal collapse / regulatory) is a real reason to AVOID a pick even on strong consensus — name the event. And NEVER buy a candidate marked ⚠⚠ IMMINENT (≤3 days to earnings) — the same hard no-buy rule as the main book; ⚠EARN (≤30d) means size down / prefer a name without it.
 • DOWNTREND SCREEN: do NOT buy a pick marked ⛔DOWNTREND (down >${Math.abs(MOMENTUM_FLOOR_PCT)}% over 5d, OR >${Math.abs(DIST_FROM_HIGH_FLOOR)}% below its recent high). The row shows "5d:" (5-day change) and "hi:" (distance from recent high). These signals measure popularity, not price — a falling stock can be the most-talked-about one. The system rejects these buys anyway. A pick marked ↑RECOVERING dipped but has reclaimed its 5-day average (trend turned up) — it is allowed. Prefer a rising or ↑RECOVERING pick; never a ⛔DOWNTREND one.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".
 • Non-S&P-500 tickers here (e.g. SPCX, PLTR, COIN, HOOD) can ONLY be bought as influencer picks.

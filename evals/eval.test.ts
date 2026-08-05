@@ -733,6 +733,25 @@ describe("post-earnings reaction flag 📊REPORTED (deterministic)", () => {
   });
 });
 
+describe("influencer candidates carry the SAME universal risk flags as the main book", () => {
+  const { formatInfluencerSignals } = require("@/lib/influencer-signals");
+  const cache = { refreshedAt: "2026-08-05", signals: [{ tickers: ["PLTR"], confidence: "high", channelName: "Meet Kevin" }], tickerCounts: { PLTR: 11 }, avoidCounts: {} };
+  const mom = new Map([["PLTR", { change1d: 28, change5d: 31, distFromHigh: -2, aboveShortMA: true }]]);
+  const row = (upcoming: Map<string, string>, news: Map<string, { direction: string; summary: string }>) =>
+    formatInfluencerSignals(cache, new Map([["PLTR", 161.64]]), mom, new Map([["PLTR", { date: "2026-08-04", daysAgo: 1 }]]), upcoming, "2026-08-05", news)
+      .split("\n").find((l: string) => l.includes("net=11")) ?? "";
+
+  it("renders ⚠⚠ IMMINENT EARNINGS on a candidate ≤3d from a print", () => {
+    expect(row(new Map([["PLTR", "2026-08-07"]]), new Map())).toMatch(/⚠⚠ IMMINENT EARNINGS 2026-08-07 \(2d\)/);
+  });
+  it("renders ⚠EARN with days for a farther-off print", () => {
+    expect(row(new Map([["PLTR", "2026-08-25"]]), new Map())).toMatch(/⚠EARN 2026-08-25 \(20d\)/);
+  });
+  it("renders a bearish ⚡NEWS↓ material event on a candidate", () => {
+    expect(row(new Map(), new Map([["PLTR", { direction: "-", summary: "DOJ probe reported" }]]))).toMatch(/⚡NEWS↓ "DOJ probe reported"/);
+  });
+});
+
 describe("V1 notional prompt (deterministic — no LLM)", () => {
   const prompt = buildV1Prompt({
     shortlist: [{ symbol: "AAPL", price: 230, mom: 40 }, { symbol: "MSFT", price: 420, mom: 35 }],
