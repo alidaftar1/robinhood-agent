@@ -13,7 +13,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, positionCapDollars, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts } from "@/lib/stopouts";
 import { fetchNewsSignals } from "@/lib/news";
-import { fetchEarningsForSymbols, fetchEarningsBeatHistory, fetchRecentEarnings, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
+import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -224,7 +224,7 @@ export async function GET(request: Request) {
           influencerMomentum.set(r.value.t, { change1d: r.value.m.change1d, change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA });
         }
       }
-      influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
+      // Section is BUILT once below, after recentEarnings is fetched, so the 📊REPORTED flag is included.
     }
 
     // Always inject portfolio state so Claude never needs to call get_portfolio or get_equity_positions.
@@ -311,8 +311,12 @@ export async function GET(request: Request) {
     // silently missing 2026-07-31 → the earnings judgment never fired on a held name 3 days out).
     // Patch these onto marketData.stocks so BOTH the shortlist ⚠EARN column and the positions tags
     // are correct. Fail-safe.
-    const earnSymbols = [...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld];
-    const perSymbolEarnings = await fetchEarningsForSymbols(earnSymbols).catch(() => new Map<string, string>());
+    // ONE per-symbol Finnhub pass yields BOTH upcoming (⚠EARN) AND just-reported (📊REPORTED) — for
+    // shortlist + held + influencer candidates. Influencer candidates were the blind spot: a fresh
+    // post-earnings pop read as durable momentum (PLTR +28% 1d bought via the sleeve). Fail-safe.
+    const earnSymbols = [...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld, ...influencerCandidateSet];
+    const { upcoming: perSymbolEarnings, recent: recentEarnings } = await fetchEarningsForSymbols(earnSymbols)
+      .catch(() => ({ upcoming: new Map<string, string>(), recent: new Map<string, RecentEarnings>() }));
     for (const s of marketData.stocks) {
       const d = perSymbolEarnings.get(s.symbol);
       if (d && (!s.earningsDate || d < s.earningsDate)) s.earningsDate = d; // nearest upcoming wins
@@ -329,20 +333,17 @@ export async function GET(request: Request) {
     const newsSignals = await fetchNewsSignals([
       ...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld,
     ]).catch(() => new Map<string, { direction: string; summary: string }>());
-    // Backward-looking "just reported earnings" for EVERY decision surface — shortlist + influencer
-    // candidates + held. The influencer candidates were the blind spot (a fresh post-earnings pop
-    // read as durable momentum, e.g. PLTR +28% 1d bought via the sleeve). Fail-safe: empty map.
-    const recentEarnings = await fetchRecentEarnings([
-      ...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld, ...influencerCandidateSet,
-    ]).catch(() => new Map<string, RecentEarnings>());
-    // change1d for HELD names (for the 📊REPORTED reaction on position lines) — from the universe fetch.
+    // change1d for HELD names (for the 📊REPORTED reaction on position lines) — from the universe
+    // fetch, then FALL BACK to influencer momentum so non-S&P sleeve holds (PLTR/SPCX/COIN — absent
+    // from the S&P universe) still show the 1d magnitude the flag exists to surface.
     const change1dOfHeld: Record<string, number> = Object.fromEntries(
       marketData.stocks.filter(s => typeof s.change1d === "number").map(s => [s.symbol, s.change1d]),
     );
+    for (const [sym, m] of influencerMomentum) if (!(sym in change1dOfHeld)) change1dOfHeld[sym] = m.change1d;
     const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings);
-    // Rebuild the influencer section now that recentEarnings is available, so the 📊REPORTED flag
-    // appears on influencer candidates too (it was built earlier, before this fetch).
-    if (influencerSection) influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings);
+    // Build the influencer section HERE (once) — after recentEarnings, so the 📊REPORTED flag is
+    // included. formatInfluencerSignals returns "" when there's no cache/signals.
+    influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings);
     console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
 
     // Earnings-BEAT track record for HELD names approaching earnings — the base rate that lets the

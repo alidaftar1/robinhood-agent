@@ -69,14 +69,23 @@ export async function fetchUpcomingEarnings(days = 30): Promise<Map<string, stri
   return out;
 }
 
+/** A name that just REPORTED earnings — the backward-looking companion to the ⚠EARN (upcoming)
+ *  flag. Surfaced on every decision surface so a buy/hold/sell can SEE that a print just landed. */
+export interface RecentEarnings { date: string; daysAgo: number }
+
 // PER-SYMBOL earnings (Finnhub) for a specific set — reliable near-term coverage the bulk cap drops.
-// Batched to respect the free-tier rate limit. Fail-safe: a symbol that errors just isn't in the map.
-export async function fetchEarningsForSymbols(symbols: string[], days = 30): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+// ONE call per symbol over a window [today-lookback, today+days] yields BOTH the nearest UPCOMING
+// date (⚠EARN) AND the most-recent PAST report (📊REPORTED) — so we never fetch the same symbol
+// twice. Batched to respect the free-tier rate limit. Fail-safe: a symbol that errors is just absent.
+export async function fetchEarningsForSymbols(symbols: string[], days = 30, lookbackDays = 7): Promise<{ upcoming: Map<string, string>; recent: Map<string, RecentEarnings> }> {
+  const upcoming = new Map<string, string>();
+  const recent = new Map<string, RecentEarnings>();
   const key = process.env.FINNHUB_API_KEY;
   const uniq = [...new Set(symbols)].filter(Boolean);
-  if (!key || uniq.length === 0) return out;
-  const { from, to } = windowDates(days);
+  if (!key || uniq.length === 0) return { upcoming, recent };
+  const today = new Date().toISOString().split("T")[0];
+  const from = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().split("T")[0];
+  const to = new Date(Date.now() + days * 86_400_000).toISOString().split("T")[0];
   const BATCH = 10; // well under Finnhub's 60/min
   for (let i = 0; i < uniq.length; i += BATCH) {
     await Promise.all(uniq.slice(i, i + BATCH).map(async sym => {
@@ -87,46 +96,17 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30): Pro
         );
         if (!res.ok) return;
         const data = await res.json() as { earningsCalendar?: FinnhubEarningsRow[] };
-        for (const row of data.earningsCalendar ?? []) addNearest(out, row.symbol, row.date, from);
-      } catch { /* fail-safe per symbol */ }
-    }));
-  }
-  return out;
-}
-
-/** A name that just REPORTED earnings — the backward-looking companion to the ⚠EARN (upcoming)
- *  flag. Surfaced on every decision surface so a buy/hold/sell can SEE that a print just landed and
- *  reason about the reaction (a fresh pop is a late/risky momentum entry; a hold may take profit). */
-export interface RecentEarnings { date: string; daysAgo: number }
-
-// Names that reported earnings in the last `lookbackDays` (Finnhub per-symbol calendar, PAST window).
-// Fail-safe. Returns the most-recent past report per symbol + how many days ago.
-export async function fetchRecentEarnings(symbols: string[], lookbackDays = 7): Promise<Map<string, RecentEarnings>> {
-  const out = new Map<string, RecentEarnings>();
-  const key = process.env.FINNHUB_API_KEY;
-  const uniq = [...new Set(symbols)].filter(Boolean);
-  if (!key || uniq.length === 0) return out;
-  const today = new Date().toISOString().split("T")[0];
-  const from = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().split("T")[0];
-  const BATCH = 10;
-  for (let i = 0; i < uniq.length; i += BATCH) {
-    await Promise.all(uniq.slice(i, i + BATCH).map(async sym => {
-      try {
-        const res = await fetch(
-          `https://finnhub.io/api/v1/calendar/earnings?symbol=${sym}&from=${from}&to=${today}&token=${key}`,
-          { signal: AbortSignal.timeout(6000) },
-        );
-        if (!res.ok) return;
-        const data = await res.json() as { earningsCalendar?: FinnhubEarningsRow[] };
-        let best: string | null = null; // most-recent PAST report in the window
+        let best: string | null = null; // most-recent PAST report (< today)
         for (const row of data.earningsCalendar ?? []) {
-          if (row.symbol === sym && row.date <= today && (!best || row.date > best)) best = row.date;
+          if (row.symbol !== sym || !row.date) continue;
+          addNearest(upcoming, row.symbol, row.date, today); // nearest date >= today
+          if (row.date < today && (!best || row.date > best)) best = row.date;
         }
-        if (best) out.set(sym, { date: best, daysAgo: Math.round((Date.parse(today) - Date.parse(best)) / 86_400_000) });
+        if (best) recent.set(sym, { date: best, daysAgo: Math.round((Date.parse(today) - Date.parse(best)) / 86_400_000) });
       } catch { /* fail-safe per symbol */ }
     }));
   }
-  return out;
+  return { upcoming, recent };
 }
 
 // Shared render for the "just reported" flag, used on the shortlist, influencer, and held surfaces.
