@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { SP500_UNIVERSE } from "./strategy";
+import { formatPostEarnings } from "./earnings";
 
 // ─── Channel registry ──────────────────────────────────────────────────────────
 // Independent finance YouTubers who make specific stock pick recommendations.
@@ -476,7 +477,7 @@ export function netScores(cache: InfluencerCache): Record<string, number> {
 export const MOMENTUM_FLOOR_PCT = -8;
 export const DIST_FROM_HIGH_FLOOR = -15;
 
-export interface MomentumSignal { change5d: number; distFromHigh: number; aboveShortMA: boolean }
+export interface MomentumSignal { change1d: number; change5d: number; distFromHigh: number; aboveShortMA: boolean }
 
 // True if the pick is a falling knife we should NOT buy. A pick that's flagged
 // (down >8% over 5d, or >15% off its recent high) is normally rejected — UNLESS it's
@@ -502,7 +503,7 @@ export function isInfluencerRecovering(m: MomentumSignal | undefined): boolean {
  *  @param priceMap optional live prices for influencer tickers (fetched in trade route)
  *  @param momentum optional 5-day % change per ticker (downtrend screen)
  */
-export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>): string {
+export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>, recentEarnings?: Map<string, import("./earnings").RecentEarnings>): string {
   if (!cache || cache.signals.length === 0) return "";
 
   // Rank BUY-mentioned tickers by NET score (buy consensus − avoid dissent), highest first.
@@ -528,12 +529,16 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     const mom = momentum?.get(ticker);
     const tag = mom == null ? "" : isInfluencerDowntrend(mom) ? " ⛔DOWNTREND" : isInfluencerRecovering(mom) ? " ↑RECOVERING" : "";
     const momStr = mom != null
-      ? ` 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${tag}`
+      ? ` 1d:${mom.change1d >= 0 ? "+" : ""}${mom.change1d.toFixed(0)}% 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${tag}`
       : "";
+    // Backward-looking earnings flag: a pick that JUST reported (esp. with a big 1d/5d move) is a
+    // post-earnings entry — a fresh pop is a late/risky momentum chase, not durable trend.
+    const re = recentEarnings?.get(ticker);
+    const earnStr = re ? formatPostEarnings(re, mom?.change1d, mom?.change5d) : "";
     // Show the net score; when other creators warned against it, spell out the buy−avoid split.
     const avoid = avoidOf[ticker] ?? 0;
     const scoreStr = avoid > 0 ? `net=${score} (${cache.tickerCounts[ticker]} buy − ${avoid} avoid)` : `net=${score}`;
-    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(26)} ${scoreStr}  channels: ${channels}`;
+    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(30)} ${scoreStr}${earnStr}  channels: ${channels}`;
   }).filter(Boolean).join("\n");
 
   if (!rows) return "";
@@ -552,6 +557,7 @@ ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
 • HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
 • Same per-position cap as the main strategy, min $50. Size each buy as a DOLLAR AMOUNT ("dollarAmount") — the broker fills fractional shares; do not compute a share count.
 • Prefer the highest NET score; a net-6 pick is a strong, broadly-covered, uncontested signal — do not ignore it. Between two similar nets, prefer the one with NO avoid split (cleaner consensus).
+• POST-EARNINGS SCREEN: a pick marked 📊REPORTED just had earnings — a big 1d/5d pop next to it means the "momentum" is likely a one-time earnings GAP you'd be chasing LATE (buying the local high; gaps tend to give back), NOT durable trend. Treat a fresh post-earnings pop as high-risk: prefer to skip it unless it's a serial beater whose beat can keep drifting up, and say so in your thesis. The influencer sleeve is meant to catch durable momentum, not chase one-day earnings spikes.
 • DOWNTREND SCREEN: do NOT buy a pick marked ⛔DOWNTREND (down >${Math.abs(MOMENTUM_FLOOR_PCT)}% over 5d, OR >${Math.abs(DIST_FROM_HIGH_FLOOR)}% below its recent high). The row shows "5d:" (5-day change) and "hi:" (distance from recent high). These signals measure popularity, not price — a falling stock can be the most-talked-about one. The system rejects these buys anyway. A pick marked ↑RECOVERING dipped but has reclaimed its 5-day average (trend turned up) — it is allowed. Prefer a rising or ↑RECOVERING pick; never a ⛔DOWNTREND one.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".
 • Non-S&P-500 tickers here (e.g. SPCX, PLTR, COIN, HOOD) can ONLY be bought as influencer picks.

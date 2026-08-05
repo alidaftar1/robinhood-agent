@@ -13,7 +13,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, positionCapDollars, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts } from "@/lib/stopouts";
 import { fetchNewsSignals } from "@/lib/news";
-import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord } from "@/lib/earnings";
+import { fetchEarningsForSymbols, fetchEarningsBeatHistory, fetchRecentEarnings, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -110,7 +110,7 @@ export async function GET(request: Request) {
         const topTickers = Object.entries(influencerCache.tickerCounts)
           .sort(([, a], [, b]) => b - a).slice(0, 12).map(([t]) => t);
         const moms = await Promise.allSettled(topTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
-        for (const r of moms) if (r.status === "fulfilled" && r.value.m) { priceMap.set(r.value.t, r.value.m.price); influencerMomentum.set(r.value.t, { change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA }); }
+        for (const r of moms) if (r.status === "fulfilled" && r.value.m) { priceMap.set(r.value.t, r.value.m.price); influencerMomentum.set(r.value.t, { change1d: r.value.m.change1d, change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA }); }
         influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
       }
 
@@ -221,7 +221,7 @@ export async function GET(request: Request) {
       for (const r of moms) {
         if (r.status === "fulfilled" && r.value.m) {
           priceMap.set(r.value.t, r.value.m.price);
-          influencerMomentum.set(r.value.t, { change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA });
+          influencerMomentum.set(r.value.t, { change1d: r.value.m.change1d, change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA });
         }
       }
       influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
@@ -329,7 +329,20 @@ export async function GET(request: Request) {
     const newsSignals = await fetchNewsSignals([
       ...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld,
     ]).catch(() => new Map<string, { direction: string; summary: string }>());
-    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals);
+    // Backward-looking "just reported earnings" for EVERY decision surface — shortlist + influencer
+    // candidates + held. The influencer candidates were the blind spot (a fresh post-earnings pop
+    // read as durable momentum, e.g. PLTR +28% 1d bought via the sleeve). Fail-safe: empty map.
+    const recentEarnings = await fetchRecentEarnings([
+      ...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld, ...influencerCandidateSet,
+    ]).catch(() => new Map<string, RecentEarnings>());
+    // change1d for HELD names (for the 📊REPORTED reaction on position lines) — from the universe fetch.
+    const change1dOfHeld: Record<string, number> = Object.fromEntries(
+      marketData.stocks.filter(s => typeof s.change1d === "number").map(s => [s.symbol, s.change1d]),
+    );
+    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings);
+    // Rebuild the influencer section now that recentEarnings is available, so the 📊REPORTED flag
+    // appears on influencer candidates too (it was built earlier, before this fetch).
+    if (influencerSection) influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings);
     console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
 
     // Earnings-BEAT track record for HELD names approaching earnings — the base rate that lets the
@@ -393,7 +406,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );

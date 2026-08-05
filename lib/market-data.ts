@@ -1,7 +1,7 @@
 import { SP500_UNIVERSE } from "./strategy";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
 import { getAnalystRatings, type AnalystRating } from "./analyst";
-import { fetchUpcomingEarnings } from "./earnings";
+import { fetchUpcomingEarnings, formatPostEarnings } from "./earnings";
 
 export type { InsiderBuy, AnalystRating };
 
@@ -292,6 +292,7 @@ export function formatV1Shortlist(
   analystRatings: Record<string, AnalystRating[]> = {},
   held: Set<string> = new Set(),
   news: Map<string, { direction: string; summary: string }> = new Map(),
+  recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(),
 ): string {
   // Material corporate-event news (M&A/litigation/guidance/product/regulatory) — the event tail the
   // structured signals miss. Only material events are in the map (Haiku already filtered the noise).
@@ -324,10 +325,14 @@ export function formatV1Shortlist(
   const rows = shortlist.map((s) => {
     const q = quality[s.symbol]?.quality;
     const earn = s.earningsDate ? `  ⚠EARN ${s.earningsDate}` : "";
+    // Backward-looking: a name that JUST reported (with its 1d/5d reaction) — a fresh pop is a
+    // late/risky momentum entry, distinct from the ⚠EARN (upcoming) flag above.
+    const re = recentEarnings.get(s.symbol);
+    const reportedFlag = re ? formatPostEarnings(re, s.change1d, s.change5d) : "";
     // ◆HELD marks a name you currently hold that is still eligible + positive-momentum. It is
     // RETAINED by the hysteresis band even if it slipped below the top buy names — do NOT rotate it.
     const heldFlag = held.has(s.symbol) ? " ◆HELD" : "";
-    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${heldFlag}${insFlag(s.symbol)}${analystFlag(s.symbol)}${newsFlag(s.symbol)}`;
+    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${heldFlag}${insFlag(s.symbol)}${analystFlag(s.symbol)}${newsFlag(s.symbol)}${reportedFlag}`;
   });
   return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ◆HELD = a current holding retained by the hysteresis band (still positive momentum — do NOT rotate it out just for ranking below newer names) · ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d · ⚡NEWS↑/↓ = a MATERIAL corporate event (M&A/litigation/guidance/product/regulatory) with the event quoted — a bullish event raises conviction, a bearish one is a real trim/avoid reason even on strong momentum; cite it in your thesis when it drives a decision]\n${rows.join("\n")}`;
 }
@@ -617,7 +622,7 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
 // the way it bought SPCX mid-decline). Returns BOTH 5-day net change and distance from
 // the recent 10-day high — the latter catches pump-and-dump names (e.g. a fresh IPO
 // that spiked then fell) where the 5-day net is misleadingly mild.
-export async function fetchMomentum(symbol: string): Promise<{ price: number; change5d: number; distFromHigh: number; aboveShortMA: boolean } | null> {
+export async function fetchMomentum(symbol: string): Promise<{ price: number; change1d: number; change5d: number; distFromHigh: number; aboveShortMA: boolean } | null> {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
@@ -631,6 +636,10 @@ export async function fetchMomentum(symbol: string): Promise<{ price: number; ch
     const closes = (r?.indicators?.quote?.[0]?.close ?? []).filter((c): c is number => c != null);
     const fiveAgo = closes.length >= 6 ? closes[closes.length - 6] : closes[0];
     const change5d = fiveAgo ? ((price - fiveAgo) / fiveAgo) * 100 : 0;
+    // 1-day move (captures a post-earnings gap when we look the day of/after the print). Same anchor
+    // convention as change5d (closes end ~"today"; 1 session ago = second-to-last close).
+    const oneAgo = closes.length >= 2 ? closes[closes.length - 2] : closes[closes.length - 1];
+    const change1d = oneAgo ? ((price - oneAgo) / oneAgo) * 100 : 0;
     const recentHigh = Math.max(price, ...closes.slice(-10));
     const distFromHigh = recentHigh > 0 ? ((price - recentHigh) / recentHigh) * 100 : 0;
     // Confirmed-recovery signal: price above its 5-day moving average = the short-term
@@ -638,7 +647,7 @@ export async function fetchMomentum(symbol: string): Promise<{ price: number; ch
     const last5 = closes.slice(-5);
     const fiveDayAvg = last5.length ? last5.reduce((s, c) => s + c, 0) / last5.length : price;
     const aboveShortMA = price > fiveDayAvg;
-    return { price, change5d, distFromHigh, aboveShortMA };
+    return { price, change1d, change5d, distFromHigh, aboveShortMA };
   } catch {
     return null;
   }

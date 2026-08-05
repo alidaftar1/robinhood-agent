@@ -94,6 +94,52 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30): Pro
   return out;
 }
 
+/** A name that just REPORTED earnings — the backward-looking companion to the ⚠EARN (upcoming)
+ *  flag. Surfaced on every decision surface so a buy/hold/sell can SEE that a print just landed and
+ *  reason about the reaction (a fresh pop is a late/risky momentum entry; a hold may take profit). */
+export interface RecentEarnings { date: string; daysAgo: number }
+
+// Names that reported earnings in the last `lookbackDays` (Finnhub per-symbol calendar, PAST window).
+// Fail-safe. Returns the most-recent past report per symbol + how many days ago.
+export async function fetchRecentEarnings(symbols: string[], lookbackDays = 7): Promise<Map<string, RecentEarnings>> {
+  const out = new Map<string, RecentEarnings>();
+  const key = process.env.FINNHUB_API_KEY;
+  const uniq = [...new Set(symbols)].filter(Boolean);
+  if (!key || uniq.length === 0) return out;
+  const today = new Date().toISOString().split("T")[0];
+  const from = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().split("T")[0];
+  const BATCH = 10;
+  for (let i = 0; i < uniq.length; i += BATCH) {
+    await Promise.all(uniq.slice(i, i + BATCH).map(async sym => {
+      try {
+        const res = await fetch(
+          `https://finnhub.io/api/v1/calendar/earnings?symbol=${sym}&from=${from}&to=${today}&token=${key}`,
+          { signal: AbortSignal.timeout(6000) },
+        );
+        if (!res.ok) return;
+        const data = await res.json() as { earningsCalendar?: FinnhubEarningsRow[] };
+        let best: string | null = null; // most-recent PAST report in the window
+        for (const row of data.earningsCalendar ?? []) {
+          if (row.symbol === sym && row.date <= today && (!best || row.date > best)) best = row.date;
+        }
+        if (best) out.set(sym, { date: best, daysAgo: Math.round((Date.parse(today) - Date.parse(best)) / 86_400_000) });
+      } catch { /* fail-safe per symbol */ }
+    }));
+  }
+  return out;
+}
+
+// Shared render for the "just reported" flag, used on the shortlist, influencer, and held surfaces.
+// Shows recency + the single-day (and, when available, 5-day) reaction so a post-earnings gap is
+// visible to every decision. change values optional — render what the surface has.
+export function formatPostEarnings(r: RecentEarnings, change1d?: number | null, change5d?: number | null): string {
+  const parts: string[] = [];
+  if (change1d != null) parts.push(`1d ${change1d >= 0 ? "+" : ""}${change1d.toFixed(0)}%`);
+  if (change5d != null) parts.push(`5d ${change5d >= 0 ? "+" : ""}${change5d.toFixed(0)}%`);
+  const moves = parts.length ? ` (${parts.join(", ")})` : "";
+  return `  📊REPORTED ${r.daysAgo}d ago${moves}`;
+}
+
 /** A name's recent earnings-surprise track record — the base rate for "beat vs coin flip"
  *  when deciding whether to ride a HELD name through its earnings (PEAD favors serial beaters). */
 export interface EarningsBeatRecord { beats: number; total: number; avgSurprisePct: number }

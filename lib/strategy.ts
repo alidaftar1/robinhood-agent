@@ -1,3 +1,5 @@
+import { formatPostEarnings } from "./earnings";
+
 export const SP500_UNIVERSE = [
   // Technology (XLK)
   "AAPL", "ACN", "ADBE", "ADI", "AMAT", "AMD", "ANSS", "APH", "BRKR", "CDNS",
@@ -264,7 +266,7 @@ Rules:
 // in lib/market-data buildV1Shortlist). The model may ONLY buy MAIN-book names from that shortlist — a
 // hard filter in the trade route enforces this regardless of what the model outputs. The influencer
 // sleeve is unchanged (≤2 slots on its own signal). Kept separate from buildAnalysisPrompt for rollback.
-export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map()): string {
+export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}): string {
   // MACRO-REGIME context only (Phase 0 news). The analysis is otherwise macro-blind,
   // yet it's asked to judge whether a move is broad-market SYMPATHY vs name-specific.
   // These are general business headlines — regime read only, NOT per-name, NOT a buy
@@ -326,7 +328,11 @@ A stopped name may reappear on the shortlist — that alone is NOT a reason to r
         // Material news on a HOLDING (main or influencer) — a bearish event is a real trim/exit reason.
         const n = news.get(p.symbol);
         const newsTag = n ? `  ⚡NEWS${n.direction === "+" ? "↑" : n.direction === "-" ? "↓" : ""} "${n.summary}"` : "";
-        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${ageStr}${tag}${staleTag}${earnTag}${beatTag}${newsTag}`;
+        // Backward-looking: a HOLDING that JUST reported — the ⚠EARN uncertainty is resolved; a big
+        // pop is a take-profit/trim candidate, a big drop a reassess. (companion to the ⚠EARN flag)
+        const re = recentEarnings.get(p.symbol);
+        const reportedTag = re ? formatPostEarnings(re, change1dOf[p.symbol], null) : "";
+        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${ageStr}${tag}${staleTag}${earnTag}${beatTag}${newsTag}${reportedTag}`;
       }).join("\n")
     : "  (none — full cash)";
 
@@ -366,6 +372,7 @@ CONSTRAINTS:
 - MAIN-book buys ONLY from the shortlist above; INFLUENCER buys ONLY from the INFLUENCER SIGNALS section.
 - Never buy a name flagged with earnings ≤3 days away (⚠EARN with a date within 3 days).
 - EARNINGS ON A HELD NAME (judgment call, NOT an automatic exit): if a name you HOLD shows ⚠EARN within ~3 days, decide whether to trim/exit or ride through. A high-conviction momentum winner can ride through — post-earnings drift tends to favor established winners — but TRIM or exit if the position is oversized (near the per-position cap) or its thesis is weak. State your call and reason for any held name with imminent earnings. Do NOT blanket-sell before earnings; the point is a considered decision, not a reflex.
+  - 📊REPORTED (a name — on the shortlist, in the influencer signals, OR held — that JUST reported earnings, with its 1d/5d reaction) is the BACKWARD-looking companion to ⚠EARN. Use it by decision type: (BUY) a fresh post-earnings POP is a LATE, RISKY momentum entry — a big 1d/5d move right after a print is often a one-time gap that gives back, NOT durable trend; do not chase it on price momentum alone. The exception is a serial beater (strong 📈EARN-RECORD) whose beat can PEAD-drift further — that's the one case a post-earnings buy is defensible; name the record. (HOLD/SELL) for a name you already hold, the print RESOLVED the ⚠EARN uncertainty — a large pop is a take-profit/trim candidate (lock some gain, esp. in the influencer sleeve), a large drop is a reassess/exit. State how the reaction informs your call.
   - USE THE 📈EARN-RECORD when present (the name's last-8-quarter surprise history). It is the base rate that separates a serial beater from a coin flip: a name that has beaten MOST quarters with a solidly positive avg surprise (e.g. beat ≥3/4, avg ≥ +5%) is a genuine RIDE-THROUGH candidate — the odds favor another beat + upward drift, so lean HOLD even if it's flat/⏳STALE (a serial beater into its print is exactly the case where "flat" is about to resolve UP). A mixed or negative record (beats ~half, avg near/below 0) is a true coin flip → trim if oversized. This is a tilt on the odds, NOT a guarantee: a beat can still sell off and even serial beaters eventually miss, so it argues for size/hold, never for ignoring a weak thesis. If a ⏳STALE-into-earnings name has a strong 📈EARN-RECORD, that record can OVERRIDE the stale-rotation default — name it in your thesis.
 - HARD LIMIT: total cost of all buys ≤ ${bp} (settled buying power). Fixed — selling today does NOT increase it.
 ${stopoutBlock}${influencerSection ?? ""}

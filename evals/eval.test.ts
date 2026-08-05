@@ -704,6 +704,35 @@ function notionalDecisionFails(decision: any, budget: number, cap: number, short
   return fails;
 }
 
+describe("post-earnings reaction flag 📊REPORTED (deterministic)", () => {
+  const { buildV1AnalysisPrompt } = require("@/lib/strategy");
+  const { formatPostEarnings } = require("@/lib/earnings");
+
+  it("formatPostEarnings renders recency + 1d/5d reaction", () => {
+    expect(formatPostEarnings({ date: "2026-08-04", daysAgo: 1 }, 28, 31)).toBe("  📊REPORTED 1d ago (1d +28%, 5d +31%)");
+    expect(formatPostEarnings({ date: "2026-08-01", daysAgo: 3 }, -12, null)).toBe("  📊REPORTED 3d ago (1d -12%)");
+    expect(formatPostEarnings({ date: "2026-08-04", daysAgo: 1 })).toBe("  📊REPORTED 1d ago"); // no change data
+  });
+
+  it("renders 📊REPORTED on a held name that just reported, with the 1d reaction", () => {
+    const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
+      { symbol: "PLTR", quantity: "0.996", avgCost: "161", price: "162", heldDays: 0 },
+    ]};
+    const recent = new Map([["PLTR", { date: "2026-07-29", daysAgo: 1 }]]);
+    const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR"], [], [], {}, new Map(), new Map(),
+      recent, { PLTR: 28 });
+    const line = prompt.split("\n").find((l: string) => l.trim().startsWith("PLTR")) ?? "";
+    expect(line).toMatch(/📊REPORTED 1d ago \(1d \+28%\)/);
+  });
+
+  it("carries the buy/hold/sell post-earnings guidance", () => {
+    const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", { buyingPower: "$500", totalValue: "$2500", positions: [] });
+    expect(prompt).toMatch(/📊REPORTED/);
+    expect(prompt).toMatch(/LATE, RISKY momentum entry/);
+    expect(prompt).toMatch(/take-profit\/trim candidate/);
+  });
+});
+
 describe("V1 notional prompt (deterministic — no LLM)", () => {
   const prompt = buildV1Prompt({
     shortlist: [{ symbol: "AAPL", price: 230, mom: 40 }, { symbol: "MSFT", price: 420, mom: 35 }],
