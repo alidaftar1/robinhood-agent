@@ -1,0 +1,60 @@
+name: autopilot-automerge
+
+# Closes the loop on the SAFE class of autopilot fixes: an autopilot-bot PR that is
+# (1) labeled `autopilot:auto-safe` by the cloud agent, (2) provably trading-neutral per the
+# DETERMINISTIC gate (scripts/check-automerge-safe.sh — registry/reviewer/reconciler/telemetry/
+# dashboard/docs only), and (3) passes secret-scan + tsc + build → is merged automatically.
+# The merge uses a PAT so `deploy-on-merge` then ships it. Everything that can touch a trade
+# (strategy/sizing/caps/stops/the trade or data paths), any eval (a CI gate), or the agent's own
+# instructions is NOT eligible and waits for the owner — the deterministic gate is default-DENY.
+#
+# SAFETY MODEL: the deterministic gate is the FLOOR. The `auto-safe` label is a second, independent
+# condition — the LLM can only ESCALATE to `needs-human`, never override the file gate.
+on:
+  pull_request:
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read          # merge is done with a PAT (so deploy-on-merge fires), not GITHUB_TOKEN
+  pull-requests: read
+
+concurrency:
+  group: autopilot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  automerge:
+    # Opt-IN + provenance: only the autopilot bot's own branches, only when it explicitly marked the
+    # PR auto-safe. Absent the label → this job is skipped and the PR waits for the owner.
+    if: >
+      github.event.pull_request.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'autopilot/') &&
+      contains(github.event.pull_request.labels.*.name, 'autopilot:auto-safe') &&
+      !contains(github.event.pull_request.labels.*.name, 'autopilot:needs-human')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Deterministic trading-neutral gate (default-deny FLOOR)
+        run: bash scripts/check-automerge-safe.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+
+      - uses: oven-sh/setup-bun@v2
+      - name: Install deps
+        run: bun install
+      - name: Secret/PII scan (gate)
+        run: bun run check:secrets
+      - name: Typecheck + build (gate)
+        run: bunx tsc --noEmit && bun run build
+
+      - name: Auto-merge (PAT → triggers deploy-on-merge)
+        env:
+          GH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+        run: |
+          echo "All gates passed + trading-neutral + auto-safe label → merging PR #${{ github.event.pull_request.number }}"
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --squash --delete-branch
