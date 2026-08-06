@@ -10,7 +10,16 @@
 // errors just contributes nothing (a name we can't resolve shows no flag — no false signal).
 
 interface FmpEarningsRow { symbol: string; date: string }
-interface FinnhubEarningsRow { symbol: string; date: string }
+interface FinnhubEarningsRow { symbol: string; date: string; hour?: string }
+
+// Days since the market could REACT to a report. An AMC (after-close) report is digested the NEXT
+// session, so "how fresh" should count from the reaction day (date+1), not the announcement day; BMO
+// (before-open) and unspecified are same-day. (Weekend edge deliberately ignored — a rough freshness
+// indicator for an advisory flag.) e.g. PLTR reported 08-03 amc, reacted 08-04 → 2d ago on 08-06, not 3.
+export function earningsDaysAgo(date: string, hour: string | undefined, today: string): number {
+  const effectiveMs = Date.parse(date) + (hour === "amc" ? 86_400_000 : 0);
+  return Math.round((Date.parse(today) - effectiveMs) / 86_400_000);
+}
 
 function windowDates(days: number): { from: string; to: string } {
   return {
@@ -96,13 +105,13 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30, look
         );
         if (!res.ok) return;
         const data = await res.json() as { earningsCalendar?: FinnhubEarningsRow[] };
-        let best: string | null = null; // most-recent PAST report (< today)
+        let best: string | null = null, bestHour: string | undefined; // most-recent PAST report (< today)
         for (const row of data.earningsCalendar ?? []) {
           if (row.symbol !== sym || !row.date) continue;
           addNearest(upcoming, row.symbol, row.date, today); // nearest date >= today
-          if (row.date < today && (!best || row.date > best)) best = row.date;
+          if (row.date < today && (!best || row.date > best)) { best = row.date; bestHour = row.hour; }
         }
-        if (best) recent.set(sym, { date: best, daysAgo: Math.round((Date.parse(today) - Date.parse(best)) / 86_400_000) });
+        if (best) recent.set(sym, { date: best, daysAgo: earningsDaysAgo(best, bestHour, today) });
       } catch { /* fail-safe per symbol */ }
     }));
   }

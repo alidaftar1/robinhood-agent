@@ -706,7 +706,14 @@ function notionalDecisionFails(decision: any, budget: number, cap: number, short
 
 describe("post-earnings reaction flag 📊REPORTED (deterministic)", () => {
   const { buildV1AnalysisPrompt } = require("@/lib/strategy");
-  const { formatPostEarnings } = require("@/lib/earnings");
+  const { formatPostEarnings, earningsDaysAgo } = require("@/lib/earnings");
+
+  it("earningsDaysAgo counts an AMC report from the reaction day (next session), not the announcement", () => {
+    expect(earningsDaysAgo("2026-08-03", "amc", "2026-08-06")).toBe(2); // PLTR: reported 08-03 amc → reacted 08-04 → 2d, not 3
+    expect(earningsDaysAgo("2026-08-04", "bmo", "2026-08-06")).toBe(2); // before-open → same-day count
+    expect(earningsDaysAgo("2026-08-04", undefined, "2026-08-06")).toBe(2); // unspecified hour → same-day
+    expect(earningsDaysAgo("2026-08-05", "amc", "2026-08-06")).toBe(0); // amc yesterday → reacting today
+  });
 
   it("formatPostEarnings renders recency + 1d/5d reaction", () => {
     expect(formatPostEarnings({ date: "2026-08-04", daysAgo: 1 }, 28, 31)).toBe("  📊REPORTED 1d ago (1d +28%, 5d +31%)");
