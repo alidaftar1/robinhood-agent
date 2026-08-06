@@ -340,6 +340,14 @@ export async function GET(request: Request) {
       marketData.stocks.filter(s => typeof s.change1d === "number").map(s => [s.symbol, s.change1d]),
     );
     for (const [sym, m] of influencerMomentum) if (!(sym in change1dOfHeld)) change1dOfHeld[sym] = m.change1d;
+    // ALSO the 5-day move — a few days after a print, change1d is just today's tick, so the pop the
+    // 📊REPORTED flag exists to surface lives in the 5d window. Showing both (e.g. "1d -1%, 5d +26%")
+    // makes a fading post-earnings gap legible to the HOLD/take-profit decision (PLTR bought AT the
+    // pop, -2.7% since entry, showed only "(1d -1%)" on 08-06 and read as re-accelerating → hold).
+    const change5dOfHeld: Record<string, number> = Object.fromEntries(
+      marketData.stocks.filter(s => typeof s.change5d === "number").map(s => [s.symbol, s.change5d]),
+    );
+    for (const [sym, m] of influencerMomentum) if (!(sym in change5dOfHeld)) change5dOfHeld[sym] = m.change5d;
     const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings);
     // Build the influencer section HERE (once) — after recentEarnings/news, so candidates carry the
     // SAME universal risk flags as the main book: 📊REPORTED, ⚠EARN/⚠⚠ IMMINENT (upcoming), ⚡NEWS.
@@ -407,7 +415,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );

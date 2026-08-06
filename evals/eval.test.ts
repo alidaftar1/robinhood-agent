@@ -714,15 +714,22 @@ describe("post-earnings reaction flag 📊REPORTED (deterministic)", () => {
     expect(formatPostEarnings({ date: "2026-08-04", daysAgo: 1 })).toBe("  📊REPORTED 1d ago"); // no change data
   });
 
-  it("renders 📊REPORTED on a held name that just reported, with the 1d reaction", () => {
+  it("renders 📊REPORTED on a held name with BOTH the 1d and 5d reaction (the pop lives in the 5d a few days post-print)", () => {
+    // The real 08-06 PLTR failure: 📊REPORTED showed only "(1d -1%)", hiding the +26% earnings pop
+    // (in the 5d) → the model read it as re-accelerating and held. Now the 5d makes the gap legible.
     const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
-      { symbol: "PLTR", quantity: "0.996", avgCost: "161", price: "162", heldDays: 0 },
+      { symbol: "PLTR", quantity: "0.996", avgCost: "161", price: "162", heldDays: 1 },
     ]};
-    const recent = new Map([["PLTR", { date: "2026-07-29", daysAgo: 1 }]]);
+    const recent = new Map([["PLTR", { date: "2026-07-27", daysAgo: 3 }]]);
     const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR"], [], [], {}, new Map(), new Map(),
-      recent, { PLTR: 28 });
+      recent, { PLTR: -1 }, { PLTR: 26 });
     const line = prompt.split("\n").find((l: string) => l.trim().startsWith("PLTR")) ?? "";
-    expect(line).toMatch(/📊REPORTED 1d ago \(1d \+28%\)/);
+    expect(line).toMatch(/📊REPORTED 3d ago \(1d -1%, 5d \+26%\)/); // the pop (+26% 5d) is now visible, not hidden behind today's -1%
+  });
+  it("carries the guidance that a big 5d move next to 📊REPORTED is the gap, not re-acceleration", () => {
+    const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", { buyingPower: "$500", totalValue: "$2500", positions: [] });
+    expect(prompt).toMatch(/IS the one-time earnings gap/);
+    expect(prompt).toMatch(/do NOT cite that 5d% as a re-accelerating keep-reason/);
   });
 
   it("carries the buy/hold/sell post-earnings guidance", () => {
