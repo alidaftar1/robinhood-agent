@@ -169,6 +169,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Did a held name get SOLD while carrying both ⏳STALE and ⚠⚠/⚠EARN tags? If so, check its 📈EARN-RECORD: if it beat most of its last quarters with a solidly positive avg surprise and the thesis did NOT weigh that record before exiting, flag it — a serial beater's flat run into its print is exactly the case that tends to resolve UP, and the stale-rotation default should not silently override it. Conversely, if a mixed/negative-record name was HELD through imminent earnings purely on 'high conviction' with no other support, that's the opposite failure. Also confirm the tag actually rendered (log PROMPT_POSITION_LINES) — a held name ≤15d from earnings with no 📈EARN-RECORD means the Finnhub fetch failed or returned <2 quarters, so the judgment ran blind.",
   },
+  {
+    date: "2026-08-06",
+    title: "Sub-$50 'spend the whole remaining budget' buy vanished with zero note anywhere",
+    lesson:
+      "Settled buying power was $11.36 after two same-day sells. The model decided BUY LLY $11.36 — its entire remaining budget, sized as if there were no floor — even though the prompt states a $50 per-buy minimum. The deterministic notional-buy sanitation filter (app/api/trade/route.ts, run BEFORE buySizingAdjustments existed) correctly dropped it as dust, but only logged a console.warn; it never recorded a buySizingAdjustments note. So TRADE_DECISION.buys contained LLY, executed trades did not, and nothing in the stored run, dashboard, or email said why — exactly the silent 'guardrail bypassed'-looking gap the existing #9-style check (registry entry above re: DVA) is designed to catch, except here there was no note to find because the code never wrote one. FIXED: buySizingAdjustments is now declared before the sanitation filter, and a dropped buy pushes a `'<SYM> buy DROPPED — dollarAmount $X is invalid or below the $50 min'` note, matching the pattern the adjacent per-position-cap guard already uses two lines below.",
+    check:
+      "Does TRADE_DECISION.buys contain a symbol that is absent from the run's executed buy trades? If so this is ALWAYS worth explaining — first check buySizingAdjustments for a matching '<SYM> buy DROPPED/trimmed' note (guardrail working, note the reason and move on); if the symbol is dropped with NO matching note anywhere, that is a real regression (a guard silently ate a decided buy) — escalate it, don't defer to 'probably fine.' Also worth a light touch on tiny-budget days generally: is the model repeatedly trying to force its entire sub-$50 leftover cash into a single buy instead of just deciding buys=[] like it correctly does most days? A one-off is fine; a recurring pattern of the model fighting its own stated $50 floor would be worth a strategy-analyst hypothesis (not a code change — the floor is a deliberate anti-dust design choice).",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */
