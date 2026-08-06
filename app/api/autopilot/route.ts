@@ -36,7 +36,7 @@ async function sendEmail(subject: string, html: string): Promise<boolean> {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      from: "onboarding@resend.dev",
+      from: "Robinhood Agent <alerts@agent.dencredible.com>",
       to: [process.env.ALERT_EMAIL ?? ""],
       subject,
       html,

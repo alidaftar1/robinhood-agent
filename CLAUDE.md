@@ -185,7 +185,7 @@ Send via Resend (RESEND_API_KEY is in the environment). Include:
 curl -s -X POST https://api.resend.com/emails \
   -H "Authorization: Bearer $RESEND_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"from\":\"onboarding@resend.dev\",\"to\":[\"$ALERT_EMAIL\"],\"subject\":\"Robinhood Agent — $(date +%Y-%m-%d) Autopilot Report\",\"html\":\"<report>\"}"
+  -d "{\"from\":\"Robinhood Agent <alerts@agent.dencredible.com>\",\"to\":[\"$ALERT_EMAIL\"],\"subject\":\"Robinhood Agent — $(date +%Y-%m-%d) Autopilot Report\",\"html\":\"<report>\"}"
 ```
 
 **This job is headless** (`claude --print`). If Resend fails, print the report to stdout (captured in the log) and exit. Do NOT use Gmail drafts or anything requiring interactive approval — it will stall silently.

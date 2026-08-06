@@ -43,7 +43,7 @@ h. **DO NOT deploy, merge, or push `main`.**
 ```
 curl -s -X POST https://api.resend.com/emails \
   -H "Authorization: Bearer $RESEND_API_KEY" -H "Content-Type: application/json" \
-  -d '{"from":"onboarding@resend.dev","to":["'"$ALERT_EMAIL"'"],"subject":"<subject>","html":"<body>"}'
+  -d '{"from":"Robinhood Agent <alerts@agent.dencredible.com>","to":["'"$ALERT_EMAIL"'"],"subject":"<subject>","html":"<body>"}'
 ```
 
 ## Step 6 — Journal (persist your memory)
