@@ -491,20 +491,27 @@ export async function GET(request: Request) {
       }
     }
 
+    // Sizing adjustments (buys shrunk/dropped by any guard below) — surfaced in the run + email so a
+    // trim/drop is never silent. Declared before the sanitation filter so a dust/invalid drop is
+    // recorded too, not just console.warn'd (2026-08-06: a $11.36 LLY buy — the model's entire
+    // remaining budget, below the $50 min — vanished from executed trades with zero note anywhere).
+    let buySizingAdjustments: string[] = [];
+
     // ── Notional buy sanitation ───────────────────────────────────────────────
     // A buy MUST carry a positive numeric dollarAmount ≥ the $50 min. Enforce it deterministically:
     // (a) a missing/NaN dollarAmount would otherwise crash the notional buy-line builder (which runs
     // before its try block) AFTER sells already executed; (b) a sub-$50 amount violates the
     // min-position rule the prompt states. Runs on the RAW model output, before cap/budget sizing.
     {
-      const before = decision.buys.length;
-      decision.buys = decision.buys.filter(b => typeof b.dollarAmount === "number" && isFinite(b.dollarAmount) && b.dollarAmount >= MIN_BUY_DOLLARS);
-      if (decision.buys.length !== before) console.warn("NOTIONAL_BUYS_DROPPED_INVALID_OR_DUST", { before, after: decision.buys.length });
+      const dropped = decision.buys.filter(b => !(typeof b.dollarAmount === "number" && isFinite(b.dollarAmount) && b.dollarAmount >= MIN_BUY_DOLLARS));
+      if (dropped.length > 0) {
+        decision.buys = decision.buys.filter(b => typeof b.dollarAmount === "number" && isFinite(b.dollarAmount) && b.dollarAmount >= MIN_BUY_DOLLARS);
+        console.warn("NOTIONAL_BUYS_DROPPED_INVALID_OR_DUST", { dropped });
+        buySizingAdjustments.push(...dropped.map(b =>
+          `${b.symbol} buy DROPPED — dollarAmount ${typeof b.dollarAmount === "number" ? `$${b.dollarAmount.toFixed(2)}` : String(b.dollarAmount)} is invalid or below the $${MIN_BUY_DOLLARS} min`
+        ));
+      }
     }
-
-    // Sizing adjustments (buys shrunk/dropped by the cap guard or budget fit) — surfaced in the
-    // run + email so a trim/drop is never silent. Declared here so the position-cap guard can add to it.
-    let buySizingAdjustments: string[] = [];
 
     // ── Hard cap: per-position TOP-UP guard (main book) ──────────────────────────
     // The prompt's per-position cap (max_qty = floor(maxPos/price)) checks each BUY ORDER in
