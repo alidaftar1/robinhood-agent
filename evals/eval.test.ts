@@ -363,21 +363,27 @@ describe("earnings-beat record: serial-beater base rate on a held name into earn
   const { buildV1AnalysisPrompt } = require("@/lib/strategy");
   const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
     { symbol: "PLTR", quantity: "2", avgCost: "120", price: "121", heldDays: 23 }, // stale + imminent earnings + serial beater
-    { symbol: "APA",  quantity: "17", avgCost: "33", price: "36" },                 // far-off earnings → no record shown
+    { symbol: "ROST", quantity: "3", avgCost: "231", price: "254", heldDays: 9 },   // earnings 12d out (>10d, no ⚠EARN) — still a 3/4 beater
+    { symbol: "APA",  quantity: "17", avgCost: "33", price: "36" },                 // far-off earnings (47d) → no record shown
   ]};
   const beat = new Map([
     ["PLTR", { beats: 4, total: 4, avgSurprisePct: 15.0 }],
+    ["ROST", { beats: 3, total: 4, avgSurprisePct: 6.8 }],
     ["APA",  { beats: 2, total: 4, avgSurprisePct: -1.0 }],
   ]);
   const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR"], [], [],
-    { PLTR: "2026-08-01", APA: "2026-09-15" }, new Map(), beat);
+    { PLTR: "2026-08-01", ROST: "2026-08-11", APA: "2026-09-15" }, new Map(), beat);
   const lineFor = (s: string) => prompt.split("\n").find((l: string) => l.trim().startsWith(s)) ?? "";
 
   it("renders the 📈EARN-RECORD on a held name approaching earnings", () => {
     expect(lineFor("PLTR")).toMatch(/📈EARN-RECORD beat 4\/4, avg \+15% surprise/);
   });
-  it("does NOT render a record on a name whose earnings are far off (no earnTag)", () => {
-    expect(lineFor("APA")).not.toMatch(/EARN-RECORD/);
+  it("renders the record for a held name 11–15d out that has NO ⚠EARN tag (the ROST @ 12d case, registry #18)", () => {
+    expect(lineFor("ROST")).toMatch(/📈EARN-RECORD beat 3\/4, avg \+7% surprise/); // shows despite no earnTag (12d > 10d)
+    expect(lineFor("ROST")).not.toMatch(/⚠EARN/);                                   // confirm the earnTag itself is absent at 12d
+  });
+  it("does NOT render a record on a name whose earnings are far off (>15d)", () => {
+    expect(lineFor("APA")).not.toMatch(/EARN-RECORD/); // APA is 47d out → beyond the 15d window
   });
   it("carries the ride-through-vs-coin-flip rule that uses the record", () => {
     expect(prompt).toMatch(/USE THE 📈EARN-RECORD/);

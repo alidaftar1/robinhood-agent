@@ -322,7 +322,11 @@ A stopped name may reappear on the shortlist — that alone is NOT a reason to r
         // is the base rate that turns "earnings coming = risk" into a real judgment: a serial beater
         // (e.g. beat 4/4, avg +15% surprise) is a ride-through candidate; a mixed/miss record is a coin
         // flip. (PLTR was sold as stale+earnings while a 4/4 beater — the record the rule couldn't see.)
-        const beat = earnTag ? beatHistory.get(p.symbol) : undefined;
+        // Render the beat-record for a HELD name ≤15d from earnings (registry #18), INDEPENDENT of the
+        // ≤10d earnTag — so a name 11–15d out (ROST @ 12d, a 3/4 beater) still gets its record for the
+        // upcoming-earnings hold-judgment, not only imminent ones. (beatHistory is only populated for
+        // ≤15d held names by the route, so the window check here just double-guards a far-off leak.)
+        const beat = (dte != null && dte >= 0 && dte <= 15) ? beatHistory.get(p.symbol) : undefined;
         const avgPct = beat ? Math.round(beat.avgSurprisePct) : 0; // round first so the sign reflects the shown number (no "-0%")
         const beatTag = beat ? `  📈EARN-RECORD beat ${beat.beats}/${beat.total}, avg ${avgPct >= 0 ? "+" : ""}${avgPct}% surprise` : "";
         // Material news on a HOLDING (main or influencer) — a bearish event is a real trim/exit reason.

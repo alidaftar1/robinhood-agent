@@ -364,7 +364,7 @@ export async function GET(request: Request) {
       const d = earningsDatesMap[sym];
       if (!d) return false;
       const days = Math.round((new Date(d + "T00:00:00Z").getTime() - new Date(today + "T00:00:00Z").getTime()) / 86400000);
-      return days >= 0 && days <= 10; // match the ≤10d earnTag render gate — a record only shows next to an earnings tag
+      return days >= 0 && days <= 15; // registry #18: surface the beat-record for held names ≤15d from earnings (ROST @ 12d was missed by the earlier ≤10)
 
     });
     const beatHistory = heldIntoEarnings.length
