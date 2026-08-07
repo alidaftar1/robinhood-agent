@@ -1,5 +1,5 @@
 import { createAnthropic } from "@/lib/anthropic";
-import { getRuns, hasAutopilotSentToday, markAutopilotSent } from "@/lib/run-store";
+import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
@@ -93,7 +93,10 @@ export async function GET(request: Request) {
   // fully. force=true bypasses the guard for a deliberate manual re-run.
   const force = new URL(request.url).searchParams.get("force") === "true";
   if (!force && await hasAutopilotSentToday(today)) {
-    return Response.json({ skipped: true, reason: "autopilot already sent today", date: today });
+    // Return the STORED concerns from this morning's run — the cloud fixer calls this endpoint after
+    // the email already sent, and it needs the reviewConcerns/issues as its work list (not a bare skip).
+    const stored = await getStoredAutopilotConcerns(today);
+    return Response.json({ skipped: true, reason: "autopilot already sent today", date: today, ...(stored ?? {}) });
   }
 
   // Use the stable public alias for internal self-fetches. Under the Vercel cron,
@@ -506,6 +509,9 @@ export async function GET(request: Request) {
   const subject = `Robinhood Agent — ${today} ${needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY"}`;
   const emailSent = await sendEmail(subject, html);
   if (emailSent && !force) await markAutopilotSent(today);
+  // Persist the reviewer output as the cloud fixer's work list (it reads this endpoint AFTER the
+  // email sent → the skip path returns these). Store regardless of email success so it's never lost.
+  await storeAutopilotConcerns(today, { date: today, status: statusLabel, reviewConcerns, issues, autoFixed, verifyStatus: verifyResult?.status ?? "skipped" });
 
   // Trigger the cloud code-fixer immediately, but ONLY on the scheduled cron run
   // (vercel.json sets ?cloudDispatch=1) and ONLY when a fresh email just went out.

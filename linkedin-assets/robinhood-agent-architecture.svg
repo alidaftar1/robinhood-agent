@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200" font-family="monospace">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#444"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#7dba7d"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#6aa9c9"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#d4a35a"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="1200" fill="#0d0d0d"/>
+
+  <!-- TITLE -->
+  <text x="600" y="58" text-anchor="middle" fill="#e5e5e5" font-size="30" font-weight="bold">Robinhood Agent — Architecture</text>
+  <text x="600" y="90" text-anchor="middle" fill="#666" font-size="15">Autonomous daily rebalance · Claude + Robinhood MCP · self-monitoring &amp; self-healing</text>
+
+  <!-- BAND 1: SIGNALS -->
+  <text x="44" y="128" fill="#555" font-size="13" letter-spacing="2">SIGNALS / DATA</text>
+  <g font-size="13" fill="#aaa" text-anchor="middle">
+    <rect x="44"   y="140" width="172" height="46" rx="8" fill="#111" stroke="#222"/><text x="130"  y="168">📈 Price Momentum</text>
+    <rect x="232"  y="140" width="172" height="46" rx="8" fill="#111" stroke="#222"/><text x="318"  y="168">🏛 SEC Insider</text>
+    <rect x="420"  y="140" width="172" height="46" rx="8" fill="#111" stroke="#222"/><text x="506"  y="168">⭐ Analyst Upgrades</text>
+    <rect x="608"  y="140" width="172" height="46" rx="8" fill="#111" stroke="#222"/><text x="694"  y="168">📅 Earnings Cal</text>
+    <rect x="796"  y="140" width="172" height="46" rx="8" fill="#111" stroke="#222"/><text x="882"  y="168">💼 Live Portfolio</text>
+    <rect x="984"  y="140" width="172" height="46" rx="8" fill="#1a1612" stroke="#5a4525"/><text x="1070" y="168" fill="#d4a35a">📺 YT Influencers</text>
+  </g>
+
+  <!-- arrows signals -> analysis -->
+  <line x1="130" y1="186" x2="170" y2="240" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="318" y1="186" x2="210" y2="240" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="1070" y1="186" x2="260" y2="238" stroke="#5a4525" stroke-width="1.2" marker-end="url(#arrow-amber)"/>
+
+  <!-- BAND 2: DAILY REBALANCE -->
+  <text x="44" y="224" fill="#555" font-size="13" letter-spacing="2">DAILY REBALANCE · 7:30am PT weekdays</text>
+
+  <!-- Session 1: Sonnet analysis -->
+  <rect x="44" y="240" width="300" height="200" rx="10" fill="#111" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="194" y="274" text-anchor="middle" fill="#7dba7d" font-size="17" font-weight="bold">Claude Sonnet</text>
+  <text x="194" y="295" text-anchor="middle" fill="#555" font-size="12">Session 1 · Analysis · No MCP</text>
+  <line x1="64" y1="306" x2="324" y2="306" stroke="#222" stroke-width="1"/>
+  <text x="194" y="330" text-anchor="middle" fill="#888" font-size="12.5">450+ S&amp;P 500 + influencer picks</text>
+  <text x="194" y="352" text-anchor="middle" fill="#888" font-size="12.5">momentum · insiders · upgrades</text>
+  <text x="194" y="374" text-anchor="middle" fill="#888" font-size="12.5">40% sector cap · downtrend guard</text>
+  <rect x="74" y="396" width="240" height="32" rx="7" fill="#1a2a1a" stroke="#2a4a2a"/>
+  <text x="194" y="418" text-anchor="middle" fill="#7dba7d" font-size="13">TRADE_DECISION ✓</text>
+
+  <!-- Session 2: Haiku sells -->
+  <rect x="384" y="240" width="260" height="92" rx="10" fill="#111" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="514" y="270" text-anchor="middle" fill="#7dba7d" font-size="16" font-weight="bold">Claude Haiku</text>
+  <text x="514" y="290" text-anchor="middle" fill="#555" font-size="12">Session 2 · Sell Exec · MCP</text>
+  <line x1="404" y1="300" x2="624" y2="300" stroke="#222" stroke-width="1"/>
+  <text x="514" y="321" text-anchor="middle" fill="#888" font-size="12.5">sequential · verified</text>
+
+  <!-- Session 3: Haiku buys -->
+  <rect x="384" y="348" width="260" height="92" rx="10" fill="#111" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="514" y="378" text-anchor="middle" fill="#7dba7d" font-size="16" font-weight="bold">Claude Haiku</text>
+  <text x="514" y="398" text-anchor="middle" fill="#555" font-size="12">Session 3 · Buy Exec · MCP</text>
+  <line x1="404" y1="408" x2="624" y2="408" stroke="#222" stroke-width="1"/>
+  <text x="514" y="429" text-anchor="middle" fill="#888" font-size="12.5">dynamic cap · influencer ≤ 2</text>
+
+  <!-- Robinhood MCP -->
+  <rect x="684" y="240" width="216" height="200" rx="10" fill="#111" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="792" y="284" text-anchor="middle" fill="#d4a3a3" font-size="17" font-weight="bold">Robinhood</text>
+  <text x="792" y="306" text-anchor="middle" fill="#888" font-size="13">MCP Server</text>
+  <line x1="704" y1="318" x2="880" y2="318" stroke="#222" stroke-width="1"/>
+  <text x="792" y="344" text-anchor="middle" fill="#888" font-size="12.5">real orders ·</text>
+  <text x="792" y="366" text-anchor="middle" fill="#d4a3a3" font-size="12.5">real money</text>
+  <text x="792" y="392" text-anchor="middle" fill="#666" font-size="12">sandboxed to the</text>
+  <text x="792" y="412" text-anchor="middle" fill="#666" font-size="12">agentic account</text>
+
+  <!-- Portfolio sleeves -->
+  <rect x="940" y="240" width="216" height="200" rx="10" fill="#111" stroke="#2a2a2a" stroke-width="2"/>
+  <text x="1048" y="274" text-anchor="middle" fill="#aaa" font-size="15" font-weight="bold">Two Sleeves</text>
+  <line x1="960" y1="286" x2="1136" y2="286" stroke="#222" stroke-width="1"/>
+  <text x="1048" y="312" text-anchor="middle" fill="#7dba7d" font-size="12.5">Main · 75%</text>
+  <text x="1048" y="332" text-anchor="middle" fill="#777" font-size="12">S&amp;P 500 momentum</text>
+  <text x="1048" y="364" text-anchor="middle" fill="#d4a35a" font-size="12.5">Influencer · 25%</text>
+  <text x="1048" y="384" text-anchor="middle" fill="#777" font-size="12">expanded universe</text>
+  <text x="1048" y="404" text-anchor="middle" fill="#777" font-size="12">+20% TP · −5% stop</text>
+
+  <!-- flow arrows band 2 -->
+  <line x1="344" y1="286" x2="384" y2="286" stroke="#7dba7d" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+  <line x1="344" y1="395" x2="384" y2="394" stroke="#7dba7d" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+  <line x1="644" y1="286" x2="684" y2="300" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="644" y1="394" x2="684" y2="380" stroke="#444" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="900" y1="340" x2="940" y2="340" stroke="#333" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+  <!-- BAND 3: INTRADAY RISK -->
+  <text x="44" y="476" fill="#555" font-size="13" letter-spacing="2">INTRADAY RISK CONTROLS</text>
+  <rect x="44" y="488" width="1112" height="50" rx="9" fill="#111" stroke="#222"/>
+  <text x="600" y="518" text-anchor="middle" fill="#999" font-size="13">drop-check  −5% stop / +20% influencer take-profit (hourly)   ·   earnings-exit   ·   40% sector cap   ·   dynamic sizing</text>
+
+  <!-- BAND 4: TWO-LAYER OVERSIGHT (centerpiece) -->
+  <text x="44" y="576" fill="#888" font-size="13" letter-spacing="2">SELF-MONITORING &amp; SELF-HEALING · 8am PT every weekday</text>
+  <rect x="40" y="588" width="1120" height="248" rx="12" fill="#0f0f0f" stroke="#242424"/>
+
+  <!-- Deterministic column -->
+  <rect x="60" y="606" width="340" height="158" rx="9" fill="#0f1518" stroke="#27485c" stroke-width="1.5"/>
+  <text x="230" y="634" text-anchor="middle" fill="#6aa9c9" font-size="14" font-weight="bold">DETERMINISTIC CHECKS</text>
+  <line x1="80" y1="646" x2="380" y2="646" stroke="#1f3540" stroke-width="1"/>
+  <text x="230" y="672" text-anchor="middle" fill="#9fbac6" font-size="12.5">/api/verify — reconcile vs live</text>
+  <text x="230" y="691" text-anchor="middle" fill="#6f8893" font-size="11">cash · positions · orders · total</text>
+  <text x="230" y="714" text-anchor="middle" fill="#9fbac6" font-size="12.5">patchTrades — recover dropped sells</text>
+  <text x="230" y="736" text-anchor="middle" fill="#9fbac6" font-size="12.5">self-heal · return &amp; exec guards</text>
+  <text x="230" y="755" text-anchor="middle" fill="#5f7e8a" font-size="11">facts · no false positives</text>
+
+  <!-- LLM column -->
+  <rect x="430" y="606" width="340" height="158" rx="9" fill="#1a1612" stroke="#5a4525" stroke-width="1.5"/>
+  <text x="600" y="634" text-anchor="middle" fill="#d4a35a" font-size="14" font-weight="bold">LLM JUDGMENT</text>
+  <line x1="450" y1="646" x2="750" y2="646" stroke="#3f3320" stroke-width="1"/>
+  <text x="600" y="672" text-anchor="middle" fill="#cbb592" font-size="12.5">skeptical reviewer (Sonnet)</text>
+  <text x="600" y="691" text-anchor="middle" fill="#8a7a5a" font-size="11">+ living past-misses registry</text>
+  <text x="600" y="714" text-anchor="middle" fill="#cbb592" font-size="12.5">ranks concerns by severity</text>
+  <text x="600" y="736" text-anchor="middle" fill="#cbb592" font-size="12.5">fed verify's data — can't cry wolf</text>
+  <text x="600" y="755" text-anchor="middle" fill="#8a7a5a" font-size="11">judgment, not facts</text>
+
+  <!-- Cloud autopilot column -->
+  <rect x="800" y="606" width="340" height="158" rx="9" fill="#0f1510" stroke="#2a4a2a" stroke-width="1.5"/>
+  <text x="970" y="634" text-anchor="middle" fill="#7dba7d" font-size="14" font-weight="bold">CLOUD AUTOPILOT</text>
+  <line x1="820" y1="646" x2="1120" y2="646" stroke="#21381f" stroke-width="1"/>
+  <text x="970" y="672" text-anchor="middle" fill="#9bc99b" font-size="12.5">GitHub Actions · off-Mac</text>
+  <text x="970" y="691" text-anchor="middle" fill="#6f8a6f" font-size="11">reads both layers above</text>
+  <text x="970" y="714" text-anchor="middle" fill="#9bc99b" font-size="12.5">diagnoses code bugs</text>
+  <text x="970" y="736" text-anchor="middle" fill="#9bc99b" font-size="12.5">runs evals → deploys (gated)</text>
+  <text x="970" y="755" text-anchor="middle" fill="#6f8a6f" font-size="11">triggered instantly by 8am cron</text>
+
+  <!-- oversight flow arrows: det -> llm -> cloud -->
+  <line x1="400" y1="685" x2="430" y2="685" stroke="#6aa9c9" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <line x1="770" y1="685" x2="800" y2="685" stroke="#d4a35a" stroke-width="2" marker-end="url(#arrow-amber)"/>
+
+  <!-- BAND 5: INFRASTRUCTURE -->
+  <text x="44" y="878" fill="#555" font-size="13" letter-spacing="2">INFRASTRUCTURE</text>
+  <g text-anchor="middle">
+    <rect x="44"  y="890" width="265" height="52" rx="8" fill="#111" stroke="#222"/><text x="176"  y="912" fill="#bbb" font-size="13.5" font-weight="bold">Vercel</text><text x="176"  y="930" fill="#666" font-size="11.5">Next.js · 8 crons · Functions</text>
+    <rect x="326" y="890" width="265" height="52" rx="8" fill="#111" stroke="#222"/><text x="458"  y="912" fill="#bbb" font-size="13.5" font-weight="bold">Upstash Redis</text><text x="458"  y="930" fill="#666" font-size="11.5">90-run history · tokens</text>
+    <rect x="608" y="890" width="265" height="52" rx="8" fill="#111" stroke="#222"/><text x="740"  y="912" fill="#bbb" font-size="13.5" font-weight="bold">Anthropic API</text><text x="740"  y="930" fill="#666" font-size="11.5">Sonnet + Haiku</text>
+    <rect x="890" y="890" width="266" height="52" rx="8" fill="#111" stroke="#222"/><text x="1023" y="912" fill="#bbb" font-size="13.5" font-weight="bold">Robinhood MCP</text><text x="1023" y="930" fill="#666" font-size="11.5">sandboxed · real money</text>
+  </g>
+
+  <!-- BAND 6: OUTPUTS -->
+  <text x="44" y="978" fill="#555" font-size="13" letter-spacing="2">OUTPUTS</text>
+  <g text-anchor="middle">
+    <rect x="44"  y="990" width="265" height="52" rx="8" fill="#111" stroke="#222"/><text x="176"  y="1012" fill="#bbb" font-size="13.5" font-weight="bold">Dashboard</text><text x="176"  y="1030" fill="#666" font-size="11.5">returns vs SPY · risk panel</text>
+    <rect x="326" y="990" width="265" height="52" rx="8" fill="#111" stroke="#222"/><text x="458"  y="1012" fill="#bbb" font-size="13.5" font-weight="bold">Resend Email</text><text x="458"  y="1030" fill="#666" font-size="11.5">daily report · self-heal alerts</text>
+    <rect x="608" y="990" width="265" height="52" rx="8" fill="#111" stroke="#222"/><text x="740"  y="1012" fill="#bbb" font-size="13.5" font-weight="bold">Eval Suite</text><text x="740"  y="1030" fill="#666" font-size="11.5">12 scenarios · pre-deploy gate</text>
+    <rect x="890" y="990" width="266" height="52" rx="8" fill="#111" stroke="#222"/><text x="1023" y="1012" fill="#bbb" font-size="13.5" font-weight="bold">Public Page</text><text x="1023" y="1030" fill="#666" font-size="11.5">/public · keyless share</text>
+  </g>
+
+  <!-- FOOTER -->
+  <text x="600" y="1098" text-anchor="middle" fill="#7d7d7d" font-size="14">Two-layer oversight: deterministic checks catch facts · the LLM judges decisions</text>
+  <text x="600" y="1128" text-anchor="middle" fill="#555" font-size="13">github.com/alidaftar1/robinhood-agent</text>
+</svg>

@@ -1,0 +1,47 @@
+A couple of weeks ago I posted that my AI trading agent was losing to the S&P 500.
+
+The most useful reply wasn't "just buy an index fund." It was a super insightful comment:
+
+"Your problem isn't the AI's stock picks — it's structural. Stop adding signals and go measure your risk."
+
+So I spent the next stretch rebuilding. Three things changed — and the last one taught me something about AI I didn't expect.
+
+—
+
+1. A risk panel — measuring the agent against the market, not just its P&L.
+
+Beta. Sector exposure. Cash drag. Drawdown vs the S&P.
+
+The first thing it surfaced: the book was ~79% concentrated in a single sector, and I had no idea — it built up one reasonable trade at a time. I added a hard 40% cap.
+
+Amin Rasooli was right: measuring your risk explains more than obsessing over your returns.
+
+2. A high-risk "influencer sleeve."
+
+25% of the budget now trades on stock picks pulled from finance YouTubers — a separate, aggressive bucket next to the S&P momentum book, with its own guardrails: max 2 positions, a −5% stop, a +20% take-profit, and a falling-knife filter.
+
+Its very first pick was a stock the AI called "SPACE." There's no such ticker — it was reaching for the just-IPO'd SpaceX. A validation layer caught the hallucination and resolved it to the real symbol before a dollar moved.
+
+Guardrails beat models.
+
+3. A cloud autopilot that fixes and ships its own bugs.
+
+Every weekday morning, an AI agent — running in GitHub Actions, off my laptop — reads the system's health, diagnoses code-level bugs, runs the eval suite, and deploys the fix to production behind a review gate.
+
+The trading system now largely maintains itself.
+
+—
+
+The lesson I didn't expect: deterministic vs. LLM.
+
+I'd layered AI oversight on top of the AI — an LLM "reviewer" to judge each morning's run. Then reality taught me where LLMs actually belong.
+
+The reviewer kept hallucinating problems that weren't there — once flagging a holding as "missing" that was sitting right there in the data it was handed. Meanwhile the boring, deterministic checks — does the cash reconcile? did any order silently fail? — caught the one bug that actually cost me money.
+
+The takeaway I keep coming back to: use LLMs for judgment, never as your source of truth. The unglamorous if-statements are still what keep real money safe.
+
+—
+
+Still building in public. Barely beating the market but not meaningfully yet. Full architecture attached and link to github and the public dashboard below in comments 👇
+
+What would you build next?

@@ -626,3 +626,24 @@ export async function markAutopilotSent(date: string): Promise<void> {
     // Non-fatal — worst case we send a duplicate on a Redis blip
   }
 }
+
+// Persist the 8am skeptical-reviewer output so the cloud fixer can consume it as its WORK LIST.
+// Without this the concerns are emailed then thrown away, and the cloud agent (which calls
+// /api/autopilot AFTER the email already sent) gets a bare skip response with no concerns — so it
+// re-reviews from scratch, reaches weaker conclusions, and proposes nothing (the 08-07 ILMN/ROST miss).
+const AUTOPILOT_CONCERNS_PREFIX = "robinhood:autopilot:concerns:";
+
+export async function storeAutopilotConcerns(date: string, payload: unknown): Promise<void> {
+  try {
+    await redisCommand("set", `${AUTOPILOT_CONCERNS_PREFIX}${date}`, JSON.stringify(payload), "EX", 172800); // 48h
+  } catch { /* non-fatal — the cloud agent falls back to its own review */ }
+}
+
+export async function getStoredAutopilotConcerns(date: string): Promise<Record<string, unknown> | null> {
+  try {
+    const r = await redisCommand("get", `${AUTOPILOT_CONCERNS_PREFIX}${date}`);
+    return typeof r === "string" ? (JSON.parse(r) as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}

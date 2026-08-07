@@ -11,9 +11,11 @@ Env vars set: `APP_URL`, `CRON_SECRET`, `ANTHROPIC_API_KEY`, `RESEND_API_KEY`, `
 - **Proposal outcomes:** `gh pr list --state all --limit 20 --json number,title,state,headRefName` (read comments on recent `autopilot/*` PRs). **Merged = owner ACCEPTED; closed-unmerged = REJECTED.** Note *why* (PR comments) — never re-pitch a rejected idea, and learn the owner's preferences (what kinds of changes they accept vs reject).
 
 ## Step 1 — Gather this morning's state (Bearer `$CRON_SECRET`)
-- `curl -s "$APP_URL/api/autopilot" -H "Authorization: Bearer $CRON_SECRET"` — status, `reviewConcerns`, `issues`, `autoFixed`.
+- `curl -s "$APP_URL/api/autopilot" -H "Authorization: Bearer $CRON_SECRET"` — status, **`reviewConcerns`** (the skeptical reviewer's flagged concerns from this morning's 8am run), `issues`, `autoFixed`. **The `reviewConcerns` array is your primary WORK LIST.** This endpoint returns `{skipped: true, ...}` because the 8am cron already ran — that is EXPECTED, and the stored `reviewConcerns`/`issues` are included in that skip response. Do NOT treat a skip as "nothing to do"; read the concerns it carries.
 - `curl -s "$APP_URL/api/verify" -H "Authorization: Bearer $CRON_SECRET"` — live Robinhood vs stored.
 - `curl -s "$APP_URL/api/runs?limit=20" -H "Authorization: Bearer $CRON_SECRET"` — recent runs (trades, decided-vs-executed, returns, spyPrice) — also your data for strategy-behavior analysis.
+
+**For each MEDIUM/HIGH `reviewConcern`: diagnose it and either propose a fix (a PR) or explain in your journal why no fix is warranted. This is a hand-off from the reviewer, not a fresh review — the concerns below are the work, and Step 2 is supplementary (catch what the reviewer missed).**
 
 ## Step 2 — Review through two lenses
 **A) Engineer (operational).** Does stored/dashboard state match live Robinhood (cash, positions, orders)? Did it **execute what it decided** (any dropped / rejected / partially-filled trade)? Bad entries, discrepancies, silent self-heal? Cross-reference the skeptical-reviewer concerns + the registry `lib/autopilot-known-issues.ts`.
