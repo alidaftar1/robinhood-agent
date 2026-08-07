@@ -1084,3 +1084,26 @@ describe("prompt-injection defense: influencer transcript extraction (LLM)", () 
     expect(sig.avoid).toContain("INTC");
   }, 60_000);
 });
+
+// ─── ROTATION-CHURN GUARD (discretionary-sell re-entry visibility) ───────────────────────────────
+// Companion to the stop-out re-entry flag: a main-book name the analysis DISCRETIONARILY sold within
+// a few days is surfaced to the next run so a re-buy is a considered decision, not blind churn (ILMN).
+describe("rotation-churn guard: recently-sold names surfaced to the analysis", () => {
+  const { buildV1AnalysisPrompt } = require("@/lib/strategy");
+  const prompt = buildV1AnalysisPrompt("2026-08-07", "(t)", { buyingPower: "$120", totalValue: "$2500", positions: [] },
+    "", "", [], [], [], {}, new Map(), new Map(), new Map(), {}, {},
+    [{ symbol: "ILMN", date: "2026-08-06", price: 188.96 }]);
+
+  it("renders the RECENTLY SOLD block with the sold name / price / age", () => {
+    expect(prompt).toMatch(/RECENTLY SOLD/);
+    expect(prompt).toMatch(/ILMN — sold 2026-08-06 @ \$188\.96 \(1d ago\)/);
+  });
+  it("carries the justify-a-re-buy rule (no churn without a fresh reason)", () => {
+    expect(prompt).toMatch(/a re-buy is CHURN unless a genuine fresh reason exists/);
+    expect(prompt).toMatch(/DEFAULT: do NOT re-buy a name you sold in the last few days/);
+  });
+  it("omits the block when there are no recent sells", () => {
+    const bare = buildV1AnalysisPrompt("2026-08-07", "(t)", { buyingPower: "$120", totalValue: "$2500", positions: [] });
+    expect(bare).not.toMatch(/RECENTLY SOLD/);
+  });
+});

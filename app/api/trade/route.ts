@@ -11,7 +11,7 @@ import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions,
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, positionCapDollars, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
-import { getRecentStopouts } from "@/lib/stopouts";
+import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { fetchNewsSignals } from "@/lib/news";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
@@ -182,7 +182,7 @@ export async function GET(request: Request) {
     const accessToken = await getValidAccessToken();
     console.log("TOKEN_OK");
     const anthropic = createAnthropic();
-    const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache, recentStopouts] = await Promise.all([
+    const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache, recentStopouts, recentSells] = await Promise.all([
       getMarketData(),
       fetchCurrentPrice("SPY"),
       getLatestRun(),
@@ -191,6 +191,7 @@ export async function GET(request: Request) {
       fetchAgenticPositions(anthropic, accessToken),
       getInfluencerSignals(),
       getRecentStopouts(today),
+      getRecentSells(today),
     ]);
     console.log("MARKET_DATA_OK", { stocks: marketData.stocks.length });
     if (agenticBalance) {
@@ -415,7 +416,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
@@ -463,6 +464,18 @@ export async function GET(request: Request) {
       }).join(", ");
       console.warn("REENTRY_DETECTED", { reentries: notes });
       reentryNote = `\n\n⚠️ RE-ENTRY FLAG: re-bought recently-stopped name(s): ${notes}. Confirm the thesis justifies re-entry (a confirmed reversal / fresh catalyst — not just shortlist membership), else this is a whipsaw.`;
+    }
+    // Rotation-churn audit (companion to the stop re-entry flag): the model re-bought a name it
+    // DISCRETIONARILY sold within the last few days (ILMN 08-06→08-07). Deterministic membership flag;
+    // whether a genuine fresh catalyst justifies it is the reviewer's judgment.
+    const churnRebuys = decidedRaw.buys.filter(b => recentSells.some(s => s.symbol === b.symbol));
+    if (churnRebuys.length > 0) {
+      const notes = churnRebuys.map(b => {
+        const s = recentSells.find(x => x.symbol === b.symbol)!;
+        return `${b.symbol} (sold ${s.date} @ $${s.price.toFixed(2)})`;
+      }).join(", ");
+      console.warn("ROTATION_CHURN_DETECTED", { churn: notes });
+      reentryNote += `\n\n⚠️ ROTATION-CHURN FLAG: re-bought recently-SOLD name(s): ${notes}. Confirm a SPECIFIC fresh reason the discretionary exit no longer applies (a real new catalyst — ★INS / ⚡↑ / ⚡NEWS↑), not just shortlist membership; otherwise this is churn — sold and re-bought at ~the same price for no strategic gain.`;
     }
 
     // ── V1 WITHIN-RAILS HARD FILTER ───────────────────────────────────────────
@@ -706,6 +719,9 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
           if (!v) continue;
           const fill = parseFloat(v.avgPrice) > 0 ? v.avgPrice : String(priceMap.get(s.symbol) ?? 0);
           trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, strategy: sellStrategyTag(s.symbol) });
+          // Record a MAIN-book discretionary sell so a next-run re-buy trips the rotation-churn flag.
+          // (Influencer-sleeve sells have their own rotation logic; the churn concern is the main book.)
+          if (sellStrategyTag(s.symbol) !== "influencer") await recordSell(s.symbol, today, parseFloat(fill) || 0);
         }
         if (missing.length > 0) {
           console.warn("SELL_STILL_MISSING_AFTER_RETRY", { missing: missing.map(s => s.symbol) });

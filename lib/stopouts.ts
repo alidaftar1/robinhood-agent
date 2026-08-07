@@ -63,3 +63,55 @@ export async function getRecentStopouts(today: string): Promise<Stopout[]> {
 export function daysAgo(from: string, to: string): number {
   return Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86_400_000);
 }
+
+// ── Recent DISCRETIONARY sells (rotation-churn guard) ────────────────────────
+// Companion to the stop-out registry above, for the OTHER re-entry blind spot: a
+// main-book name the analysis SOLD as a discretionary/rotation exit (NOT a −5% stop)
+// vanishes from positions and reappears on the shortlist, so the model re-buys it a
+// day later at ~the same price/momentum for no strategic gain (the ILMN 08-06→08-07
+// churn; registry #14). Same hybrid: tracking + the churn FLAG are deterministic
+// (code); whether a re-buy is justified by a genuine fresh catalyst is the LLM's call.
+const SELLS_KEY = "recent-sells";
+const RECENT_SELL_DAYS = 5; // churn is a within-a-few-days re-buy; an exit re-bought weeks later isn't churn
+
+export interface RecentSell {
+  symbol: string;
+  date: string;  // YYYY-MM-DD the discretionary sell executed
+  price: number; // the sell fill (for the "sold at $X" round-trip context)
+}
+
+// Record a discretionary main-book sell. Non-fatal — a missed record degrades to
+// today's blind behavior, never worse.
+export async function recordSell(symbol: string, date: string, price: number): Promise<void> {
+  try {
+    await redisCommand("HSET", SELLS_KEY, symbol, JSON.stringify({ symbol, date, price } satisfies RecentSell));
+  } catch (e) {
+    console.warn("RECENT_SELL_RECORD_FAILED", symbol, e instanceof Error ? e.message : String(e));
+  }
+}
+
+// Recent discretionary sells (within RECENT_SELL_DAYS of `today`), pruning stale entries
+// as it reads. Returns [] on any failure so the pipeline is never blocked.
+export async function getRecentSells(today: string): Promise<RecentSell[]> {
+  try {
+    const res = await redisCommand("HGETALL", SELLS_KEY);
+    const flat = Array.isArray(res) ? (res as string[]) : [];
+    const fresh: RecentSell[] = [];
+    const stale: string[] = [];
+    for (let i = 0; i + 1 < flat.length; i += 2) {
+      const field = flat[i];
+      try {
+        const s = JSON.parse(flat[i + 1]) as RecentSell;
+        const ago = (new Date(today).getTime() - new Date(s.date).getTime()) / 86_400_000;
+        if (ago >= 0 && ago <= RECENT_SELL_DAYS) fresh.push(s);
+        else stale.push(field);
+      } catch {
+        stale.push(field);
+      }
+    }
+    if (stale.length) { try { await redisCommand("HDEL", SELLS_KEY, ...stale); } catch { /* best-effort */ } }
+    return fresh.sort((a, b) => (a.date < b.date ? 1 : -1));
+  } catch {
+    return [];
+  }
+}
