@@ -256,8 +256,16 @@ export async function GET(request: Request) {
           for (const run of history) {
             const inMain = (run.positions ?? []).some(p => p.symbol === symbol);
             const inInfl = (run.influencerPositions ?? []).some(p => p.symbol === symbol);
-            if (inMain || inInfl) { held++; absent = 0; }
-            else if (++absent >= 2) break; // tolerate one missing day; two = a real exit
+            if (inMain || inInfl) { held++; absent = 0; continue; }
+            // A recorded SELL that day is a real exit, not a data-snapshot gap — stop
+            // counting immediately so a same/next-day rebuy starts its age at 0 instead of
+            // inheriting the closed lot's age. Without this, the 1-day tolerance below (meant
+            // for genuine missing snapshots) also swallows every sell-then-rebuy-next-day
+            // transition, since a full close+reopen has at most a 1-day gap in daily runs —
+            // this merged ILMN's 08-07 reopen with its 07-28 lot into a false "held 19d" by
+            // 08-10, which drove a STALE-rotation sell on what was actually a 1-day-old lot.
+            if ((run.trades ?? []).some(t => t.symbol === symbol && t.side === "sell")) break;
+            if (++absent >= 2) break; // tolerate one missing day; two = a real exit
           }
           return held;
         };
