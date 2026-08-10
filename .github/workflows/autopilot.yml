@@ -54,6 +54,10 @@ jobs:
       - name: Run autopilot agent
         # --model sonnet: the protocol (fetch/verify/patch/check numbers, small fixes) does not
         #   need Opus — Sonnet is ~5x cheaper on the API bill and plenty for this work.
-        # --max-turns 50: bound a runaway session (cost + safety guard); a normal run finishes
-        #   well under this. The dispatch is now also gated to anomaly-days only (see /api/autopilot).
-        run: claude -p "$(cat .github/autopilot-prompt.md)" --model sonnet --max-turns 50 --dangerously-skip-permissions --output-format text
+        # --max-turns 90: bound a runaway session (cost + safety guard). Raised 50→90 on 2026-08-10:
+        #   since the concern-handoff change (a9967cf) the fixer now WORKS a reviewConcerns list per run
+        #   (diagnose + replay + evals/tsc/build + open a PR + journal), which is far heavier than the old
+        #   "review → CLEAN → stop" run. The 08-10 run did all of that, opened PR #10, then exited 1 on the
+        #   50-turn cap right after journaling — a successful run showing red. The dispatch is also gated to
+        #   anomaly-days only (see /api/autopilot).
+        run: claude -p "$(cat .github/autopilot-prompt.md)" --model sonnet --max-turns 90 --dangerously-skip-permissions --output-format text
