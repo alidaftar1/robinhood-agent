@@ -209,12 +209,22 @@ export async function GET(request: Request) {
     let influencerSection = "";
     const influencerMomentum = new Map<string, MomentumSignal>();
     const influencerCandidateSet = new Set<string>(); // symbols the LLM may buy as INFLUENCER picks (the rails allow these off-shortlist)
+    // Net influencer conviction (weighted-buy − avoid) per ticker, computed once. Also surfaced as a
+    // CROSS-SIGNAL onto MAIN-book shortlist rows (🎬INFL✓/⚠) so a main buy is aware the YouTube crowd
+    // corroborates or warns against it. Built even when there are no BUYS (avoid-only names still flag).
+    const influencerNet: Record<string, number> = influencerCache ? netScores(influencerCache) : {};
+    const influencerX = new Map<string, { net: number; avoid: number }>();
+    if (influencerCache) {
+      const avoids = influencerCache.avoidCounts ?? {};
+      for (const s of new Set([...Object.keys(influencerNet), ...Object.keys(avoids)])) {
+        influencerX.set(s, { net: influencerNet[s] ?? 0, avoid: avoids[s] ?? 0 });
+      }
+    }
     if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
       // Rank by NET score (buy − avoid), matching formatInfluencerSignals exactly, so every name the
       // LLM is SHOWN is also in the buy-allowlist (no "shown but silently dropped" mismatch).
-      const inflNet = netScores(influencerCache);
       const topInfluencerTickers = Object.keys(influencerCache.tickerCounts)
-        .sort((a, b) => (inflNet[b] ?? 0) - (inflNet[a] ?? 0))
+        .sort((a, b) => (influencerNet[b] ?? 0) - (influencerNet[a] ?? 0))
         .slice(0, 12)
         .map((t) => t);
       topInfluencerTickers.forEach(t => influencerCandidateSet.add(t));
@@ -357,7 +367,7 @@ export async function GET(request: Request) {
       marketData.stocks.filter(s => typeof s.change5d === "number").map(s => [s.symbol, s.change5d]),
     );
     for (const [sym, m] of influencerMomentum) if (!(sym in change5dOfHeld)) change5dOfHeld[sym] = m.change5d;
-    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings);
+    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings, influencerX);
     // Build the influencer section HERE (once) — after recentEarnings/news, so candidates carry the
     // SAME universal risk flags as the main book: 📊REPORTED, ⚠EARN/⚠⚠ IMMINENT (upcoming), ⚡NEWS.
     influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings, perSymbolEarnings, today, newsSignals);

@@ -295,6 +295,29 @@ describe("per-stock news: material-event flag renders in the shortlist", () => {
     const news = new Map([["NVDA", { direction: "+", summary: "won $2B supply contract" }]]);
     expect(formatV1Shortlist([stock("NVDA")], {}, {}, {}, new Set(), news)).toMatch(/NVDA.*⚡NEWS↑/);
   });
+
+  // Influencer cross-signal onto a MAIN-book shortlist candidate (🎬INFL✓ strengthens / 🎬INFL⚠ cautions).
+  const inflTable = (sym: string, x: { net: number; avoid: number }) =>
+    formatV1Shortlist([stock(sym)], {}, {}, {}, new Set(), new Map(), new Map(), new Map([[sym, x]]));
+  it("flags 🎬INFL✓ when creators recommend a main-book name (net ≥ the buy floor), surfacing any avoid count", () => {
+    expect(inflTable("NVDA", { net: 5, avoid: 0 })).toMatch(/NVDA.*🎬INFL✓ net \+5(?! \()/); // no dissent → no avoid suffix
+    expect(inflTable("AMD", { net: 5, avoid: 1 })).toMatch(/AMD.*🎬INFL✓ net \+5 \(1 avoid\)/); // ✓ still shows dissent
+  });
+  it("flags 🎬INFL⚠ ONLY when avoids OUTWEIGH buys (net < 0) — the true avoid case (MU)", () => {
+    const t = inflTable("MU", { net: -2, avoid: 2 });
+    expect(t).toMatch(/MU.*🎬INFL⚠ net -2 \(2 avoid\)/);
+    expect(t).not.toMatch(/MU.*🎬INFL[✓~]/); // row-anchored (legend names all markers; . doesn't cross newlines)
+  });
+  it("flags 🎬INFL~ (contested), NOT ⚠, for a name creators are NET-BULLISH-but-split on — no false bearish label", () => {
+    // buy conviction 3, one avoid → net +2: below the buy bar AND has dissent → contested, not "warning against"
+    const t = inflTable("TSLA", { net: 2, avoid: 1 });
+    expect(t).toMatch(/TSLA.*🎬INFL~ net \+2 \(1 avoid\)/);
+    expect(t).not.toMatch(/TSLA.*🎬INFL⚠/); // a net-positive name must never read as bearish
+  });
+  it("shows NO influencer flag for a mild mention below the bar with no dissent, or a name they never mentioned", () => {
+    expect(inflTable("AAPL", { net: 2, avoid: 0 })).not.toMatch(/AAPL.*🎬INFL/); // row-anchored: mild, no signal either way
+    expect(formatV1Shortlist([stock("CRM")], {}, {}, {}, new Set(), new Map(), new Map(), new Map())).not.toMatch(/CRM.*🎬INFL/);
+  });
   it("flags material news on a HELD influencer position (not just the shortlist) + the trim rule", () => {
     const { buildV1AnalysisPrompt } = require("@/lib/strategy");
     const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [{ symbol: "PLTR", quantity: "2", avgCost: "120", price: "125", heldDays: 5 }] };
