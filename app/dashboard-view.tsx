@@ -524,7 +524,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={{ ...s.perfValue, color: returnColor(v1Alpha) }}>
               {v1Alpha != null ? fmtPct(v1Alpha) : "—"}
             </span>
-            <span style={s.perfSince}>quality-momentum vs. market · since 2026-07-09</span>
+            <span style={s.perfSince}>quality-momentum vs. market</span>
           </div>
           {qmBeatRate != null && (
             <div style={s.perfStat}>
@@ -532,7 +532,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={{ ...s.perfValue, color: returnColor(qmBeatRate.rate * 100 - 50) }}>
                 {(qmBeatRate.rate * 100).toFixed(0)}%
               </span>
-              <span style={s.perfSince}>of {qmBeatRate.n} days · since 2026-07-09</span>
+              <span style={s.perfSince}>of {qmBeatRate.n} trading days</span>
             </div>
           )}
           <div style={s.perfStat}>
