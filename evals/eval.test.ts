@@ -6,6 +6,7 @@ import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
+import { channelProbRealPct } from "@/lib/influencer-ledger";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
@@ -309,6 +310,28 @@ describe("sharpeConfidence: CI narrows as sample grows, governs the small-sample
     expect(strong).toBeLessThan(0.90);                              // ~88% — high but not certain at 25 days
     expect(sharpeProbPositive(-0.19, 25)).toBeLessThan(0.5);        // losing sleeve → below a coin flip
     expect(strong).toBeLessThan(sharpeProbPositive(3.73, 252));     // same Sharpe, more data → more certain
+  });
+});
+
+describe("channelProbRealPct: per-channel ledger edge is real vs luck (small-sample t-test)", () => {
+  it("returns null under 3 picks (a t-test needs ≥2 df)", () => {
+    expect(channelProbRealPct([])).toBeNull();
+    expect(channelProbRealPct([5])).toBeNull();
+    expect(channelProbRealPct([5, 5])).toBeNull();
+  });
+  it("matches the closed-form Student-t (df=2): rets [1,2,3] → ~96.3%", () => {
+    // t = mean/(sd/√n) = 2/(1/√3) = 3.4641, df=2; F(t)=0.5(1+t/√(2+t²)) = 0.9629
+    expect(channelProbRealPct([1, 2, 3])!).toBeCloseTo(96.29, 0);
+    // symmetric: all-negative mirror ≈ 100 − that
+    expect(channelProbRealPct([-1, -2, -3])!).toBeCloseTo(3.71, 0);
+  });
+  it("all-positive with zero spread = 100%, mixed = middling, consistent-positive beats noisy", () => {
+    expect(channelProbRealPct([5, 5, 5])).toBe(100);            // no variance, clearly positive
+    const tight = channelProbRealPct([3, 4, 5])!;               // consistently positive
+    const noisy = channelProbRealPct([-8, 5, 12])!;             // same-ish mean, huge spread
+    expect(tight).toBeGreaterThan(noisy);                       // less noise → more confident it's real
+    expect(noisy).toBeGreaterThan(40);
+    expect(noisy).toBeLessThan(80);
   });
 });
 

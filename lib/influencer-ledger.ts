@@ -51,8 +51,57 @@ export interface ChannelStats {
   picks: number;             // measurable picks (a live price was available)
   hitRatePct: number;        // % of picks with returnPct > 0
   avgReturnPct: number;      // simple mean of pick returns (mixed horizons — see daysElapsed)
+  probRealPct: number | null; // chance the channel's edge is REAL not luck (one-sample t-test); null until ≥3 picks
   bestPick: string;
   worstPick: string;
+}
+
+// ─── small-sample significance for a channel's returns ───────────────────────
+// "% likely real" = probability the channel's TRUE mean pick-return is positive (a genuine edge, not
+// luck), from a one-sample t-test on its picks. This ledger deals in TINY samples (a few picks per
+// channel), so we use the Student-t distribution — the normal approx would badly overstate confidence
+// at n=3–5. Returns null until ≥3 picks, because a t-test needs ≥2 degrees of freedom to say anything.
+function lgamma(z: number): number {
+  const c = [76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+  let x = z, tmp = x + 5.5; tmp -= (x + 0.5) * Math.log(tmp);
+  let ser = 1.000000000190015, y = z;
+  for (let j = 0; j < 6; j++) { y += 1; ser += c[j] / y; }
+  return -tmp + Math.log((2.5066282746310005 * ser) / x);
+}
+function betacf(a: number, b: number, x: number): number {
+  const FPMIN = 1e-30, qab = a + b, qap = a + 1, qam = a - 1;
+  let c = 1, d = 1 - (qab * x) / qap;
+  if (Math.abs(d) < FPMIN) d = FPMIN; d = 1 / d; let h = d;
+  for (let m = 1; m <= 200; m++) {
+    const m2 = 2 * m;
+    let aa = (m * (b - m) * x) / ((qam + m2) * (a + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; h *= d * c;
+    aa = (-(a + m) * (qab + m) * x) / ((a + m2) * (qap + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; const del = d * c; h *= del;
+    if (Math.abs(del - 1) < 3e-7) break;
+  }
+  return h;
+}
+function betai(a: number, b: number, x: number): number {
+  if (x <= 0) return 0; if (x >= 1) return 1;
+  const bt = Math.exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * Math.log(x) + b * Math.log(1 - x));
+  return x < (a + 1) / (a + b + 2) ? (bt * betacf(a, b, x)) / a : 1 - (bt * betacf(b, a, 1 - x)) / b;
+}
+function studentTCdf(t: number, df: number): number {
+  const tail = 0.5 * betai(df / 2, 0.5, df / (df + t * t)); // P(T > |t|)
+  return t >= 0 ? 1 - tail : tail;
+}
+export function channelProbRealPct(rets: number[]): number | null {
+  const n = rets.length;
+  if (n < 3) return null; // a t-test needs ≥2 df to be meaningful
+  const mean = rets.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1)); // sample sd
+  if (sd === 0) return mean > 0 ? 100 : mean < 0 ? 0 : 50;
+  return studentTCdf(mean / (sd / Math.sqrt(n)), n - 1) * 100;
 }
 
 // ── Redis (persistent, NOT TTL'd — this is the historical record) ──────────────
@@ -208,6 +257,7 @@ export async function computeAttribution(
         picks: rets.length,
         hitRatePct: (rets.filter((r) => r > 0).length / rets.length) * 100,
         avgReturnPct: rets.reduce((a, b) => a + b, 0) / rets.length,
+        probRealPct: channelProbRealPct(rets),
         bestPick: `${best.ticker} ${best.ret >= 0 ? "+" : ""}${best.ret.toFixed(1)}%`,
         worstPick: `${worst.ticker} ${worst.ret >= 0 ? "+" : ""}${worst.ret.toFixed(1)}%`,
       };
