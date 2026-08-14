@@ -464,11 +464,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           {` · Trades daily at 7:30am PT`}
           {latest && ` · Last run ${latest.date}`}
         </div>
-        {spyReturn != null && (
-          <div style={{ ...s.subtitle, marginTop: 6 }}>
-            Benchmark · <span style={{ color: returnColor(spyReturn), fontWeight: 600 }}>S&amp;P 500 {fmtPct(spyReturn)}</span> <span style={{ color: "#666" }}>over the same period — what buying &amp; holding the market returned</span>
-          </div>
-        )}
       </div>
 
       <div style={{ background: "#111", border: "1px solid #222", borderLeft: "3px solid #3b6ea5", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13, lineHeight: 1.6, color: "#bbb" }}>
@@ -486,20 +481,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={s.perfSince}>core S&P strategy · since {seriesSince.main ?? "—"}</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="Quality-Momentum · new" def="The NEW quality-momentum main-book strategy's return since it took over on 2026-07-09 — anchored once the book was fully rebuilt after T+1 settlement, so the transition days don't distort it. This is the live 2-week trial's scorecard; the 'Main Book Return' to its left spans the whole account history (old momentum strategy + new)." />
-            <span style={{ ...s.perfValue, color: returnColor(v1MainReturn) }}>
-              {v1MainReturn != null ? fmtPct(v1MainReturn) : "—"}
-            </span>
-            <span style={s.perfSince}>{v1MainReturn != null ? "since strategy update · 2026-07-09" : "since 2026-07-09 · book building"}</span>
-          </div>
-          <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="Quality-Momentum vs S&P" def="The NEW quality-momentum strategy's return minus the S&P 500's over the SAME window (since the 2026-07-09 switch). This isolates whether the CURRENT strategy is beating the market — unlike 'Main Book vs S&P 500' to the right, which spans the whole account history including the retired pre-V1 strategy." />
-            <span style={{ ...s.perfValue, color: returnColor(v1Alpha) }}>
-              {v1Alpha != null ? fmtPct(v1Alpha) : "—"}
-            </span>
-            <span style={s.perfSince}>quality-momentum vs. market · since 2026-07-09</span>
-          </div>
-          <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="Main Book vs S&P 500" def="The core strategy's return minus the S&P 500's over the same period. Positive = the core book is beating the market. A 'trailing N days' flag warns when the book has stayed behind buy-and-hold SPY for a sustained stretch — a nudge to reconsider whether active trading is earning its risk." />
             <span style={{ ...s.perfValue, color: returnColor(mainAlpha) }}>
               {mainAlpha != null ? fmtPct(mainAlpha) : "—"}
@@ -511,6 +492,27 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             ) : (
               <span style={s.perfSince}>core book vs. the S&P 500</span>
             )}
+          </div>
+          <div style={s.perfStat}>
+            <Tip style={s.perfLabel} label="S&P 500 Return" def="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'" />
+            <span style={{ ...s.perfValue, color: returnColor(spyReturn) }}>
+              {spyReturn != null ? fmtPct(spyReturn) : "—"}
+            </span>
+            <span style={s.perfSince}>the market, same period</span>
+          </div>
+          <div style={s.perfStat}>
+            <Tip style={s.perfLabel} label="Quality-Momentum · new" def="The NEW quality-momentum main-book strategy's return since it took over on 2026-07-09 — anchored once the book was fully rebuilt after T+1 settlement, so the transition days don't distort it. This is the live 2-week trial's scorecard; the 'Main Book Return' to its left spans the whole account history (old momentum strategy + new)." />
+            <span style={{ ...s.perfValue, color: returnColor(v1MainReturn) }}>
+              {v1MainReturn != null ? fmtPct(v1MainReturn) : "—"}
+            </span>
+            <span style={s.perfSince}>{v1MainReturn != null ? "since strategy update · 2026-07-09" : "since 2026-07-09 · book building"}</span>
+          </div>
+          <div style={s.perfStat}>
+            <Tip style={s.perfLabel} label="Quality-Momentum vs S&P" def="The NEW quality-momentum strategy's return minus the S&P 500's over the SAME window (since the 2026-07-09 switch). This isolates whether the CURRENT strategy is beating the market — unlike 'Main Book vs S&P 500' to its left, which spans the whole account history including the retired pre-V1 strategy." />
+            <span style={{ ...s.perfValue, color: returnColor(v1Alpha) }}>
+              {v1Alpha != null ? fmtPct(v1Alpha) : "—"}
+            </span>
+            <span style={s.perfSince}>quality-momentum vs. market · since 2026-07-09</span>
           </div>
           {mainBeatRate != null && (
             <div style={s.perfStat}>
