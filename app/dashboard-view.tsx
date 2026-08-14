@@ -420,7 +420,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const fmtSharpe = (v: number) => `${v >= 0 ? "" : "−"}${Math.abs(v).toFixed(1)}`;
   // "How likely is this reward-for-risk real (not luck)?" — a plain percentage that moves with the
   // data/performance (distinct from the fixed-95% CI width). Shown on the Sharpe of each sleeve.
-  const pctReal = (sharpe: number, n: number) => `~${Math.round(sharpeProbPositive(sharpe, n) * 100)}% confidence it's real (not luck)`;
+  const pctReal = (sharpe: number, n: number) => `~${Math.round(sharpeProbPositive(sharpe, n) * 100)}% confidence`;
 
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
@@ -568,7 +568,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The '% confidence it's real' is the chance the true reward is genuinely positive rather than luck (~50% = coin flip; climbs only as an edge holds over more days). It's a statistical confidence level, not a guarantee." />
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The 'confidence' figure is the chance the true reward is genuinely positive, not luck (~50% = coin flip; climbs only as an edge holds over more days). It's a statistical confidence level, not a guarantee." />
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
@@ -668,7 +668,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </div>
             {mainSharpe != null && (
               <div style={{ ...s.perfStat, minWidth: 175 }}>
-                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) The big number is our best guess. But 'above 1/2 is strong' is the wrong bar for an active strategy — you could just hold the index, and in a calm up-market SPY's own Sharpe is high too. The REAL test is beating SPY's Sharpe over the same window, shown as 'vs SPY' (ahead = we're earning our keep). The formal one-number version of this is the Information Ratio (excess return ÷ how much we deviate from SPY). The '% confidence it's real' is the chance the reward is genuinely positive rather than luck (~50% = coin flip; climbs as an edge holds over more days) — a statistical confidence level (not a true probability, and not a guarantee), a read on "can I trust this yet?" separate from how big it is.`} />
+                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) The big number is our best guess. But 'above 1/2 is strong' is the wrong bar for an active strategy — you could just hold the index, and in a calm up-market SPY's own Sharpe is high too. The REAL test is beating SPY's Sharpe over the same window, shown as 'vs SPY' (ahead = we're earning our keep). The formal one-number version of this is the Information Ratio (excess return ÷ how much we deviate from SPY). The 'confidence' figure is the chance the reward is genuinely positive, not luck (~50% = coin flip; climbs as an edge holds over more days) — a statistical confidence level (not a true probability, and not a guarantee), a read on "can I trust this yet?" separate from how big it is.`} />
                 <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                   {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
                 </span>
