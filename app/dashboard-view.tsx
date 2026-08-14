@@ -649,15 +649,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
       {latest && (cashPct != null || sectorBreakdown.length > 0 || bookBeta) && (
         <div style={s.chartCard}>
           <div style={s.chartTitle}>How risky is the main book? — a look under the hood <span style={{ color: "#666", fontWeight: 400, fontSize: 12 }}>· the influencer sleeve has its own risk card above</span></div>
-          <div style={{ display: "flex", gap: 32, flexWrap: "wrap", marginBottom: sectorBreakdown.length > 0 ? 20 : 0 }}>
-            <div style={{ ...s.perfStat, minWidth: 160 }}>
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: sectorBreakdown.length > 0 ? 20 : 0 }}>
+            <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
               <Tip style={s.perfLabel} label="Cash on Hand" def="Cash that's settled and ready to trade right now, as a % of the account. Does not include money from recent sales that hasn't cleared yet." />
               <span style={{ ...s.perfValue, color: cashPct != null && cashPct > 10 ? "#e8943a" : "#e5e5e5" }}>
                 {cashPct != null ? `${cashPct.toFixed(1)}%` : "—"}
               </span>
               <span style={s.perfSince}>ready to trade now (idle if high)</span>
             </div>
-            <div style={{ ...s.perfStat, minWidth: 185 }}>
+            <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
               <Tip style={s.perfLabel} label="Cash Clearing" def="When the AI sells a stock, the cash takes one business day to clear before it can be reused (called 'T+1 settlement'). This is how much is waiting to clear." />
               <span style={{ ...s.perfValue, color: t1Settling && t1Settling.pct > 10 ? "#e8943a" : "#e5e5e5" }}>
                 {t1Settling ? `$${t1Settling.amount.toFixed(0)}` : "$0"}
@@ -668,7 +668,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                   : "no sale money waiting to clear"}
               </span>
             </div>
-            <div style={{ ...s.perfStat, minWidth: 170 }}>
+            <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
               <Tip style={s.perfLabel} label="Swings vs. Market" def="Beta: how much the main book tends to move with the market, based on its current holdings (the influencer picks are excluded — they have no reliable beta). 1.0 = moves with the market; above 1 = bigger swings; below 1 = smaller swings; negative = moves opposite." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
                 {bookBeta ? `${bookBeta.beta.toFixed(2)}×` : "—"}
@@ -677,7 +677,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 {bookBeta ? `${betaDescription(bookBeta.beta)}${bookBeta.coveragePct < 70 ? " · partial data" : ""}` : "need current holdings"}
               </span>
             </div>
-            <div style={{ ...s.perfStat, minWidth: 175 }}>
+            <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
               <Tip style={s.perfLabel} label="Biggest Bet" def="How much of the main book sits in its single biggest stock. A high number means more risk if that one stock drops." />
               <span style={{ ...s.perfValue, color: concentration && concentration.largestPct > 25 ? "#e8943a" : "#e5e5e5" }}>
                 {concentration ? `${concentration.largestPct.toFixed(0)}%` : "—"}
