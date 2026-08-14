@@ -13,6 +13,10 @@ const TIP_CSS = `
   font-size:12px;line-height:1.45;text-transform:none;letter-spacing:normal;font-weight:400;
   opacity:0;visibility:hidden;transition:opacity .12s ease;box-shadow:0 6px 18px rgba(0,0,0,.55)}
 .tip:hover .tipbox,.tip:focus .tipbox,.tip:focus-within .tipbox{opacity:1;visibility:visible}
+.scroll-dark::-webkit-scrollbar{width:8px;height:8px}
+.scroll-dark::-webkit-scrollbar-track{background:transparent}
+.scroll-dark::-webkit-scrollbar-thumb{background:#333;border-radius:4px}
+.scroll-dark::-webkit-scrollbar-thumb:hover{background:#444}
 `;
 
 function Tip({ label, def, style }: { label: string; def: string; style?: React.CSSProperties }) {
@@ -242,7 +246,7 @@ const s = {
   tradeBuy: { background: "#0d2b0d", border: "1px solid #1f4a1f", borderRadius: 7, padding: "5px 12px", fontSize: 13, fontWeight: 600, color: "#6fcf6f", display: "flex", alignItems: "center", gap: 5 },
   tradeSell: { background: "#2b0d0d", border: "1px solid #4a1f1f", borderRadius: 7, padding: "5px 12px", fontSize: 13, fontWeight: 600, color: "#cf6f6f", display: "flex", alignItems: "center", gap: 5 },
   divider: { border: "none", borderTop: "1px solid #1e1e1e", margin: "14px 0" },
-  summary: { color: "#bbb", fontSize: 13, whiteSpace: "pre-wrap" as const, lineHeight: 1.7, maxHeight: 320, overflowY: "auto" as const },
+  summary: { color: "#bbb", fontSize: 13, whiteSpace: "pre-wrap" as const, lineHeight: 1.7, maxHeight: 320, overflowY: "auto" as const, scrollbarWidth: "thin" as const, scrollbarColor: "#333 transparent" },
   chartCard: { background: "#111", border: "1px solid #222", borderRadius: 10, padding: "20px 24px", marginBottom: 28 },
   chartTitle: { fontSize: 12, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.5px", color: "#555", marginBottom: 12 },
   chartLegend: { display: "flex", gap: 20, marginTop: 10 },
@@ -784,7 +788,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               )}
 
               <hr style={s.divider} />
-              <div style={s.summary}><MarkdownSummary text={run.summary} /></div>
+              <div className="scroll-dark" style={s.summary}><MarkdownSummary text={run.summary} /></div>
             </div>
           );
         })
