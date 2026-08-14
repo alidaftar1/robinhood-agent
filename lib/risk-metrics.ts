@@ -206,6 +206,18 @@ export function sharpeConfidence(sharpe: number, n: number): { se: number; ciLow
   return { se, ciLow: sharpe - 1.96 * se, ciHigh: sharpe + 1.96 * se };
 }
 
+// Plain-language confidence in a path/risk stat (drawdown, Sharpe), from how much data backs it.
+// This answers "can I trust this number?" in words anyone gets, not a statistical range:
+//   Low  = under ~3 months of data (treat as directional only)
+//   Medium = ~3–6 months (getting meaningful, not yet a verdict)
+//   High = ≥6 months (SMALL_SAMPLE_DAYS — enough to stand on)
+export const CONFIDENCE_MEDIUM_DAYS = 63; // ~3 months of trading days
+export function confidenceLevel(n: number): "Low" | "Medium" | "High" {
+  if (n >= SMALL_SAMPLE_DAYS) return "High";
+  if (n >= CONFIDENCE_MEDIUM_DAYS) return "Medium";
+  return "Low";
+}
+
 // Weighted-average β of the CURRENT book vs SPY, using each holding's β from today's
 // market data (betaOf). Names not covered — rare, a holding that dropped out of the
 // fetched universe — default to 1.0 (market-like) so the estimate stays honest instead

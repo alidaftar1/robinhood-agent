@@ -5,7 +5,7 @@ import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
-import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
+import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, confidenceLevel, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
@@ -301,6 +301,14 @@ describe("sharpeConfidence: CI narrows as sample grows, governs the small-sample
     // the dashboard shows the caveat iff n < SMALL_SAMPLE_DAYS
     expect(25 < SMALL_SAMPLE_DAYS).toBe(true);   // today → labeled
     expect(126 < SMALL_SAMPLE_DAYS).toBe(false); // at threshold → clear
+  });
+  it("confidenceLevel maps sample size to Low/Medium/High (today = Low)", () => {
+    expect(confidenceLevel(25)).toBe("Low");     // ~5 weeks, today
+    expect(confidenceLevel(62)).toBe("Low");     // just under 3 months
+    expect(confidenceLevel(63)).toBe("Medium");  // 3 months
+    expect(confidenceLevel(125)).toBe("Medium"); // just under 6 months
+    expect(confidenceLevel(126)).toBe("High");   // 6 months → trustworthy
+    expect(confidenceLevel(400)).toBe("High");
   });
 });
 
