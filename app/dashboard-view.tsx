@@ -513,14 +513,14 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={s.perfSince}>the market, same period</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="Quality-Momentum · new" def="The NEW quality-momentum main-book strategy's return since it took over on 2026-07-09 — anchored once the book was fully rebuilt after T+1 settlement, so the transition days don't distort it. This is the live 2-week trial's scorecard; the 'Main Book Return' spans the whole account history (old momentum strategy + new)." />
+            <Tip style={s.perfLabel} label="QM · new" def="The NEW quality-momentum main-book strategy's return since it took over on 2026-07-09 — anchored once the book was fully rebuilt after T+1 settlement, so the transition days don't distort it. This is the live 2-week trial's scorecard; the 'Main Book Return' spans the whole account history (old momentum strategy + new)." />
             <span style={{ ...s.perfValue, color: returnColor(v1MainReturn) }}>
               {v1MainReturn != null ? fmtPct(v1MainReturn) : "—"}
             </span>
             <span style={s.perfSince}>{v1MainReturn != null ? "since strategy update · 2026-07-09" : "since 2026-07-09 · book building"}</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="Quality-Momentum vs S&P" def="The NEW quality-momentum strategy's return minus the S&P 500's over the SAME window (since the 2026-07-09 switch). This isolates whether the CURRENT strategy is beating the market — unlike 'Main Book vs S&P 500', which spans the whole account history including the retired pre-V1 strategy." />
+            <Tip style={s.perfLabel} label="QM vs S&P" def="The NEW quality-momentum strategy's return minus the S&P 500's over the SAME window (since the 2026-07-09 switch). This isolates whether the CURRENT strategy is beating the market — unlike 'Main Book vs S&P 500', which spans the whole account history including the retired pre-V1 strategy." />
             <span style={{ ...s.perfValue, color: returnColor(v1Alpha) }}>
               {v1Alpha != null ? fmtPct(v1Alpha) : "—"}
             </span>
@@ -528,7 +528,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           </div>
           {qmBeatRate != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Days Quality-Momentum Beat S&P" def="The share of trading days the NEW quality-momentum strategy's daily return beat the S&P 500's, since the 2026-07-09 switch. 'Days Main Book Beat S&P' spans the whole account history (old strategy + new)." />
+              <Tip style={s.perfLabel} label="Days QM Beat S&P" def="The share of trading days the NEW quality-momentum strategy's daily return beat the S&P 500's, since the 2026-07-09 switch. 'Days Main Book Beat S&P' spans the whole account history (old strategy + new)." />
               <span style={{ ...s.perfValue, color: returnColor(qmBeatRate.rate * 100 - 50) }}>
                 {(qmBeatRate.rate * 100).toFixed(0)}%
               </span>
