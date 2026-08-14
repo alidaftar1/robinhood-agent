@@ -5,7 +5,7 @@ import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
-import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
+import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
@@ -309,6 +309,17 @@ describe("sharpeConfidence: CI narrows as sample grows, governs the small-sample
     expect(strong).toBeLessThan(0.90);                              // ~88% — high but not certain at 25 days
     expect(sharpeProbPositive(-0.19, 25)).toBeLessThan(0.5);        // losing sleeve → below a coin flip
     expect(strong).toBeLessThan(sharpeProbPositive(3.73, 252));     // same Sharpe, more data → more certain
+  });
+  it("computeSpySharpe derives SPY's Sharpe from spyPrice (the benchmark bar)", () => {
+    const runs = (prices: number[]) => prices.map((spyPrice, i) => ({ date: `d${i}`, spyPrice })) as any;
+    expect(computeSpySharpe(runs([100, 100, 100, 100, 100]))).toBeNull(); // flat → sd 0 → null
+    expect(computeSpySharpe(runs([100, 101]))).toBeNull();                // <5 daily returns → null
+    const up = computeSpySharpe(runs([100, 103, 101, 104, 102, 106]));    // net up with real day-to-day wiggle
+    expect(up).not.toBeNull();
+    expect(up!.sharpe).toBeGreaterThan(0);                                // positive drift → positive Sharpe
+    expect(Number.isFinite(up!.sharpe)).toBe(true);
+    const down = computeSpySharpe(runs([100, 97, 99, 96, 98, 94]));       // net down → negative Sharpe
+    expect(down!.sharpe).toBeLessThan(0);
   });
 });
 

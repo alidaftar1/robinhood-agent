@@ -189,6 +189,27 @@ export function computeSharpe(
   return { sharpe: (mean / sd) * Math.sqrt(252), n: rets.length };
 }
 
+// SPY's OWN Sharpe over the same runs — the benchmark bar. An active strategy's Sharpe only earns its
+// keep if it beats SPY's, since you could just hold the index; in a calm up-market SPY's Sharpe is
+// already high, so "above 2 is strong" is the wrong bar — "above SPY" is. Derives SPY daily returns
+// from each run's spyPrice; same population-vol × √252 annualization as computeSharpe for a fair match.
+export function computeSpySharpe(runs: TradeRun[]): { sharpe: number; n: number } | null {
+  // Sort by date (order-agnostic) — callers pass either newest-first (getRuns) or oldest-first
+  // (dashboard's chronological runs); consecutive spyPrice ratios must be computed oldest→newest.
+  const chron = [...runs].sort((a, b) => a.date.localeCompare(b.date));
+  const rets: number[] = [];
+  for (let i = 1; i < chron.length; i++) {
+    const now = chron[i].spyPrice, prev = chron[i - 1].spyPrice;
+    if (!now || !prev) continue;
+    rets.push(now / prev - 1);
+  }
+  if (rets.length < 5) return null;
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const sd = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length);
+  if (sd === 0) return null;
+  return { sharpe: (mean / sd) * Math.sqrt(252), n: rets.length };
+}
+
 // Minimum trading-day sample before a path/risk stat (drawdown, Sharpe) is robust enough to drop
 // the "small sample" disclaimer. 126 ≈ 6 months of trading days — the point where a strong (~2+)
 // Sharpe reaches ~t≈1.9 and the drawdown window has usually seen at least one real market pullback.

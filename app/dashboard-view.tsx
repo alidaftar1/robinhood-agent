@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeBookBeta, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -414,6 +414,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   })();
   const spyDrawdown = computeMaxDrawdown(v1MainRuns.map(r => r.spyPrice).filter((x): x is number => typeof x === "number"));
   const mainSharpe = computeSharpe(v1MainRuns, r => r.mainDailyReturn);
+  const spySharpe = computeSpySharpe(v1MainRuns); // benchmark bar over the same window — beating this is the real test
   // 95% CI for the Sharpe — wide now, tightens ~1/√n as data accrues; replaces the binary caveat.
   const mainSharpeCI = mainSharpe ? sharpeConfidence(mainSharpe.sharpe, mainSharpe.n) : null;
   const fmtSharpe = (v: number) => `${v >= 0 ? "" : "−"}${Math.abs(v).toFixed(1)}`;
@@ -662,11 +663,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </div>
             {mainSharpe != null && (
               <div style={{ ...s.perfStat, minWidth: 175 }}>
-                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) Above 1 is good, above 2 is strong. The big number is our best guess. The '% likely this is real' is the chance the true reward-for-risk is genuinely positive rather than luck, given the data so far: ~50% is a coin flip, and it only climbs toward 100% as a real edge holds up over more trading days (it can also fall if performance weakens). It's a plain read on "can I trust this yet?", separate from how big the number is.`} />
+                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) The big number is our best guess. But 'above 1/2 is strong' is the wrong bar for an active strategy — you could just hold the index, and in a calm up-market SPY's own Sharpe is high too. The REAL test is beating SPY's Sharpe over the same window, shown as 'vs SPY' (ahead = we're earning our keep). The formal one-number version of this is the Information Ratio (excess return ÷ how much we deviate from SPY). The '% likely this is real' is the chance the reward is genuinely positive rather than luck (~50% = coin flip; climbs as an edge holds over more days) — a read on "can I trust this yet?", separate from how big it is.`} />
                 <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                   {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
                 </span>
-                <span style={s.perfSince}>{pctReal(mainSharpe.sharpe, mainSharpe.n)} · {mainSharpe.n} days</span>
+                <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${mainSharpe.sharpe >= spySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{pctReal(mainSharpe.sharpe, mainSharpe.n)} · {mainSharpe.n} days</span>
               </div>
             )}
             <div style={{ ...s.perfStat, minWidth: 175 }}>
