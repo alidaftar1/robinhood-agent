@@ -432,6 +432,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const influencerDrawdown = computeMaxDrawdown(returnSeries.filter(p => p.influencer != null).map(p => p.influencer as number));
   const influencerDdN = returnSeries.filter(p => p.influencer != null).length; // sleeve days behind the drawdown
   const influencerSharpe = computeSharpe(runs, r => r.influencerDailyReturn);
+  // SPY's Sharpe over the SLEEVE's window (from its series start), computed from consecutive runs so
+  // the daily SPY returns aren't distorted by the sleeve's sparse active days — the benchmark bar.
+  const inflSpySharpe = seriesSince.influencer
+    ? computeSpySharpe(runsChronological.filter(r => r.date >= (seriesSince.influencer as string)))
+    : null;
 
   // Honest "is the active book beating just-holding-SPY, and for how long has it trailed?" verdict.
   const benchmarkVerdict = computeBenchmarkVerdict(runs);
@@ -563,11 +568,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) Above 1 is good; near 0 or negative means the swings aren't being rewarded. The '% likely this is real' is the chance the true reward is genuinely positive rather than luck, given the data so far — ~50% is a coin flip, and it climbs toward 100% only as a real edge holds up over more days." />
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The '% likely this is real' is the chance the true reward is genuinely positive rather than luck (~50% = coin flip; climbs only as an edge holds over more days)." />
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{pctReal(influencerSharpe.sharpe, influencerSharpe.n)} · {influencerSharpe.n} days</span>
+              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${influencerSharpe.sharpe >= inflSpySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{pctReal(influencerSharpe.sharpe, influencerSharpe.n)} · {influencerSharpe.n} days</span>
             </div>
           )}
           {influencerPositions.length > 0 && (
