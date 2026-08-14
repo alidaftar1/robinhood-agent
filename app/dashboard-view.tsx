@@ -593,7 +593,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           </div>
           {influencerBeatRate != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Days Influencer Beat S&P" def="The share of trading days the YouTube-picks slice's daily return was higher than the S&P 500's." />
+              <Tip style={s.perfLabel} label="Days Beat S&P" def="The share of trading days the YouTube-picks slice's daily return was higher than the S&P 500's." />
               <span style={{ ...s.perfValue, color: returnColor(influencerBeatRate.rate * 100 - 50) }}>
                 {(influencerBeatRate.rate * 100).toFixed(0)}%
               </span>
