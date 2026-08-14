@@ -477,7 +477,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
       </div>
 
       {runs.length >= 2 && (
-        <div style={s.perfCard}>
+        <div style={{ ...s.perfCard, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "18px 24px" }}>
           <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="Main Book Return" def="The core S&P 500 momentum strategy on its own, since it started — the higher-risk YouTube-influencer sleeve is a separate strategy, tracked in its own card below." />
             <span style={{ ...s.perfValue, color: returnColor(mainCumReturn) }}>
