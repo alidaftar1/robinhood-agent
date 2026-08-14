@@ -551,14 +551,14 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
       {(hasInfluencerData || influencerPositions.length > 0) && (
         <div style={{ ...s.perfCard, borderColor: "#2a1f0d" }}>
           <div style={{ ...s.perfStat }}>
-            <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="📺 YouTube-Picks Return" def="A separate ~25% slice of the account that buys stocks talked up by YouTube finance creators — higher risk, higher reward." />
+            <Tip style={s.perfLabel} label="📺 YouTube-Picks Return" def="A separate ~25% slice of the account that buys stocks talked up by YouTube finance creators — higher risk, higher reward." />
             <span style={{ ...s.perfValue, color: returnColor(influencerCumReturn) }}>
               {influencerCumReturn != null ? fmtPct(influencerCumReturn) : "—"}
             </span>
             <span style={s.perfSince}>the influencer slice · since {seriesSince.influencer ?? "—"}</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="vs. the Market" def="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period." />
+            <Tip style={s.perfLabel} label="vs. the Market" def="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period." />
             <span style={{ ...s.perfValue, color: returnColor(influencerAlpha) }}>
               {influencerAlpha != null ? fmtPct(influencerAlpha) : "—"}
             </span>
@@ -566,7 +566,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           </div>
           {influencerBeatRate != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Days Influencer Beat S&P" def="The share of trading days the YouTube-picks slice's daily return was higher than the S&P 500's." />
+              <Tip style={s.perfLabel} label="Days Influencer Beat S&P" def="The share of trading days the YouTube-picks slice's daily return was higher than the S&P 500's." />
               <span style={{ ...s.perfValue, color: returnColor(influencerBeatRate.rate * 100 - 50) }}>
                 {(influencerBeatRate.rate * 100).toFixed(0)}%
               </span>
@@ -575,7 +575,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerDrawdown != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Worst Drop" def="The biggest fall from a high point to a low point the YouTube-picks slice suffered along the way. Bigger = wilder ride. (Technically, max drawdown.) 'Still early' means a short track record that may not have seen its worst yet — it clears after ~6 months of data." />
+              <Tip style={s.perfLabel} label="Worst Drop" def="The biggest fall from a high point to a low point the YouTube-picks slice suffered along the way. Bigger = wilder ride. (Technically, max drawdown.) 'Still early' means a short track record that may not have seen its worst yet — it clears after ~6 months of data." />
               <span style={{ ...s.perfValue, color: "#e8943a" }}>
                 −{influencerDrawdown.toFixed(2)}%
               </span>
@@ -584,7 +584,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The 'confidence' figure is the chance the true reward is genuinely positive, not luck (~50% = coin flip; climbs only as an edge holds over more days). It's a statistical confidence level, not a guarantee." />
+              <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The 'confidence' figure is the chance the true reward is genuinely positive, not luck (~50% = coin flip; climbs only as an edge holds over more days). It's a statistical confidence level, not a guarantee." />
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
@@ -593,7 +593,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerPositions.length > 0 && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Influencer Value" def="Current market value of the YouTube-picks holdings. The rest of the account (core holdings + cash) sits in the main book." />
+              <Tip style={s.perfLabel} label="Influencer Value" def="Current market value of the YouTube-picks holdings. The rest of the account (core holdings + cash) sits in the main book." />
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
                 ${usd(influencerValue)}
               </span>
@@ -602,7 +602,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerPositions.length > 0 && (
             <div style={s.perfStat}>
-              <span style={{ ...s.perfLabel, color: "#7a5a2a" }}>Holding Now</span>
+              <span style={s.perfLabel}>Holding Now</span>
               <span style={{ fontSize: 14, fontWeight: 600, color: "#e8943a", marginTop: 4 }}>
                 {influencerPositions.map(p => p.symbol).join(", ")}
               </span>
