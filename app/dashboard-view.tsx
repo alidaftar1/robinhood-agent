@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeBookBeta, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeBookBeta, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -326,11 +326,8 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const mainAlpha = mainCumReturn != null && spyReturn != null ? mainCumReturn - spyReturn : null;
   const hasComparison = returnSeries.some(p => p.agentic != null);
 
-  // NEW quality-momentum main book: return SINCE the 2026-07-09 strategy switch, anchored once the book
-  // was fully rebuilt after T+1 settlement (V1_TRACK_START) so the tiny transition-day base doesn't
-  // distort it. null (→ "book building") until that date's runs exist. Adjust V1_TRACK_START if the
-  // rebuild completes on a different day.
-  const V1_TRACK_START = "2026-07-11";
+  // NEW quality-momentum main book: return SINCE the strategy switch (V1_TRACK_START, shared from
+  // risk-metrics). null (→ "book building") until that date's runs exist.
   const v1MainReturn = (() => {
     const v1 = runsChronological.filter(r => r.date >= V1_TRACK_START && typeof r.mainDailyReturn === "number");
     if (v1.length === 0) return null;

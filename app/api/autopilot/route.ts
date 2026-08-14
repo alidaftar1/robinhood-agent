@@ -1,5 +1,6 @@
 import { createAnthropic } from "@/lib/anthropic";
-import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
+import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, type TradeRun } from "@/lib/run-store";
+import { computeSharpe, computeMaxDrawdown, sharpeProbPositive, V1_TRACK_START } from "@/lib/risk-metrics";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
@@ -404,6 +405,29 @@ export async function GET(request: Request) {
       <td style="padding:5px 10px">${value}</td>
     </tr>`;
 
+  // Risk-adjusted reliability for BOTH sleeves — same numbers as the dashboard "Reward for the Risk"
+  // cards, surfaced in the email so the daily read includes "is the edge real, or luck?".
+  const chron = [...runs].reverse(); // oldest → newest
+  const v1MainChron = chron.filter((r) => r.date >= V1_TRACK_START && typeof r.mainDailyReturn === "number");
+  const inflChron = chron.filter((r) => typeof r.influencerDailyReturn === "number");
+  const mainSharpe = computeSharpe(v1MainChron, (r) => r.mainDailyReturn);
+  const inflSharpe = computeSharpe(inflChron, (r) => r.influencerDailyReturn);
+  const ddOf = (rows: TradeRun[], get: (r: TradeRun) => number | null | undefined): number | null => {
+    const vals: number[] = []; let idx = 100;
+    for (const r of rows) { const x = get(r); if (typeof x !== "number") continue; idx *= 1 + x; vals.push(idx); }
+    return vals.length >= 2 ? computeMaxDrawdown(vals) : null;
+  };
+  const mainDd = ddOf(v1MainChron, (r) => r.mainDailyReturn);
+  const inflDd = ddOf(inflChron, (r) => r.influencerDailyReturn);
+  const pctReal = (s: number, n: number) => `~${Math.round(sharpeProbPositive(s, n) * 100)}% likely real`;
+  const riskRow = (label: string, sh: { sharpe: number; n: number } | null, dd: number | null) =>
+    `<tr>
+      <td style="padding:3px 8px">${label}</td>
+      <td style="padding:3px 8px;text-align:right">${sh ? sh.sharpe.toFixed(2) : "—"}</td>
+      <td style="padding:3px 8px;text-align:right">${sh ? `${pctReal(sh.sharpe, sh.n)} · ${sh.n}d` : "building"}</td>
+      <td style="padding:3px 8px;text-align:right">${dd != null ? `−${dd.toFixed(2)}%` : "—"}</td>
+    </tr>`;
+
   const html = `
 <div style="font-family:monospace;max-width:600px;margin:0 auto;padding:24px;color:#111">
   <h2 style="margin:0 0 4px">Robinhood Agent — ${today} Report</h2>
@@ -420,6 +444,23 @@ export async function GET(request: Request) {
     ${row("Sells", sells.length > 0 ? sells.map((t) => `${t.symbol} ×${t.quantity} @$${t.avgPrice}${t.state === "inferred" ? " (inferred)" : ""}`).join(", ") : "none", "#f9fafb")}
     ${row("Positions", positions.length > 0 ? positions.map((p) => p.symbol).join(", ") : "none")}
   </table>
+
+  ${(mainSharpe || inflSharpe)
+    ? `<div style="background:#f0f9ff;border-left:4px solid #0ea5e9;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>📈 Reward for the risk — is the edge real?</strong>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px">
+      <tr style="color:#6b7280;text-align:left">
+        <th style="padding:3px 8px;font-weight:normal">sleeve</th>
+        <th style="padding:3px 8px;font-weight:normal;text-align:right">Sharpe</th>
+        <th style="padding:3px 8px;font-weight:normal;text-align:right">reliability</th>
+        <th style="padding:3px 8px;font-weight:normal;text-align:right">worst drop</th>
+      </tr>
+      ${riskRow("Main book (S&amp;P)", mainSharpe, mainDd)}
+      ${riskRow("Influencer sleeve", inflSharpe, inflDd)}
+    </table>
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af">"Reliability" = chance the reward is genuinely positive, not luck (~50% = coin flip; climbs toward 100% as a real edge holds over more days). Sharpe: above 1 good, above 2 strong.</p>
+  </div>`
+    : ""}
 
   ${autoFixed.length > 0
     ? `<div style="background:#ecfdf5;border-left:4px solid #10b981;padding:12px 16px;margin-bottom:16px;border-radius:4px">

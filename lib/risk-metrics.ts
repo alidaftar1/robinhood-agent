@@ -225,6 +225,11 @@ export function sharpeProbPositive(sharpe: number, n: number): number {
   return normalCdf(sharpe / se);
 }
 
+// Start of the CURRENT (V1 quality-momentum) main-book track record — the 2026-07-09 strategy switch,
+// anchored to 07-11 once the book was rebuilt after T+1 settlement so the tiny transition-day base
+// doesn't distort it. Shared by the dashboard AND the daily email so both windows agree.
+export const V1_TRACK_START = "2026-07-11";
+
 // Weighted-average β of the CURRENT book vs SPY, using each holding's β from today's
 // market data (betaOf). Names not covered — rare, a holding that dropped out of the
 // fetched universe — default to 1.0 (market-like) so the estimate stays honest instead
