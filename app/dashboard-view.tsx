@@ -460,6 +460,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           {` · Trades daily at 7:30am PT`}
           {latest && ` · Last run ${latest.date}`}
         </div>
+        {spyReturn != null && (
+          <div style={{ ...s.subtitle, marginTop: 6 }}>
+            Benchmark · <span style={{ color: returnColor(spyReturn), fontWeight: 600 }}>S&amp;P 500 {fmtPct(spyReturn)}</span> <span style={{ color: "#666" }}>over the same period — what buying &amp; holding the market returned</span>
+          </div>
+        )}
       </div>
 
       <div style={{ background: "#111", border: "1px solid #222", borderLeft: "3px solid #3b6ea5", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13, lineHeight: 1.6, color: "#bbb" }}>
@@ -491,13 +496,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={s.perfSince}>quality-momentum vs. market · since 2026-07-09</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="S&P 500 Return" def="SPY is the fund that tracks the S&P 500 — the standard stand-in for 'the U.S. stock market.'" />
-            <span style={{ ...s.perfValue, color: returnColor(spyReturn) }}>
-              {spyReturn != null ? fmtPct(spyReturn) : "—"}
-            </span>
-            <span style={s.perfSince}>the market, same period</span>
-          </div>
-          <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="Main Book vs S&P 500" def="The core strategy's return minus the S&P 500's over the same period. Positive = the core book is beating the market. A 'trailing N days' flag warns when the book has stayed behind buy-and-hold SPY for a sustained stretch — a nudge to reconsider whether active trading is earning its risk." />
             <span style={{ ...s.perfValue, color: returnColor(mainAlpha) }}>
               {mainAlpha != null ? fmtPct(mainAlpha) : "—"}
@@ -510,15 +508,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={s.perfSince}>core book vs. the S&P 500</span>
             )}
           </div>
-          {mainBookValue != null && (
-            <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Main Book Value" def="Dollars in the core S&P strategy: its holdings plus all cash (settled and unsettled). It's the account total minus the influencer sleeve, so the two sleeves sum to the whole account." />
-              <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
-                ${usd(mainBookValue)}
-              </span>
-              <span style={s.perfSince}>core holdings + cash{accountTotal != null ? ` · $${accountTotal.toLocaleString("en-US", { maximumFractionDigits: 0 })} total` : ""}</span>
-            </div>
-          )}
           {mainBeatRate != null && (
             <div style={s.perfStat}>
               <Tip style={s.perfLabel} label="Days Main Book Beat S&P" def="The share of trading days the core strategy's daily return was higher than the S&P 500's." />
@@ -526,6 +515,33 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 {(mainBeatRate.rate * 100).toFixed(0)}%
               </span>
               <span style={s.perfSince}>of {mainBeatRate.n} trading days</span>
+            </div>
+          )}
+          <div style={s.perfStat}>
+            <Tip style={s.perfLabel} label="Worst Drop" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. 'Still early' means a short window that hasn't lived through a real market pullback yet, so it likely understates the true worst drop; it clears after ~6 months (~${SMALL_SAMPLE_DAYS} trading days). Lower is better.`} />
+            <span style={{ ...s.perfValue, color: mainDrawdown != null && spyDrawdown != null && mainDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
+              {mainDrawdown != null ? `−${mainDrawdown.toFixed(2)}%` : "—"}
+            </span>
+            <span style={s.perfSince}>
+              {v1MainRuns.length < SMALL_SAMPLE_DAYS ? "still early · " : ""}{spyDrawdown != null ? `market −${spyDrawdown.toFixed(2)}%` : "biggest fall"}
+            </span>
+          </div>
+          {mainSharpe != null && (
+            <div style={s.perfStat}>
+              <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) The big number is our best guess. But 'above 1/2 is strong' is the wrong bar for an active strategy — you could just hold the index, and in a calm up-market SPY's own Sharpe is high too. The REAL test is beating SPY's Sharpe over the same window, shown as 'vs SPY' (ahead = we're earning our keep). The formal one-number version of this is the Information Ratio (excess return ÷ how much we deviate from SPY). The 'confidence' figure is the chance the reward is genuinely positive, not luck (~50% = coin flip; climbs as an edge holds over more days) — a statistical confidence level (not a true probability, and not a guarantee), a read on "can I trust this yet?" separate from how big it is.`} />
+              <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
+                {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
+              </span>
+              <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${mainSharpe.sharpe >= spySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{pctReal(mainSharpe.sharpe, mainSharpe.n)} · {mainSharpe.n} days</span>
+            </div>
+          )}
+          {mainBookValue != null && (
+            <div style={s.perfStat}>
+              <Tip style={s.perfLabel} label="Main Book Value" def="Dollars in the core S&P strategy: its holdings plus all cash (settled and unsettled). It's the account total minus the influencer sleeve, so the two sleeves sum to the whole account." />
+              <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
+                ${usd(mainBookValue)}
+              </span>
+              <span style={s.perfSince}>core holdings + cash{accountTotal != null ? ` · $${accountTotal.toLocaleString("en-US", { maximumFractionDigits: 0 })} total` : ""}</span>
             </div>
           )}
         </div>
@@ -657,24 +673,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 {bookBeta ? `${betaDescription(bookBeta.beta)}${bookBeta.coveragePct < 70 ? " · partial data" : ""}` : "need current holdings"}
               </span>
             </div>
-            <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <Tip style={s.perfLabel} label="Worst Drop" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. 'Still early' means a short window that hasn't lived through a real market pullback yet, so it likely understates the true worst drop; it clears after ~6 months (~${SMALL_SAMPLE_DAYS} trading days). Lower is better.`} />
-              <span style={{ ...s.perfValue, color: mainDrawdown != null && spyDrawdown != null && mainDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
-                {mainDrawdown != null ? `−${mainDrawdown.toFixed(2)}%` : "—"}
-              </span>
-              <span style={s.perfSince}>
-                {v1MainRuns.length < SMALL_SAMPLE_DAYS ? "still early · " : ""}{spyDrawdown != null ? `market −${spyDrawdown.toFixed(2)}%` : "biggest fall"}
-              </span>
-            </div>
-            {mainSharpe != null && (
-              <div style={{ ...s.perfStat, minWidth: 175 }}>
-                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) The big number is our best guess. But 'above 1/2 is strong' is the wrong bar for an active strategy — you could just hold the index, and in a calm up-market SPY's own Sharpe is high too. The REAL test is beating SPY's Sharpe over the same window, shown as 'vs SPY' (ahead = we're earning our keep). The formal one-number version of this is the Information Ratio (excess return ÷ how much we deviate from SPY). The 'confidence' figure is the chance the reward is genuinely positive, not luck (~50% = coin flip; climbs as an edge holds over more days) — a statistical confidence level (not a true probability, and not a guarantee), a read on "can I trust this yet?" separate from how big it is.`} />
-                <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
-                  {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
-                </span>
-                <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${mainSharpe.sharpe >= spySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{pctReal(mainSharpe.sharpe, mainSharpe.n)} · {mainSharpe.n} days</span>
-              </div>
-            )}
             <div style={{ ...s.perfStat, minWidth: 175 }}>
               <Tip style={s.perfLabel} label="Biggest Bet" def="How much of the main book sits in its single biggest stock. A high number means more risk if that one stock drops." />
               <span style={{ ...s.perfValue, color: concentration && concentration.largestPct > 25 ? "#e8943a" : "#e5e5e5" }}>
