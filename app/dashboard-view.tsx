@@ -548,6 +548,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={s.perfSince}>core holdings + cash{accountTotal != null ? ` · $${accountTotal.toLocaleString("en-US", { maximumFractionDigits: 0 })} total` : ""}</span>
             </div>
           )}
+          {mainPositions.length > 0 && (
+            <div style={s.perfStat}>
+              <span style={s.perfLabel}>Holding Now</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: "#7dba7d", marginTop: 4 }}>
+                {mainPositions.map(p => p.symbol).join(", ")}
+              </span>
+              <span style={s.perfSince}>core S&amp;P holdings</span>
+            </div>
+          )}
         </div>
       )}
 
