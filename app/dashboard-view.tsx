@@ -585,7 +585,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={s.perfSince}>the influencer slice · since {seriesSince.influencer ?? "—"}</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="vs. the Market" def="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period." />
+            <Tip style={s.perfLabel} label="Influencers vs. The Market" def="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period." />
             <span style={{ ...s.perfValue, color: returnColor(influencerAlpha) }}>
               {influencerAlpha != null ? fmtPct(influencerAlpha) : "—"}
             </span>
