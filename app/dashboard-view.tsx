@@ -651,22 +651,22 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <Tip style={s.perfLabel} label="Worst Drop" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. The 'small sample' note clears automatically at ~${SMALL_SAMPLE_DAYS} trading days (≈6 months); until then a short window that hasn't lived through a real market pullback understates the true worst drop. Lower is better.`} />
+              <Tip style={s.perfLabel} label="Worst Drop" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. The 'still early' note clears automatically at ~${SMALL_SAMPLE_DAYS} trading days (≈6 months); until then a short window that hasn't lived through a real market pullback understates the true worst drop. Lower is better.`} />
               <span style={{ ...s.perfValue, color: mainDrawdown != null && spyDrawdown != null && mainDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
                 {mainDrawdown != null ? `−${mainDrawdown.toFixed(2)}%` : "—"}
               </span>
               <span style={s.perfSince}>
-                {(spyDrawdown != null ? `market −${spyDrawdown.toFixed(2)}%` : "biggest fall")}{v1MainRuns.length < SMALL_SAMPLE_DAYS ? " · small sample" : ""}
+                {(spyDrawdown != null ? `market −${spyDrawdown.toFixed(2)}%` : "biggest fall")}{v1MainRuns.length < SMALL_SAMPLE_DAYS ? " · still early" : ""}
               </span>
             </div>
             {mainSharpe != null && (
               <div style={{ ...s.perfStat, minWidth: 175 }}>
-                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) Above 1 is good, above 2 is strong. Read the 95% confidence interval shown below the number, not just the point estimate: it's wide at low sample and narrows as data grows (Sharpe is slow to converge). The 'small sample' note clears automatically at ~${SMALL_SAMPLE_DAYS} trading days (≈6 months).`} />
+                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) Above 1 is good, above 2 is strong. The big number is our best guess; the 'likely between' range under it is how sure we are — there's about a 95% chance the true value sits in that range. It's wide now because we only have a few weeks of data, and it narrows as more trading days accrue (this stat is slow to pin down). The 'still early' note clears automatically at ~${SMALL_SAMPLE_DAYS} trading days (≈6 months).`} />
                 <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                   {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
                 </span>
                 <span style={s.perfSince}>
-                  {mainSharpeCI ? `95% CI ${fmtSharpe(mainSharpeCI.ciLow)} to ${fmtSharpe(mainSharpeCI.ciHigh)} · ` : ""}{mainSharpe.n} days{mainSharpe.n < SMALL_SAMPLE_DAYS ? " · small sample" : ""}
+                  {mainSharpeCI ? `likely between ${fmtSharpe(mainSharpeCI.ciLow)} and ${fmtSharpe(mainSharpeCI.ciHigh)} · ` : ""}{mainSharpe.n} days{mainSharpe.n < SMALL_SAMPLE_DAYS ? " · still early" : ""}
                 </span>
               </div>
             )}
