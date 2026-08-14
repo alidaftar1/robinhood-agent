@@ -475,12 +475,12 @@ export async function GET(request: Request) {
     ${agedChannels.length === 0
       ? `<p style="margin:6px 0 0;font-size:13px;color:#6b7280">Tracking ${ledgerChannels.length} channels — picks logged recently still read ~0%; forward returns accumulate over the coming days.</p>`
       : `<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
-      <tr style="color:#6b7280"><td style="padding:3px 8px">Channel</td><td style="padding:3px 8px;text-align:right">Picks</td><td style="padding:3px 8px;text-align:right">Hit</td><td style="padding:3px 8px;text-align:right">Avg ret</td><td style="padding:3px 8px;text-align:right">% real</td></tr>
+      <tr style="color:#6b7280"><td style="padding:3px 8px">Channel</td><td style="padding:3px 8px;text-align:right">Picks</td><td style="padding:3px 8px;text-align:right">Hit</td><td style="padding:3px 8px;text-align:right">Avg ret</td><td style="padding:3px 8px;text-align:right">vs SPY</td></tr>
       ${agedChannels.slice(0, 8).map((c) =>
-        `<tr><td style="padding:3px 8px">${c.channel}</td><td style="padding:3px 8px;text-align:right">${c.picks}</td><td style="padding:3px 8px;text-align:right">${c.hitRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;color:${c.avgReturnPct >= 0 ? "#059669" : "#dc2626"}">${c.avgReturnPct >= 0 ? "+" : ""}${c.avgReturnPct.toFixed(1)}%</td><td style="padding:3px 8px;text-align:right">${c.probRealPct != null ? `~${Math.round(c.probRealPct)}%` : "—"}</td></tr>`
+        `<tr><td style="padding:3px 8px">${c.channel}${c.picks < 4 ? ` <span style="color:#9ca3af;font-size:11px">thin</span>` : ""}</td><td style="padding:3px 8px;text-align:right">${c.picks}</td><td style="padding:3px 8px;text-align:right">${c.hitRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;color:${c.avgReturnPct >= 0 ? "#059669" : "#dc2626"}">${c.avgReturnPct >= 0 ? "+" : ""}${c.avgReturnPct.toFixed(1)}%</td><td style="padding:3px 8px;text-align:right;font-weight:bold;color:${c.avgAlphaPct == null ? "#9ca3af" : c.avgAlphaPct >= 0 ? "#059669" : "#dc2626"}">${c.avgAlphaPct != null ? `${c.avgAlphaPct >= 0 ? "+" : ""}${c.avgAlphaPct.toFixed(1)}%` : "—"}</td></tr>`
       ).join("")}
     </table>
-    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af">Return since each pick was first logged (horizons vary). "% real" = chance the channel's edge is genuine, not luck (~50% = coin flip; needs ≥3 picks, "—" until then). Small samples early — read as directional, not verdict.</p>`}
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>vs SPY</strong> = average return above/below the S&amp;P over each pick's own window — the real edge, stripped of the market's move (channels are ranked by it). Small, correlated samples — a ranking hint, not a verdict; "thin" = very few picks.</p>`}
   </div>`
     : ""}
 

@@ -29,7 +29,7 @@ export async function GET(request: Request) {
     asOf: today,
     seeded,
     note:
-      "Returns measured from each pick's FIRST-LOGGED price (baseline). Horizons vary per pick (see daysElapsed) — the ledger is honest going forward; picks predating it are baselined at today. avgReturnPct across channels mixes horizons.",
+      "Returns measured from each pick's FIRST-LOGGED price (baseline). Horizons vary per pick (see daysElapsed). avgReturnPct is RAW; avgAlphaPct is the return above/below SPY over each pick's own window (the edge, stripped of market beta) — channels are ranked by alpha. Small, correlated samples: a ranking hint, not a verdict.",
     pickCount: picks.length,
     channels,
     picks,

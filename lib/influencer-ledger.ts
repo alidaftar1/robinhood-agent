@@ -17,6 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { fetchQuoteLite } from "@/lib/market-data";
+import { getRuns } from "@/lib/run-store";
 import { netScores, INFLUENCER_BUY_FLOOR } from "@/lib/influencer-signals";
 import type { InfluencerCache } from "@/lib/influencer-signals";
 
@@ -42,7 +43,9 @@ export interface LedgerPick {
 
 export interface PickOutcome extends LedgerPick {
   currentPrice: number | null;
-  returnPct: number | null;  // (current / priceAtSignal − 1) × 100
+  returnPct: number | null;  // (current / priceAtSignal − 1) × 100 — RAW
+  marketReturnPct: number | null; // SPY's return over the same firstSeen→today window
+  alphaPct: number | null;   // returnPct − marketReturnPct — edge over just holding the index
   daysElapsed: number;       // firstSeen → today (horizons vary; exposed for transparency)
 }
 
@@ -50,58 +53,11 @@ export interface ChannelStats {
   channel: string;
   picks: number;             // measurable picks (a live price was available)
   hitRatePct: number;        // % of picks with returnPct > 0
-  avgReturnPct: number;      // simple mean of pick returns (mixed horizons — see daysElapsed)
-  probRealPct: number | null; // chance the channel's edge is REAL not luck (one-sample t-test); null until ≥3 picks
+  avgReturnPct: number;      // simple mean of RAW pick returns (mixed horizons — see daysElapsed)
+  avgAlphaPct: number | null; // mean return ABOVE/below SPY over each pick's own window — the real
+                              // edge (strips out market beta; null until any pick has a market baseline)
   bestPick: string;
   worstPick: string;
-}
-
-// ─── small-sample significance for a channel's returns ───────────────────────
-// "% likely real" = probability the channel's TRUE mean pick-return is positive (a genuine edge, not
-// luck), from a one-sample t-test on its picks. This ledger deals in TINY samples (a few picks per
-// channel), so we use the Student-t distribution — the normal approx would badly overstate confidence
-// at n=3–5. Returns null until ≥3 picks, because a t-test needs ≥2 degrees of freedom to say anything.
-function lgamma(z: number): number {
-  const c = [76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
-  let x = z, tmp = x + 5.5; tmp -= (x + 0.5) * Math.log(tmp);
-  let ser = 1.000000000190015, y = z;
-  for (let j = 0; j < 6; j++) { y += 1; ser += c[j] / y; }
-  return -tmp + Math.log((2.5066282746310005 * ser) / x);
-}
-function betacf(a: number, b: number, x: number): number {
-  const FPMIN = 1e-30, qab = a + b, qap = a + 1, qam = a - 1;
-  let c = 1, d = 1 - (qab * x) / qap;
-  if (Math.abs(d) < FPMIN) d = FPMIN; d = 1 / d; let h = d;
-  for (let m = 1; m <= 200; m++) {
-    const m2 = 2 * m;
-    let aa = (m * (b - m) * x) / ((qam + m2) * (a + m2));
-    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
-    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
-    d = 1 / d; h *= d * c;
-    aa = (-(a + m) * (qab + m) * x) / ((a + m2) * (qap + m2));
-    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
-    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
-    d = 1 / d; const del = d * c; h *= del;
-    if (Math.abs(del - 1) < 3e-7) break;
-  }
-  return h;
-}
-function betai(a: number, b: number, x: number): number {
-  if (x <= 0) return 0; if (x >= 1) return 1;
-  const bt = Math.exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * Math.log(x) + b * Math.log(1 - x));
-  return x < (a + 1) / (a + b + 2) ? (bt * betacf(a, b, x)) / a : 1 - (bt * betacf(b, a, 1 - x)) / b;
-}
-function studentTCdf(t: number, df: number): number {
-  const tail = 0.5 * betai(df / 2, 0.5, df / (df + t * t)); // P(T > |t|)
-  return t >= 0 ? 1 - tail : tail;
-}
-export function channelProbRealPct(rets: number[]): number | null {
-  const n = rets.length;
-  if (n < 3) return null; // a t-test needs ≥2 df to be meaningful
-  const mean = rets.reduce((a, b) => a + b, 0) / n;
-  const sd = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1)); // sample sd
-  if (sd === 0) return mean > 0 ? 100 : mean < 0 ? 0 : 50;
-  return studentTCdf(mean / (sd / Math.sqrt(n)), n - 1) * 100;
 }
 
 // ── Redis (persistent, NOT TTL'd — this is the historical record) ──────────────
@@ -225,6 +181,19 @@ export async function computeAttribution(
   const ledger = await ledgerGet();
   const entries = Object.values(ledger ?? {});
 
+  // SPY price by date, from the daily run records, so each pick's return can be measured AGAINST the
+  // market over its OWN window. This turns "went up in a bull market" (beta) into genuine edge (alpha)
+  // — without it, every channel reads strongly positive simply because the index rose. Fail-safe: no
+  // runs → no market baseline → alpha stays null and only the raw return shows.
+  const runs = await getRuns(120).catch(() => []);
+  const spyByDate = new Map<string, number>();
+  for (const r of runs) if (typeof r.spyPrice === "number") spyByDate.set(r.date, r.spyPrice);
+  // "now" for SPY must be LIVE (like each pick's current price), so the window matches: firstSeen→now
+  // on both legs. Fall back to the latest run's close if the live quote fails.
+  const spyNow = (await fetchQuoteLite("SPY").catch(() => null))?.price
+    ?? runs.map((r) => r.spyPrice).find((x): x is number => typeof x === "number")
+    ?? null;
+
   const picks: PickOutcome[] = await Promise.all(
     entries.map(async (p) => {
       const currentPrice = (await fetchQuoteLite(p.ticker))?.price ?? null;
@@ -232,24 +201,30 @@ export async function computeAttribution(
         currentPrice != null && p.priceAtSignal > 0
           ? (currentPrice / p.priceAtSignal - 1) * 100
           : null;
-      return { ...p, currentPrice, returnPct, daysElapsed: daysBetween(p.firstSeenDate, today) };
+      const spyThen = spyByDate.get(p.firstSeenDate) ?? null;
+      const marketReturnPct =
+        spyNow != null && spyThen != null && spyThen > 0 ? (spyNow / spyThen - 1) * 100 : null;
+      const alphaPct = returnPct != null && marketReturnPct != null ? returnPct - marketReturnPct : null;
+      return { ...p, currentPrice, returnPct, marketReturnPct, alphaPct, daysElapsed: daysBetween(p.firstSeenDate, today) };
     }),
   );
 
-  // Per-channel: credit each contributing channel with the pick's return. avgReturn
-  // mixes horizons (each pick has its own daysElapsed) — a known v1 limitation.
-  const byChannel = new Map<string, { ret: number; ticker: string }[]>();
+  // Per-channel: credit each contributing channel with the pick's RAW return and its market-relative
+  // alpha. avgReturn mixes horizons (each pick has its own daysElapsed) — a known v1 limitation; alpha
+  // corrects for the market's move over that same horizon, so it's the edge measure worth ranking on.
+  const byChannel = new Map<string, { ret: number; alpha: number | null; ticker: string }[]>();
   for (const p of picks) {
     if (p.returnPct == null) continue;
     for (const ch of p.channels) {
       const arr = byChannel.get(ch) ?? [];
-      arr.push({ ret: p.returnPct, ticker: p.ticker });
+      arr.push({ ret: p.returnPct, alpha: p.alphaPct, ticker: p.ticker });
       byChannel.set(ch, arr);
     }
   }
   const channels: ChannelStats[] = [...byChannel.entries()]
     .map(([channel, rows]) => {
       const rets = rows.map((r) => r.ret);
+      const alphas = rows.map((r) => r.alpha).filter((a): a is number => a != null);
       const best = rows.reduce((a, b) => (b.ret > a.ret ? b : a));
       const worst = rows.reduce((a, b) => (b.ret < a.ret ? b : a));
       return {
@@ -257,12 +232,14 @@ export async function computeAttribution(
         picks: rets.length,
         hitRatePct: (rets.filter((r) => r > 0).length / rets.length) * 100,
         avgReturnPct: rets.reduce((a, b) => a + b, 0) / rets.length,
-        probRealPct: channelProbRealPct(rets),
+        avgAlphaPct: alphas.length ? alphas.reduce((a, b) => a + b, 0) / alphas.length : null,
         bestPick: `${best.ticker} ${best.ret >= 0 ? "+" : ""}${best.ret.toFixed(1)}%`,
         worstPick: `${worst.ticker} ${worst.ret >= 0 ? "+" : ""}${worst.ret.toFixed(1)}%`,
       };
     })
-    .sort((a, b) => b.avgReturnPct - a.avgReturnPct);
+    // Rank by EDGE (alpha over the market), not raw return — that's the whole point. Channels with no
+    // market baseline yet fall back to raw return so they still sort sensibly.
+    .sort((a, b) => (b.avgAlphaPct ?? b.avgReturnPct) - (a.avgAlphaPct ?? a.avgReturnPct));
 
   picks.sort((a, b) => (b.returnPct ?? -Infinity) - (a.returnPct ?? -Infinity));
   return { picks, channels };
