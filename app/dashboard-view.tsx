@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeBookBeta, sharpeConfidence, confidenceLevel, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeBookBeta, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -420,8 +420,9 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // 95% CI for the Sharpe — wide now, tightens ~1/√n as data accrues; replaces the binary caveat.
   const mainSharpeCI = mainSharpe ? sharpeConfidence(mainSharpe.sharpe, mainSharpe.n) : null;
   const fmtSharpe = (v: number) => `${v >= 0 ? "" : "−"}${Math.abs(v).toFixed(1)}`;
-  // Plain Low/Medium/High confidence + a matching colour so the reliability reads at a glance.
-  const confColor = (lvl: "Low" | "Medium" | "High") => lvl === "High" ? "#10b981" : lvl === "Medium" ? "#d4d4d4" : "#e8943a";
+  // "How likely is this reward-for-risk real (not luck)?" — a plain percentage that moves with the
+  // data/performance (distinct from the fixed-95% CI width). Shown on the Sharpe of each sleeve.
+  const pctReal = (sharpe: number, n: number) => `~${Math.round(sharpeProbPositive(sharpe, n) * 100)}% likely this is real (not luck)`;
 
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
@@ -431,6 +432,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // Path-aware risk metrics for the volatile sleeve: worst peak-to-trough fall of its own equity
   // curve, and return-per-unit-of-volatility (annualized Sharpe).
   const influencerDrawdown = computeMaxDrawdown(returnSeries.filter(p => p.influencer != null).map(p => p.influencer as number));
+  const influencerDdN = returnSeries.filter(p => p.influencer != null).length; // sleeve days behind the drawdown
   const influencerSharpe = computeSharpe(runs, r => r.influencerDailyReturn);
 
   // Honest "is the active book beating just-holding-SPY, and for how long has it trailed?" verdict.
@@ -554,20 +556,20 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerDrawdown != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Worst Drop" def="The biggest fall from a high point to a low point the YouTube-picks slice suffered along the way. Bigger = wilder ride. (Technically, max drawdown.)" />
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Worst Drop" def="The biggest fall from a high point to a low point the YouTube-picks slice suffered along the way. Bigger = wilder ride. (Technically, max drawdown.) 'Still early' means a short track record that may not have seen its worst yet — it clears after ~6 months of data." />
               <span style={{ ...s.perfValue, color: "#e8943a" }}>
                 −{influencerDrawdown.toFixed(2)}%
               </span>
-              <span style={s.perfSince}>biggest fall from a high</span>
+              <span style={s.perfSince}>{influencerDdN < SMALL_SAMPLE_DAYS ? "still early · " : ""}biggest fall from a high</span>
             </div>
           )}
           {influencerSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) Above 1 is good; near 0 or negative means the swings aren't being rewarded. Small sample early." />
+              <Tip style={{ ...s.perfLabel, color: "#7a5a2a" }} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) Above 1 is good; near 0 or negative means the swings aren't being rewarded. The '% likely this is real' is the chance the true reward is genuinely positive rather than luck, given the data so far — ~50% is a coin flip, and it climbs toward 100% only as a real edge holds up over more days." />
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>higher = better paid · {influencerSharpe.n} days</span>
+              <span style={s.perfSince}>{pctReal(influencerSharpe.sharpe, influencerSharpe.n)} · {influencerSharpe.n} days</span>
             </div>
           )}
           {influencerPositions.length > 0 && (
@@ -653,23 +655,21 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <Tip style={s.perfLabel} label="Worst Drop" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. Confidence rises from Low (under ~3 months of data) to Medium to High (≈6 months / ~${SMALL_SAMPLE_DAYS} trading days) as the track record grows — until then a short window that hasn't lived through a real market pullback understates the true worst drop. Lower is better.`} />
+              <Tip style={s.perfLabel} label="Worst Drop" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. 'Still early' means a short window that hasn't lived through a real market pullback yet, so it likely understates the true worst drop; it clears after ~6 months (~${SMALL_SAMPLE_DAYS} trading days). Lower is better.`} />
               <span style={{ ...s.perfValue, color: mainDrawdown != null && spyDrawdown != null && mainDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
                 {mainDrawdown != null ? `−${mainDrawdown.toFixed(2)}%` : "—"}
               </span>
               <span style={s.perfSince}>
-                <span style={{ color: confColor(confidenceLevel(v1MainRuns.length)) }}>{confidenceLevel(v1MainRuns.length)} confidence</span>{spyDrawdown != null ? ` · market −${spyDrawdown.toFixed(2)}%` : ""}
+                {v1MainRuns.length < SMALL_SAMPLE_DAYS ? "still early · " : ""}{spyDrawdown != null ? `market −${spyDrawdown.toFixed(2)}%` : "biggest fall"}
               </span>
             </div>
             {mainSharpe != null && (
               <div style={{ ...s.perfStat, minWidth: 175 }}>
-                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) Above 1 is good, above 2 is strong. The big number is our best guess; the 'likely between' range under it shows how sure we are — there's about a 95% chance the true value sits in that range. Confidence goes Low → Medium → High as data accrues: Low (under ~3 months) means only a few weeks of data, so treat the number as directional; High is ≈6 months (~${SMALL_SAMPLE_DAYS} trading days). The range narrows as it climbs.`} />
+                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) Above 1 is good, above 2 is strong. The big number is our best guess. The '% likely this is real' is the chance the true reward-for-risk is genuinely positive rather than luck, given the data so far: ~50% is a coin flip, and it only climbs toward 100% as a real edge holds up over more trading days (it can also fall if performance weakens). It's a plain read on "can I trust this yet?", separate from how big the number is.`} />
                 <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                   {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
                 </span>
-                <span style={s.perfSince}>
-                  <span style={{ color: confColor(confidenceLevel(mainSharpe.n)) }}>{confidenceLevel(mainSharpe.n)} confidence</span>{mainSharpeCI ? ` · likely between ${fmtSharpe(mainSharpeCI.ciLow)} and ${fmtSharpe(mainSharpeCI.ciHigh)}` : ""} · {mainSharpe.n} days
-                </span>
+                <span style={s.perfSince}>{pctReal(mainSharpe.sharpe, mainSharpe.n)} · {mainSharpe.n} days</span>
               </div>
             )}
             <div style={{ ...s.perfStat, minWidth: 175 }}>

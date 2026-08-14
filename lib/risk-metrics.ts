@@ -206,16 +206,23 @@ export function sharpeConfidence(sharpe: number, n: number): { se: number; ciLow
   return { se, ciLow: sharpe - 1.96 * se, ciHigh: sharpe + 1.96 * se };
 }
 
-// Plain-language confidence in a path/risk stat (drawdown, Sharpe), from how much data backs it.
-// This answers "can I trust this number?" in words anyone gets, not a statistical range:
-//   Low  = under ~3 months of data (treat as directional only)
-//   Medium = ~3–6 months (getting meaningful, not yet a verdict)
-//   High = ≥6 months (SMALL_SAMPLE_DAYS — enough to stand on)
-export const CONFIDENCE_MEDIUM_DAYS = 63; // ~3 months of trading days
-export function confidenceLevel(n: number): "Low" | "Medium" | "High" {
-  if (n >= SMALL_SAMPLE_DAYS) return "High";
-  if (n >= CONFIDENCE_MEDIUM_DAYS) return "Medium";
-  return "Low";
+// Standard-normal CDF (Zelen & Severo approximation; abs error < 1e-7). Φ(z) = P(Z ≤ z).
+function normalCdf(z: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989422804014327 * Math.exp((-z * z) / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? 1 - p : p;
+}
+
+// Probability the strategy's TRUE (annualized) Sharpe is positive — i.e. it is GENUINELY rewarded for
+// its risk, not luck — given n daily returns. P = Φ(SR / SE). This is the plain "how likely is this
+// real?" number: ~50% = a coin flip (no signal), climbs toward 100% as a real edge holds up over more
+// data, and drops below 50% for a losing strategy. Distinct from the 95% CI, which is only the fixed
+// width of the plausible-range band. Returns a 0–1 probability.
+export function sharpeProbPositive(sharpe: number, n: number): number {
+  const { se } = sharpeConfidence(sharpe, n);
+  if (!isFinite(se) || se === 0) return sharpe > 0 ? 1 : 0;
+  return normalCdf(sharpe / se);
 }
 
 // Weighted-average β of the CURRENT book vs SPY, using each holding's β from today's

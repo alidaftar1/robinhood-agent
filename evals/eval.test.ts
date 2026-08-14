@@ -5,7 +5,7 @@ import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
-import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, confidenceLevel, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
+import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
@@ -302,13 +302,13 @@ describe("sharpeConfidence: CI narrows as sample grows, governs the small-sample
     expect(25 < SMALL_SAMPLE_DAYS).toBe(true);   // today → labeled
     expect(126 < SMALL_SAMPLE_DAYS).toBe(false); // at threshold → clear
   });
-  it("confidenceLevel maps sample size to Low/Medium/High (today = Low)", () => {
-    expect(confidenceLevel(25)).toBe("Low");     // ~5 weeks, today
-    expect(confidenceLevel(62)).toBe("Low");     // just under 3 months
-    expect(confidenceLevel(63)).toBe("Medium");  // 3 months
-    expect(confidenceLevel(125)).toBe("Medium"); // just under 6 months
-    expect(confidenceLevel(126)).toBe("High");   // 6 months → trustworthy
-    expect(confidenceLevel(400)).toBe("High");
+  it("sharpeProbPositive: ~50% for a zero Sharpe, rises with a strong Sharpe, falls for a negative one", () => {
+    expect(sharpeProbPositive(0, 25)).toBeCloseTo(0.5, 5);          // no edge → coin flip
+    const strong = sharpeProbPositive(3.73, 25);                    // today's main-book value
+    expect(strong).toBeGreaterThan(0.85);
+    expect(strong).toBeLessThan(0.90);                              // ~88% — high but not certain at 25 days
+    expect(sharpeProbPositive(-0.19, 25)).toBeLessThan(0.5);        // losing sleeve → below a coin flip
+    expect(strong).toBeLessThan(sharpeProbPositive(3.73, 252));     // same Sharpe, more data → more certain
   });
 });
 
