@@ -547,7 +547,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
                 ${usd(mainBookValue)}
               </span>
-              <span style={s.perfSince}>core holdings + cash{accountTotal != null ? ` · $${accountTotal.toLocaleString("en-US", { maximumFractionDigits: 0 })} total` : ""}</span>
+              <span style={s.perfSince}>core holdings + cash</span>
             </div>
           )}
           {mainPositions.length > 0 && (
