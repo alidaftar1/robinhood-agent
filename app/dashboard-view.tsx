@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeBookBeta } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeBookBeta, sharpeConfidence, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -417,6 +417,9 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   })();
   const spyDrawdown = computeMaxDrawdown(v1MainRuns.map(r => r.spyPrice).filter((x): x is number => typeof x === "number"));
   const mainSharpe = computeSharpe(v1MainRuns, r => r.mainDailyReturn);
+  // 95% CI for the Sharpe — wide now, tightens ~1/√n as data accrues; replaces the binary caveat.
+  const mainSharpeCI = mainSharpe ? sharpeConfidence(mainSharpe.sharpe, mainSharpe.n) : null;
+  const fmtSharpe = (v: number) => `${v >= 0 ? "" : "−"}${Math.abs(v).toFixed(1)}`;
 
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
@@ -648,21 +651,23 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               </span>
             </div>
             <div style={{ ...s.perfStat, minWidth: 175 }}>
-              <Tip style={s.perfLabel} label="Worst Drop" def="Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. Small sample (~2 weeks). Lower is better." />
+              <Tip style={s.perfLabel} label="Worst Drop" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. The 'small sample' note clears automatically at ~${SMALL_SAMPLE_DAYS} trading days (≈6 months); until then a short window that hasn't lived through a real market pullback understates the true worst drop. Lower is better.`} />
               <span style={{ ...s.perfValue, color: mainDrawdown != null && spyDrawdown != null && mainDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
                 {mainDrawdown != null ? `−${mainDrawdown.toFixed(2)}%` : "—"}
               </span>
               <span style={s.perfSince}>
-                {spyDrawdown != null ? `market −${spyDrawdown.toFixed(2)}% · small sample` : "biggest fall · small sample"}
+                {(spyDrawdown != null ? `market −${spyDrawdown.toFixed(2)}%` : "biggest fall")}{v1MainRuns.length < SMALL_SAMPLE_DAYS ? " · small sample" : ""}
               </span>
             </div>
             {mainSharpe != null && (
               <div style={{ ...s.perfStat, minWidth: 175 }}>
-                <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) Above 1 is good, above 2 is strong; but this is a ~2-week sample, so read it as directional, not a verdict." />
+                <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) Above 1 is good, above 2 is strong. Read the 95% confidence interval shown below the number, not just the point estimate: it's wide at low sample and narrows as data grows (Sharpe is slow to converge). The 'small sample' note clears automatically at ~${SMALL_SAMPLE_DAYS} trading days (≈6 months).`} />
                 <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                   {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
                 </span>
-                <span style={s.perfSince}>higher = better paid · {mainSharpe.n} days · small sample</span>
+                <span style={s.perfSince}>
+                  {mainSharpeCI ? `95% CI ${fmtSharpe(mainSharpeCI.ciLow)} to ${fmtSharpe(mainSharpeCI.ciHigh)} · ` : ""}{mainSharpe.n} days{mainSharpe.n < SMALL_SAMPLE_DAYS ? " · small sample" : ""}
+                </span>
               </div>
             )}
             <div style={{ ...s.perfStat, minWidth: 175 }}>

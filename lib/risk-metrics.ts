@@ -189,6 +189,23 @@ export function computeSharpe(
   return { sharpe: (mean / sd) * Math.sqrt(252), n: rets.length };
 }
 
+// Minimum trading-day sample before a path/risk stat (drawdown, Sharpe) is robust enough to drop
+// the "small sample" disclaimer. 126 ≈ 6 months of trading days — the point where a strong (~2+)
+// Sharpe reaches ~t≈1.9 and the drawdown window has usually seen at least one real market pullback.
+// Below this the UI keeps the caveat; the Sharpe CI (below) tightens continuously regardless, so the
+// threshold governs only the binary label, not the honesty of the number.
+export const SMALL_SAMPLE_DAYS = 126;
+
+// 95% confidence interval for an ANNUALIZED Sharpe estimated from n daily returns. Using Lo (2002)
+// for IID returns, SE(per-period Sharpe) ≈ sqrt((1 + 0.5·SR²)/n); annualizing by √q (q=252/yr) gives
+// SE(annualized) ≈ sqrt((252 + 0.5·SR_ann²)/n). The band is very wide at small n (routinely spans 0)
+// and narrows ~1/√n as data accrues — so the stat self-communicates its reliability rather than
+// relying on a caveat someone has to remember to remove.
+export function sharpeConfidence(sharpe: number, n: number): { se: number; ciLow: number; ciHigh: number } {
+  const se = Math.sqrt((252 + 0.5 * sharpe * sharpe) / Math.max(n, 1));
+  return { se, ciLow: sharpe - 1.96 * se, ciHigh: sharpe + 1.96 * se };
+}
+
 // Weighted-average β of the CURRENT book vs SPY, using each holding's β from today's
 // market data (betaOf). Names not covered — rare, a holding that dropped out of the
 // fetched universe — default to 1.0 (market-like) so the estimate stays honest instead

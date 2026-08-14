@@ -5,7 +5,7 @@ import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
-import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict } from "@/lib/risk-metrics";
+import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
@@ -273,6 +273,34 @@ describe("prevClose fallback: null regularMarketPreviousClose does not fall to a
   it("falls back to chartPreviousClose only when there is no second real close, then to price", () => {
     expect(resolvePrevClose(null, [327.01], 349.92, 329.81)).toBe(349.92); // single close → no [-2]
     expect(resolvePrevClose(null, [], null, 329.81)).toBe(329.81);         // nothing → price (change1d=0)
+  });
+});
+
+// ─── Sharpe confidence interval + small-sample threshold ─────────────────────
+describe("sharpeConfidence: CI narrows as sample grows, governs the small-sample caveat", () => {
+  it("is very wide (spans 0) at a small sample and excludes 0 at a large one, for a strong Sharpe", () => {
+    const sharpe = 2.68;
+    const small = sharpeConfidence(sharpe, 25);
+    const large = sharpeConfidence(sharpe, 252);
+    expect(small.ciLow).toBeLessThan(0);      // 25 days: not distinguishable from luck
+    expect(small.ciHigh).toBeGreaterThan(0);
+    expect(large.ciLow).toBeGreaterThan(0);   // ~1yr: the reward is real
+  });
+  it("CI half-width shrinks ~1/√n as data accrues", () => {
+    const a = sharpeConfidence(2, 25);
+    const b = sharpeConfidence(2, 100); // 4× the data → ~2× tighter
+    expect(b.se).toBeLessThan(a.se);
+    expect(a.se / b.se).toBeCloseTo(2, 1);
+  });
+  it("SE matches sqrt((252 + 0.5·SR²)/n)", () => {
+    const { se } = sharpeConfidence(2, 100);
+    expect(se).toBeCloseTo(Math.sqrt((252 + 0.5 * 4) / 100), 6);
+  });
+  it("the small-sample threshold is 6 months of trading days (the label auto-clears there)", () => {
+    expect(SMALL_SAMPLE_DAYS).toBe(126);
+    // the dashboard shows the caveat iff n < SMALL_SAMPLE_DAYS
+    expect(25 < SMALL_SAMPLE_DAYS).toBe(true);   // today → labeled
+    expect(126 < SMALL_SAMPLE_DAYS).toBe(false); // at threshold → clear
   });
 });
 
