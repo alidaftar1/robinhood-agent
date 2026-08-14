@@ -549,7 +549,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </div>
           )}
           {mainPositions.length > 0 && (
-            <div style={{ ...s.perfStat, maxWidth: 190 }}>
+            <div style={{ ...s.perfStat, flex: "1 1 190px" }}>
               <span style={s.perfLabel}>Holding Now</span>
               <span style={{ fontSize: 14, fontWeight: 600, color: "#7dba7d", marginTop: 4, lineHeight: 1.4 }}>
                 {mainPositions.map(p => p.symbol).join(", ")}
