@@ -4,6 +4,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
 import { computeAttribution, type ChannelStats } from "@/lib/influencer-ledger";
+import { computeSignalAttribution, type SignalStat } from "@/lib/signal-ledger";
 import { getInfluencerSignals } from "@/lib/influencer-signals";
 import { logReviewResult } from "@/lib/braintrust-trace";
 import { sendAlert } from "@/lib/alert";
@@ -365,6 +366,13 @@ export async function GET(request: Request) {
   catch { /* ledger is best-effort; skip the section if it can't compute */ }
   const agedChannels = ledgerChannels.filter((c) => c.avgReturnPct !== 0 || c.hitRatePct !== 0);
 
+  // Signal-attribution ledger: which entry signals (★INS, ⚡NEWS, ↓FIRM, earnings record, …) have
+  // predicted, from our own buys. Best-effort; empty until buys accumulate.
+  let signalStats: SignalStat[] = [];
+  let signalBuysLogged = 0;
+  try { const a = await computeSignalAttribution(today); signalStats = a.signals; signalBuysLogged = a.picks.length; }
+  catch { /* best-effort */ }
+
   // This week's raw influencer signals (buys / avoids / insights) from the 6am cache refresh —
   // informational visibility into what the creators are actually saying. Fail-safe.
   const influencerCache = await getInfluencerSignals().catch(() => null);
@@ -481,6 +489,21 @@ export async function GET(request: Request) {
       ).join("")}
     </table>
     <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>vs SPY</strong> = average return above/below the S&amp;P over each pick's own window — the real edge, stripped of the market's move (channels are ranked by it). Small, correlated samples — a ranking hint, not a verdict; "thin" = very few picks.</p>`}
+  </div>`
+    : ""}
+
+  ${signalBuysLogged > 0
+    ? `<div style="background:#f0fdf4;border-left:4px solid #10b981;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🔬 Signal ledger — which entry signals work:</strong>
+    ${signalStats.length === 0
+      ? `<p style="margin:6px 0 0;font-size:13px;color:#6b7280">Logged ${signalBuysLogged} buy${signalBuysLogged === 1 ? "" : "s"} — forward returns accumulate over the coming days.</p>`
+      : `<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+      <tr style="color:#6b7280"><td style="padding:3px 8px">Signal at buy</td><td style="padding:3px 8px;text-align:right">Buys</td><td style="padding:3px 8px;text-align:right">Hit</td><td style="padding:3px 8px;text-align:right">Avg ret</td><td style="padding:3px 8px;text-align:right">vs avg pick</td></tr>
+      ${signalStats.slice(0, 8).map((s) =>
+        `<tr><td style="padding:3px 8px">${s.signal}${s.picks < 4 ? ` <span style="color:#9ca3af;font-size:11px">thin</span>` : ""}</td><td style="padding:3px 8px;text-align:right">${s.picks}</td><td style="padding:3px 8px;text-align:right">${s.hitRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;color:${s.avgReturnPct >= 0 ? "#059669" : "#dc2626"}">${s.avgReturnPct >= 0 ? "+" : ""}${s.avgReturnPct.toFixed(1)}%</td><td style="padding:3px 8px;text-align:right;font-weight:bold;color:${s.vsBaselinePct >= 0 ? "#059669" : "#dc2626"}">${s.vsBaselinePct >= 0 ? "+" : ""}${s.vsBaselinePct.toFixed(1)}%</td></tr>`
+      ).join("")}
+    </table>
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>vs avg pick</strong> = a signal's buys' average forward return minus the average over ALL buys (positive = the signal beat the typical pick; ranked by it). From our own trades, measured forward — small, mixed-horizon samples early, so a hint not a verdict.</p>`}
   </div>`
     : ""}
 
