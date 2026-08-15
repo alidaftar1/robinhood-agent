@@ -6,6 +6,7 @@ import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, probBeatsSpy, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
+import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
@@ -335,6 +336,37 @@ describe("sharpeConfidence: CI narrows as sample grows, governs the small-sample
     expect(Number.isFinite(up!.sharpe)).toBe(true);
     const down = computeSpySharpe(runs([100, 97, 99, 96, 98, 94]));       // net down → negative Sharpe
     expect(down!.sharpe).toBeLessThan(0);
+  });
+});
+
+describe("attributeSignals: per-signal forward-return attribution (signal ledger)", () => {
+  const snap = (o: Partial<SignalSnapshot> = {}): SignalSnapshot => ({
+    mom12_1: null, quality: null, beta: null, insider: false, analyst: null, news: null, earnBeatRate: null, influencerNet: null, ...o,
+  });
+  it("returns [] when nothing is measurable", () => {
+    expect(attributeSignals([{ returnPct: null, signals: snap({ insider: true }) }])).toEqual([]);
+  });
+  it("scores a signal's picks against the all-picks baseline", () => {
+    const picks = [
+      { returnPct: 20, signals: snap({ insider: true }) },
+      { returnPct: 16, signals: snap({ insider: true }) },
+      { returnPct: 0, signals: snap() },
+      { returnPct: -4, signals: snap() },
+    ];
+    const ins = attributeSignals(picks).find((s) => s.signal.startsWith("★INS"))!;
+    expect(ins.picks).toBe(2);
+    expect(ins.avgReturnPct).toBeCloseTo(18, 5);
+    expect(ins.hitRatePct).toBe(100);
+    expect(ins.vsBaselinePct).toBeCloseTo(10, 5); // baseline (20+16+0−4)/4 = 8; 18 − 8
+  });
+  it("ranks a helpful signal above a hurtful one (sorted by edge over baseline)", () => {
+    const stats = attributeSignals([
+      { returnPct: 15, signals: snap({ news: "up" }) },
+      { returnPct: 12, signals: snap({ news: "up" }) },
+      { returnPct: -10, signals: snap({ news: "down" }) },
+      { returnPct: -8, signals: snap({ news: "down" }) },
+    ]);
+    expect(stats.findIndex((s) => s.signal.includes("⚡NEWS↑"))).toBeLessThan(stats.findIndex((s) => s.signal.includes("⚡NEWS↓")));
   });
 });
 

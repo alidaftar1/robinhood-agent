@@ -12,6 +12,7 @@ import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, positionCapDollars, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
+import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { fetchNewsSignals } from "@/lib/news";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
@@ -971,6 +972,40 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // snapshot could never be read; the fetch just hung ~25s every run.)
     await saveRun({ ...baseRun, portfolioAfter, positions, trades, personal: null });
     console.log("CORE_RUN_SAVED");
+
+    // Signal-attribution ledger: snapshot the signals present on each confirmed BUY, so their
+    // forward returns can be measured per signal over time. Fail-safe — never break the trade run.
+    try {
+      const buyPicks: SignalPick[] = trades
+        .filter((t) => t.side === "buy")
+        .map((t) => {
+          const s = marketData.stocks.find((x) => x.symbol === t.symbol);
+          const ratings = marketData.analystRatings[t.symbol];
+          const act = ratings?.length ? [...ratings].sort((a, b) => b.date.localeCompare(a.date))[0].action : null;
+          const nw = newsSignals.get(t.symbol);
+          const beat = beatHistory.get(t.symbol);
+          return {
+            symbol: t.symbol,
+            date: today,
+            strategy: t.strategy ?? "main",
+            priceAtBuy: parseFloat(t.avgPrice) || s?.price || 0,
+            signals: {
+              mom12_1: s?.mom12_1 ?? null,
+              quality: quality?.scores?.[t.symbol]?.quality ?? null,
+              beta: s?.beta ?? null,
+              insider: (marketData.insiderBuys[t.symbol]?.length ?? 0) > 0,
+              analyst: act === "upgrade" || act === "raise_pt" ? "up" : act === "downgrade" || act === "lower_pt" ? "down" : null,
+              news: nw ? (nw.direction === "+" ? "up" : nw.direction === "-" ? "down" : null) : null,
+              earnBeatRate: beat && beat.total > 0 ? beat.beats / beat.total : null,
+              influencerNet: influencerNet[t.symbol] ?? null,
+            },
+          };
+        });
+      const rec = await recordSignalPicks(buyPicks);
+      console.log("SIGNAL_LEDGER", { buys: buyPicks.length, recorded: rec.recorded, skipped: rec.skipped ?? false });
+    } catch (e) {
+      console.warn("SIGNAL_LEDGER_SKIP", e);
+    }
 
     // Compute transfer-adjusted daily return.
     // Gather ALL of today's trades (from any earlier same-day runs + this run) so that
