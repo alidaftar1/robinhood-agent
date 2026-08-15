@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, probBeatsSpy, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, probBeatsSpy, sharpeProbPositive, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -423,6 +423,8 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // returns (strategy − SPY). The decision-relevant bar for a benchmarked book (vs the weaker
   // "Sharpe > 0"). ~50% = a coin flip; climbs only as a real edge over the index holds over more days.
   const mainBeatsSpy = probBeatsSpy(v1MainRuns, r => r.mainDailyReturn);
+  // The weaker "reward is positive vs noise" bar (P Sharpe > 0) — shown in the risk panel, not as the headline.
+  const mainRewardReal = mainSharpe ? sharpeProbPositive(mainSharpe.sharpe, mainSharpe.n) : null;
 
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
@@ -438,6 +440,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const influencerDdN = returnSeries.filter(p => p.influencer != null).length; // sleeve days behind the drawdown
   const influencerSharpe = computeSharpe(runs, r => r.influencerDailyReturn);
   const influencerBeatsSpy = probBeatsSpy(runs, r => r.influencerDailyReturn); // confidence it beats SPY
+  const influencerRewardReal = influencerSharpe ? sharpeProbPositive(influencerSharpe.sharpe, influencerSharpe.n) : null; // P(reward > 0)
   // SPY's Sharpe over the SLEEVE's window (from its series start), computed from consecutive runs so
   // the daily SPY returns aren't distorted by the sleeve's sparse active days — the benchmark bar.
   const inflSpySharpe = seriesSince.influencer
@@ -549,7 +552,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                 {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${mainSharpe.sharpe >= spySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{mainBeatsSpy ? `~${Math.round(mainBeatsSpy.prob * 100)}% confidence · ` : ""}{mainSharpe.n} days</span>
+              <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${mainSharpe.sharpe >= spySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{mainBeatsSpy ? `~${Math.round(mainBeatsSpy.prob * 100)}% beats SPY · ` : ""}{mainSharpe.n} days</span>
             </div>
           )}
           {mainBookValue != null && (
@@ -610,11 +613,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The 'confidence' figure is the chance the slice genuinely BEATS the S&P — not just beats zero — from its daily excess returns over the index. ~50% = a coin flip; it climbs only as a real edge over the market holds up over more days. A statistical confidence level, not a guarantee." />
+              <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. Two confidence figures: 'beats SPY' is the chance the slice genuinely beats the index (the hard, decision-relevant bar, from its daily excess returns) — 'not luck' is the easier chance its reward-for-risk is merely positive vs random noise (Sharpe > 0). ~50% = a coin flip for each; they climb only as a real edge holds up over more days. Statistical confidence levels, not guarantees." />
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${influencerSharpe.sharpe >= inflSpySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{influencerBeatsSpy ? `~${Math.round(influencerBeatsSpy.prob * 100)}% confidence · ` : ""}{influencerSharpe.n} days</span>
+              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${influencerSharpe.sharpe >= inflSpySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{influencerBeatsSpy ? `~${Math.round(influencerBeatsSpy.prob * 100)}% beats SPY · ` : ""}{influencerRewardReal != null ? `~${Math.round(influencerRewardReal * 100)}% not luck · ` : ""}{influencerSharpe.n} days</span>
             </div>
           )}
           {influencerPositions.length > 0 && (
@@ -690,6 +693,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 {bookBeta ? `${betaDescription(bookBeta.beta)}${bookBeta.coveragePct < 70 ? " · partial data" : ""}` : "need current holdings"}
               </span>
             </div>
+            {mainRewardReal != null && (
+              <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
+                <Tip style={s.perfLabel} label="Reward Confidence" def="The chance the main book's reward-for-risk (Sharpe) is genuinely positive — i.e. it's earning money adjusted for risk rather than random noise. This is the easy 'better than cash / not luck' bar; it clears readily in an up market. The tougher, decision-relevant bar — the chance it actually BEATS the S&P — is on the Reward-for-the-Risk card up top (an active book has to beat the index, not just zero)." />
+                <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
+                  ~{Math.round(mainRewardReal * 100)}%
+                </span>
+                <span style={s.perfSince}>odds the reward is real (not noise)</span>
+              </div>
+            )}
             <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
               <Tip style={s.perfLabel} label="Cash on Hand" def="Cash that's settled and ready to trade right now, as a % of the account. Does not include money from recent sales that hasn't cleared yet." />
               <span style={{ ...s.perfValue, color: cashPct != null && cashPct > 10 ? "#e8943a" : "#e5e5e5" }}>
