@@ -251,10 +251,13 @@ export function sharpeProbPositive(sharpe: number, n: number): number {
 // the decision-relevant "confidence" for a benchmarked book: "Sharpe > 0" only clears the cash bar,
 // but the real alternative is buying the index, so "beats SPY" is the bar that matters. SPY's daily
 // return is derived from consecutive spyPrice; order-agnostic (sorts by date). ~50% = a coin flip.
+// Also returns the annualized INFORMATION RATIO (ir) = mean(excess) / sd(excess) × √252 — the standard
+// one-number measure of active skill (excess return per unit of benchmark-relative risk). ~0.5 good,
+// ~0.75 very good, ~1.0 elite. Same excess series backs both prob and ir, so it's one pass.
 export function probBeatsSpy(
   runs: TradeRun[],
   getReturn: (r: TradeRun) => number | null | undefined = (r) => r.agenticDailyReturn,
-): { prob: number; n: number } | null {
+): { prob: number; n: number; ir: number } | null {
   const chron = [...runs].sort((a, b) => a.date.localeCompare(b.date));
   const excess: number[] = [];
   for (let i = 1; i < chron.length; i++) {
@@ -266,8 +269,9 @@ export function probBeatsSpy(
   if (excess.length < 5) return null;
   const mean = excess.reduce((a, b) => a + b, 0) / excess.length;
   const sd = Math.sqrt(excess.reduce((a, b) => a + (b - mean) ** 2, 0) / excess.length);
-  if (sd === 0) return { prob: mean > 0 ? 1 : mean < 0 ? 0 : 0.5, n: excess.length };
-  return { prob: normalCdf((mean / sd) * Math.sqrt(excess.length)), n: excess.length };
+  const ir = sd === 0 ? 0 : (mean / sd) * Math.sqrt(252);
+  if (sd === 0) return { prob: mean > 0 ? 1 : mean < 0 ? 0 : 0.5, n: excess.length, ir };
+  return { prob: normalCdf((mean / sd) * Math.sqrt(excess.length)), n: excess.length, ir };
 }
 
 // Start of the CURRENT (V1 quality-momentum) main-book track record — the 2026-07-09 strategy switch,

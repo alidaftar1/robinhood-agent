@@ -702,6 +702,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 <span style={s.perfSince}>odds the reward is real (not noise)</span>
               </div>
             )}
+            {mainBeatsSpy != null && (
+              <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
+                <Tip style={s.perfLabel} label="Info Ratio" def="Information Ratio: the main book's excess return over the S&P divided by how much it deviates from the S&P (its tracking error). The standard one-number measure of active skill — how much market-beating return you earn per unit of benchmark-relative risk. Rules of thumb: ~0.5 good, ~0.75 very good, ~1.0 elite. This is a small-sample estimate this early, so treat it as directional (see the 'beats SPY' confidence for how trustworthy the edge is yet)." />
+                <span style={{ ...s.perfValue, color: returnColor(mainBeatsSpy.ir) }}>
+                  {mainBeatsSpy.ir >= 0 ? "" : "−"}{Math.abs(mainBeatsSpy.ir).toFixed(2)}
+                </span>
+                <span style={s.perfSince}>edge vs market · 0.5 good, 1.0 elite</span>
+              </div>
+            )}
             <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
               <Tip style={s.perfLabel} label="Cash on Hand" def="Cash that's settled and ready to trade right now, as a % of the account. Does not include money from recent sales that hasn't cleared yet." />
               <span style={{ ...s.perfValue, color: cashPct != null && cashPct > 10 ? "#e8943a" : "#e5e5e5" }}>
