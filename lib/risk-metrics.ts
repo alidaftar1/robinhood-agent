@@ -246,6 +246,30 @@ export function sharpeProbPositive(sharpe: number, n: number): number {
   return normalCdf(sharpe / se);
 }
 
+// Probability the strategy's TRUE excess return over SPY is positive — i.e. it GENUINELY BEATS the
+// index, not luck — from a one-sample test on daily excess returns (strategy − SPY, same day). This is
+// the decision-relevant "confidence" for a benchmarked book: "Sharpe > 0" only clears the cash bar,
+// but the real alternative is buying the index, so "beats SPY" is the bar that matters. SPY's daily
+// return is derived from consecutive spyPrice; order-agnostic (sorts by date). ~50% = a coin flip.
+export function probBeatsSpy(
+  runs: TradeRun[],
+  getReturn: (r: TradeRun) => number | null | undefined = (r) => r.agenticDailyReturn,
+): { prob: number; n: number } | null {
+  const chron = [...runs].sort((a, b) => a.date.localeCompare(b.date));
+  const excess: number[] = [];
+  for (let i = 1; i < chron.length; i++) {
+    const ret = getReturn(chron[i]);
+    const spyNow = chron[i].spyPrice, spyPrev = chron[i - 1].spyPrice;
+    if (ret == null || !spyNow || !spyPrev) continue;
+    excess.push(ret - (spyNow / spyPrev - 1));
+  }
+  if (excess.length < 5) return null;
+  const mean = excess.reduce((a, b) => a + b, 0) / excess.length;
+  const sd = Math.sqrt(excess.reduce((a, b) => a + (b - mean) ** 2, 0) / excess.length);
+  if (sd === 0) return { prob: mean > 0 ? 1 : mean < 0 ? 0 : 0.5, n: excess.length };
+  return { prob: normalCdf((mean / sd) * Math.sqrt(excess.length)), n: excess.length };
+}
+
 // Start of the CURRENT (V1 quality-momentum) main-book track record — the 2026-07-09 strategy switch,
 // anchored to 07-11 once the book was rebuilt after T+1 settlement so the tiny transition-day base
 // doesn't distort it. Shared by the dashboard AND the daily email so both windows agree.

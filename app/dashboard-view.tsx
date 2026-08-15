@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, sharpeConfidence, sharpeProbPositive, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, probBeatsSpy, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -419,12 +419,10 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const spyDrawdown = computeMaxDrawdown(v1MainRuns.map(r => r.spyPrice).filter((x): x is number => typeof x === "number"));
   const mainSharpe = computeSharpe(v1MainRuns, r => r.mainDailyReturn);
   const spySharpe = computeSpySharpe(v1MainRuns); // benchmark bar over the same window — beating this is the real test
-  // 95% CI for the Sharpe — wide now, tightens ~1/√n as data accrues; replaces the binary caveat.
-  const mainSharpeCI = mainSharpe ? sharpeConfidence(mainSharpe.sharpe, mainSharpe.n) : null;
-  const fmtSharpe = (v: number) => `${v >= 0 ? "" : "−"}${Math.abs(v).toFixed(1)}`;
-  // "How likely is this reward-for-risk real (not luck)?" — a plain percentage that moves with the
-  // data/performance (distinct from the fixed-95% CI width). Shown on the Sharpe of each sleeve.
-  const pctReal = (sharpe: number, n: number) => `~${Math.round(sharpeProbPositive(sharpe, n) * 100)}% confidence`;
+  // "Confidence" = P(the book genuinely BEATS SPY, not luck) — a one-sample test on daily excess
+  // returns (strategy − SPY). The decision-relevant bar for a benchmarked book (vs the weaker
+  // "Sharpe > 0"). ~50% = a coin flip; climbs only as a real edge over the index holds over more days.
+  const mainBeatsSpy = probBeatsSpy(v1MainRuns, r => r.mainDailyReturn);
 
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
@@ -439,6 +437,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const influencerDrawdown = computeMaxDrawdown(returnSeries.filter(p => p.influencer != null).map(p => p.influencer as number));
   const influencerDdN = returnSeries.filter(p => p.influencer != null).length; // sleeve days behind the drawdown
   const influencerSharpe = computeSharpe(runs, r => r.influencerDailyReturn);
+  const influencerBeatsSpy = probBeatsSpy(runs, r => r.influencerDailyReturn); // confidence it beats SPY
   // SPY's Sharpe over the SLEEVE's window (from its series start), computed from consecutive runs so
   // the daily SPY returns aren't distorted by the sleeve's sparse active days — the benchmark bar.
   const inflSpySharpe = seriesSince.influencer
@@ -546,11 +545,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           </div>
           {mainSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) The big number is our best guess. But 'above 1/2 is strong' is the wrong bar for an active strategy — you could just hold the index, and in a calm up-market SPY's own Sharpe is high too. The REAL test is beating SPY's Sharpe over the same window, shown as 'vs SPY' (ahead = we're earning our keep). The formal one-number version of this is the Information Ratio (excess return ÷ how much we deviate from SPY). The 'confidence' figure is the chance the reward is genuinely positive, not luck (~50% = coin flip; climbs as an edge holds over more days) — a statistical confidence level (not a true probability, and not a guarantee), a read on "can I trust this yet?" separate from how big it is.`} />
+              <Tip style={s.perfLabel} label="Reward for the Risk" def={`How much return the current (V1 quality-momentum) strategy earns for the risk it takes, since the 07-09 switch — is it being paid for the swings? (This is the Sharpe ratio.) The big number is our best guess. But 'above 1/2 is strong' is the wrong bar for an active strategy — you could just hold the index, and in a calm up-market SPY's own Sharpe is high too. The REAL test is beating SPY's Sharpe over the same window, shown as 'vs SPY' (ahead = we're earning our keep). The formal one-number version of this is the Information Ratio (excess return ÷ how much we deviate from SPY). The 'confidence' figure is the chance the strategy genuinely BEATS the S&P — not just beats zero — based on its daily excess returns over the index. That's the bar that matters for an active book (you could always just buy the index). ~50% = a coin flip; it only climbs toward 100% as a real edge over the market holds up over more days. It's a statistical confidence level, not a guarantee.`} />
               <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                 {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${mainSharpe.sharpe >= spySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{pctReal(mainSharpe.sharpe, mainSharpe.n)} · {mainSharpe.n} days</span>
+              <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${mainSharpe.sharpe >= spySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{mainBeatsSpy ? `~${Math.round(mainBeatsSpy.prob * 100)}% confidence · ` : ""}{mainSharpe.n} days</span>
             </div>
           )}
           {mainBookValue != null && (
@@ -611,11 +610,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The 'confidence' figure is the chance the true reward is genuinely positive, not luck (~50% = coin flip; climbs only as an edge holds over more days). It's a statistical confidence level, not a guarantee." />
+              <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The 'confidence' figure is the chance the slice genuinely BEATS the S&P — not just beats zero — from its daily excess returns over the index. ~50% = a coin flip; it climbs only as a real edge over the market holds up over more days. A statistical confidence level, not a guarantee." />
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${influencerSharpe.sharpe >= inflSpySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{pctReal(influencerSharpe.sharpe, influencerSharpe.n)} · {influencerSharpe.n} days</span>
+              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${influencerSharpe.sharpe >= inflSpySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{influencerBeatsSpy ? `~${Math.round(influencerBeatsSpy.prob * 100)}% confidence · ` : ""}{influencerSharpe.n} days</span>
             </div>
           )}
           {influencerPositions.length > 0 && (

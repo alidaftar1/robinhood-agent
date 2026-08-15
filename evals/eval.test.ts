@@ -5,7 +5,7 @@ import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
-import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
+import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, probBeatsSpy, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
@@ -309,6 +309,21 @@ describe("sharpeConfidence: CI narrows as sample grows, governs the small-sample
     expect(strong).toBeLessThan(0.90);                              // ~88% — high but not certain at 25 days
     expect(sharpeProbPositive(-0.19, 25)).toBeLessThan(0.5);        // losing sleeve → below a coin flip
     expect(strong).toBeLessThan(sharpeProbPositive(3.73, 252));     // same Sharpe, more data → more certain
+  });
+  it("probBeatsSpy: confidence the strategy's excess return over SPY is positive", () => {
+    const mk = (spy: number[], ret: (number | null)[]) =>
+      spy.map((spyPrice, i) => ({ date: `d${String(i).padStart(2, "0")}`, spyPrice, mainDailyReturn: ret[i] })) as any;
+    const getR = (r: any) => r.mainDailyReturn;
+    const spy = [100, 101, 102, 103, 104, 105, 106, 107];
+    const spyDaily = spy.map((p, i) => (i === 0 ? null : p / spy[i - 1] - 1));
+    const edge = [null, 0.008, 0.004, 0.010, 0.005, 0.009, 0.006, 0.007];
+    expect(probBeatsSpy(mk([100, 101, 102, 103], [null, 0.02, 0.02, 0.02]), getR)).toBeNull(); // <5 excess days
+    // strategy return == SPY each day → 0 excess → coin flip
+    expect(probBeatsSpy(mk(spy, spyDaily), getR)!.prob).toBeCloseTo(0.5, 5);
+    // consistently beats by a small positive edge → high confidence
+    expect(probBeatsSpy(mk(spy, spyDaily.map((d, i) => (d == null ? null : d + edge[i]!))), getR)!.prob).toBeGreaterThan(0.9);
+    // consistently loses → low confidence (symmetric)
+    expect(probBeatsSpy(mk(spy, spyDaily.map((d, i) => (d == null ? null : d - edge[i]!))), getR)!.prob).toBeLessThan(0.1);
   });
   it("computeSpySharpe derives SPY's Sharpe from spyPrice (the benchmark bar)", () => {
     const runs = (prices: number[]) => prices.map((spyPrice, i) => ({ date: `d${i}`, spyPrice })) as any;
