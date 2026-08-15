@@ -7,6 +7,7 @@ import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPosit
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, probBeatsSpy, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
+import { formatMarketContext, type SectorData } from "@/lib/market-data";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
@@ -336,6 +337,25 @@ describe("sharpeConfidence: CI narrows as sample grows, governs the small-sample
     expect(Number.isFinite(up!.sharpe)).toBe(true);
     const down = computeSpySharpe(runs([100, 97, 99, 96, 98, 94]));       // net down → negative Sharpe
     expect(down!.sharpe).toBeLessThan(0);
+  });
+});
+
+describe("formatMarketContext: reclaimed regime + sector-rotation signal", () => {
+  const sec = (name: string, a: number): SectorData => ({ etf: name, name, change30d: a, relStrength30d: a, sharpe30d: 0 });
+  const sectors = [sec("Tech", 3.6), sec("Energy", 5.2), sec("Utils", -6), sec("Staples", -3.1), sec("Industrials", 0.1)];
+  it("empty when there's no data", () => {
+    expect(formatMarketContext([], null)).toBe("");
+  });
+  it("risk-on reads ABOVE the average, and ranks leading/lagging sectors", () => {
+    const s = formatMarketContext(sectors, { riskOn: true, spy: 106, ma: 100 });
+    expect(s).toMatch(/RISK-ON.*6\.0% ABOVE/);
+    expect(s).toMatch(/leading — Energy \+5\.2%, Tech \+3\.6%/);   // sorted desc
+    expect(s).toMatch(/lagging — Utils -6\.0%/);
+  });
+  it("risk-off warns but is NOT a hard cash filter (the backtested 200d-filter whipsaw lesson)", () => {
+    const s = formatMarketContext(sectors, { riskOn: false, spy: 94, ma: 100 });
+    expect(s).toMatch(/RISK-OFF.*6\.0% BELOW/);
+    expect(s).toMatch(/NOT a switch to cash/);
   });
 });
 

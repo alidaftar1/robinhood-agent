@@ -266,7 +266,7 @@ Rules:
 // in lib/market-data buildV1Shortlist). The model may ONLY buy MAIN-book names from that shortlist — a
 // hard filter in the trade route enforces this regardless of what the model outputs. The influencer
 // sleeve is unchanged (≤2 slots on its own signal). Kept separate from buildAnalysisPrompt for rollback.
-export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = []): string {
+export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = [], marketRegime: string = ""): string {
   // MACRO-REGIME context only (Phase 0 news). The analysis is otherwise macro-blind,
   // yet it's asked to judge whether a move is broad-market SYMPATHY vs name-specific.
   // These are general business headlines — regime read only, NOT per-name, NOT a buy
@@ -368,7 +368,7 @@ PORTFOLIO STATE (live from Robinhood):
 ${positionsLines}
 ${sectorSection ?? ""}
 Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} | Today: ${today}
-${marketContextBlock}
+${marketRegime}${marketContextBlock}
 T+1 SETTLEMENT RULE: cash account — sell proceeds do NOT settle until tomorrow. Your buy budget is the settled buying power above; it does NOT increase when you sell today. Plan buys within settled buying power only.
 
 STRATEGY — QUALITY-MOMENTUM (main book):

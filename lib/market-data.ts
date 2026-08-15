@@ -107,8 +107,32 @@ export interface SectorData {
   etf: string;
   name: string;
   change30d: number;
-  relStrength30d: number;
+  relStrength30d: number;   // α30d: sector ETF's 30-day return minus SPY's
   sharpe30d: number;
+}
+
+// Reclaimed regime + sector-rotation context for the V1 decision prompt (both exist on marketData but
+// were dropped from V1). ADVISORY only — it contextualizes the shortlist, it does NOT gate anything.
+// Deliberately NOT a hard trend filter: the backtest showed a 200-day cash filter WHIPSAWS and lost to
+// buy-and-hold; so risk-off is a "demand more conviction" caution, never a switch to cash.
+export function formatMarketContext(
+  sectors: SectorData[],
+  regime: { riskOn: boolean; spy: number; ma: number } | null,
+): string {
+  const lines: string[] = [];
+  if (regime && regime.ma > 0) {
+    const pct = (regime.spy / regime.ma - 1) * 100;
+    lines.push(regime.riskOn
+      ? `- Regime: RISK-ON — SPY is ${pct.toFixed(1)}% ABOVE its ~100-day average. Momentum TAILWIND; trends tend to persist, new adds are lower-risk.`
+      : `- Regime: RISK-OFF — SPY is ${Math.abs(pct).toFixed(1)}% BELOW its ~100-day average. Momentum HEADWIND: reversals/whipsaws more likely, so demand stronger conviction, lean on quality, and size new adds down. (This is a caution, NOT a switch to cash — a hard trend filter whipsaws.)`);
+  }
+  if (sectors.length) {
+    const ranked = [...sectors].sort((a, b) => b.relStrength30d - a.relStrength30d);
+    const fmt = (s: SectorData) => `${s.name} ${s.relStrength30d >= 0 ? "+" : ""}${s.relStrength30d.toFixed(1)}%`;
+    lines.push(`- Sector rotation (30-day return vs SPY): 🔥 leading — ${ranked.slice(0, 3).map(fmt).join(", ")} · ❄ lagging — ${ranked.slice(-3).reverse().map(fmt).join(", ")}.`);
+  }
+  if (!lines.length) return "";
+  return `\nMARKET REGIME & SECTOR ROTATION:\n${lines.join("\n")}\nADVISORY: prefer buys in LEADING sectors; be cautious ADDING to lagging ones; in a RISK-OFF regime demand stronger conviction (momentum reverses more). This CONTEXTUALIZES the shortlist — it does NOT override the shortlist/caps and is NOT a hard filter. Cite it in your thesis when it tips a decision.\n`;
 }
 
 export interface StockData {
