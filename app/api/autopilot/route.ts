@@ -50,29 +50,41 @@ async function sendEmail(subject: string, html: string): Promise<boolean> {
 // schedule. GitHub delays cron-triggered runs by up to ~1.5h; triggering it here
 // — right after today's report email goes out — makes the code-fixer run as soon
 // as the data is ready (~8:01am PT). The 8:45am workflow cron stays as a fallback.
-// Non-fatal: a dispatch failure never breaks the autopilot response.
-async function dispatchCloudAgent(): Promise<{ ok: boolean; detail: string }> {
+// Non-fatal: a dispatch failure never breaks the autopilot response. Retries on TRANSIENT errors
+// (5xx / network) — GitHub's dispatch endpoint occasionally 503s — so a brief GitHub blip doesn't
+// silently skip the cloud autopilot for the day. A 4xx (esp. 401/403) is a real token/perms problem
+// and is NOT retried. Returns the final HTTP status so the caller can tell transient from token.
+async function dispatchCloudAgent(): Promise<{ ok: boolean; detail: string; status: number }> {
   const token = process.env.GH_DISPATCH_TOKEN;
-  if (!token) return { ok: false, detail: "no GH_DISPATCH_TOKEN" };
-  try {
-    const res = await fetch(
-      "https://api.github.com/repos/alidaftar1/robinhood-agent/actions/workflows/autopilot.yml/dispatches",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-          "User-Agent": "robinhood-agent-autopilot",
-          "Content-Type": "application/json",
+  if (!token) return { ok: false, detail: "no GH_DISPATCH_TOKEN", status: 0 };
+  let status = -1, detail = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(
+        "https://api.github.com/repos/alidaftar1/robinhood-agent/actions/workflows/autopilot.yml/dispatches",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "robinhood-agent-autopilot",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ref: "main" }),
         },
-        body: JSON.stringify({ ref: "main" }),
-      },
-    );
-    return { ok: res.status === 204, detail: `HTTP ${res.status}` }; // 204 = dispatched
-  } catch (e) {
-    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+      );
+      status = res.status;
+      if (res.status === 204) return { ok: true, detail: "HTTP 204", status: 204 }; // dispatched
+      if (res.status < 500) return { ok: false, detail: `HTTP ${res.status}`, status: res.status }; // client/token error — don't retry
+      detail = `HTTP ${res.status}`; // 5xx — transient, retry
+    } catch (e) {
+      status = -1;
+      detail = e instanceof Error ? e.message : String(e); // network — transient, retry
+    }
+    if (attempt < 3) await new Promise((r) => setTimeout(r, 1500 * attempt));
   }
+  return { ok: false, detail: `${detail} (after 3 tries)`, status };
 }
 
 export async function GET(request: Request) {
@@ -560,9 +572,16 @@ export async function GET(request: Request) {
     // no schedule fallback, so an expired/revoked GH_DISPATCH_TOKEN would silently kill the cloud
     // autopilot with no warning (the "silent self-heal masks a failure" class). Alert instead.
     if (!cloudDispatched.ok) {
+      // Distinguish a TRANSIENT GitHub blip (5xx / network — already retried 3×) from a real TOKEN
+      // problem (401/403), so a GitHub hiccup doesn't cry "regenerate the PAT".
+      const transient = cloudDispatched.status >= 500 || cloudDispatched.status < 0;
       await sendAlert(
-        "⚠️ Autopilot cloud-dispatch FAILED — cloud autopilot will not run",
-        `The Vercel /api/autopilot cron could not trigger the GitHub autopilot workflow (dispatch result: ${cloudDispatched.detail}). Until fixed, the cloud autopilot — deep verification, skeptical reviewer, Autopilot Journal, and propose-mode PRs — will NOT run, and there is no schedule fallback. Most likely cause: GH_DISPATCH_TOKEN expired/revoked (HTTP 401) or the env var is missing. Fix: regenerate the PAT with the 'repo' scope, update GH_DISPATCH_TOKEN in the Vercel project env (Production) + .env.local, then redeploy.`,
+        transient
+          ? "ℹ️ Autopilot cloud-dispatch skipped (transient GitHub error)"
+          : "⚠️ Autopilot cloud-dispatch FAILED — check GH_DISPATCH_TOKEN",
+        transient
+          ? `GitHub's workflow-dispatch API returned a transient error (${cloudDispatched.detail}) even after 3 retries — GitHub Actions was briefly unavailable. Today's cloud autopilot (deep verification, skeptical reviewer, Autopilot Journal, propose-mode PRs) did NOT run; it resumes automatically on the next weekday cron. NO ACTION NEEDED unless this recurs across multiple days — then check https://www.githubstatus.com and the GH_DISPATCH_TOKEN.`
+          : `The Vercel /api/autopilot cron could not trigger the GitHub autopilot workflow (dispatch result: ${cloudDispatched.detail}). Until fixed, the cloud autopilot — deep verification, skeptical reviewer, Autopilot Journal, and propose-mode PRs — will NOT run, and there is no schedule fallback. A 4xx here is a token/perms problem: most likely GH_DISPATCH_TOKEN expired/revoked (HTTP 401/403) or the env var is missing. Fix: regenerate the PAT with the 'repo' scope, update GH_DISPATCH_TOKEN in the Vercel project env (Production) + .env.local, then redeploy.`,
       );
     }
   } else if (cloudDispatch && emailSent) {
