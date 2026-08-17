@@ -1,12 +1,11 @@
+import { requireCronAuth } from "@/lib/auth";
 import { refreshInsiderCache } from "@/lib/insider";
 
 export const maxDuration = 300;
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const unauth = requireCronAuth(request);
+  if (unauth) return unauth;
   try {
     const data = await refreshInsiderCache();
     const symbolsWithBuys = Object.keys(data).length;

@@ -1,4 +1,5 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterAll } from "bun:test";
+import { requireCronAuth } from "@/lib/auth";
 import { SCENARIOS, formatFixtureMarketData } from "./fixtures";
 import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
@@ -1242,5 +1243,51 @@ describe("rotation-churn guard: recently-sold names surfaced to the analysis", (
   it("omits the block when there are no recent sells", () => {
     const bare = buildV1AnalysisPrompt("2026-08-07", "(t)", { buyingPower: "$120", totalValue: "$2500", positions: [] });
     expect(bare).not.toMatch(/RECENTLY SOLD/);
+  });
+});
+
+// ─── Auth: fail-closed cron gate (Hirad Peyvandi disclosure) ────────────────────
+describe("auth: requireCronAuth fails closed", () => {
+  const orig = process.env.CRON_SECRET;
+  afterAll(() => {
+    if (orig === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = orig;
+  });
+
+  const call = (secret: string | undefined, header: string | undefined) => {
+    if (secret === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = secret;
+    const req = new Request(
+      "https://x/api/trade",
+      header === undefined ? {} : { headers: { authorization: header } },
+    );
+    return requireCronAuth(req);
+  };
+
+  it("rejects the `Bearer undefined` bypass when CRON_SECRET is unset", () => {
+    // The whole point: with the old inline check this header sailed through.
+    const res = call(undefined, "Bearer undefined");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(503);
+  });
+
+  it("rejects everything (503) when CRON_SECRET is unset, even with no header", () => {
+    expect(call(undefined, undefined)!.status).toBe(503);
+  });
+
+  it("rejects (503) an implausibly short/misconfigured secret", () => {
+    expect(call("short", "Bearer short")!.status).toBe(503);
+  });
+
+  it("rejects (401) a valid secret with no auth header", () => {
+    expect(call("a-proper-18-char-secret", undefined)!.status).toBe(401);
+  });
+
+  it("rejects (401) a valid secret with the wrong token", () => {
+    expect(call("a-proper-18-char-secret", "Bearer nope")!.status).toBe(401);
+  });
+
+  it("authorizes (null) a valid secret with the matching token", () => {
+    expect(call("a-proper-18-char-secret", "Bearer a-proper-18-char-secret")).toBeNull();
   });
 });

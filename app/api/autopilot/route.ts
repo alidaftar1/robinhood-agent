@@ -1,3 +1,4 @@
+import { requireCronAuth } from "@/lib/auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -88,10 +89,8 @@ async function dispatchCloudAgent(): Promise<{ ok: boolean; detail: string; stat
 }
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const unauth = requireCronAuth(request);
+  if (unauth) return unauth;
 
   const today = todayPT();
 

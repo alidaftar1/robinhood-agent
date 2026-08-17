@@ -1,3 +1,4 @@
+import { requireCronAuth } from "@/lib/auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
@@ -12,10 +13,8 @@ export const maxDuration = 300;
 const ACCOUNT = process.env.AGENTIC_ACCOUNT_ID ?? "";
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const unauth = requireCronAuth(request);
+  if (unauth) return unauth;
 
   const today = new Date().toISOString().split("T")[0];
 

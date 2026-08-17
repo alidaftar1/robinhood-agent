@@ -1,3 +1,4 @@
+import { requireCronAuth } from "@/lib/auth";
 import { computeSignalAttribution } from "@/lib/signal-ledger";
 
 export const maxDuration = 60;
@@ -7,10 +8,8 @@ export const maxDuration = 60;
 // Which signals (★INS, ⚡NEWS, ↑/↓FIRM, earnings record, influencer backing) have actually
 // predicted, measured from our own trades. Forward-only, accumulates from the first buy logged.
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const unauth = requireCronAuth(request);
+  if (unauth) return unauth;
 
   const today = new Date().toISOString().split("T")[0];
   const { picks, signals, baselineReturnPct } = await computeSignalAttribution(today);

@@ -1,3 +1,4 @@
+import { requireCronAuth } from "@/lib/auth";
 import Anthropic from "@anthropic-ai/sdk";
 import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
@@ -75,10 +76,8 @@ Use instrument_symbol for symbol, quantity for quantity, average_buy_price for a
 }
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const unauth = requireCronAuth(request);
+  if (unauth) return unauth;
 
   const url = new URL(request.url);
   const dryRun = url.searchParams.get("dryRun") === "1";

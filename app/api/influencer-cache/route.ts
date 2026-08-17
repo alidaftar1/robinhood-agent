@@ -1,13 +1,12 @@
+import { requireCronAuth } from "@/lib/auth";
 import { refreshInfluencerSignals } from "@/lib/influencer-signals";
 import { recordPicks } from "@/lib/influencer-ledger";
 
 export const maxDuration = 300; // transcripts (Supadata, incl. Whisper fallback) add latency per video
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const unauth = requireCronAuth(request);
+  if (unauth) return unauth;
 
   if (!process.env.YOUTUBE_API_KEY) {
     return Response.json({ skipped: true, reason: "YOUTUBE_API_KEY not configured" });

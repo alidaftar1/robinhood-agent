@@ -1,3 +1,4 @@
+import { requireCronAuth } from "@/lib/auth";
 import { computeAttribution, recordPicks } from "@/lib/influencer-ledger";
 import { getInfluencerSignals } from "@/lib/influencer-signals";
 
@@ -9,10 +10,8 @@ export const maxDuration = 60;
 //        (no YouTube/Haiku refresh — reuses the cached signals), then return the stats.
 //        Use once to seed; the daily /api/influencer-cache cron keeps it current after.
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const unauth = requireCronAuth(request);
+  if (unauth) return unauth;
 
   const today = new Date().toISOString().split("T")[0];
   const seed = new URL(request.url).searchParams.get("seed") === "1";
