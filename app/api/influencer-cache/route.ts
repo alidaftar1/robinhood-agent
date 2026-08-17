@@ -1,11 +1,11 @@
+import { isAuthorizedCronRequest } from "@/lib/cron-auth";
 import { refreshInfluencerSignals } from "@/lib/influencer-signals";
 import { recordPicks } from "@/lib/influencer-ledger";
 
 export const maxDuration = 300; // transcripts (Supadata, incl. Whisper fallback) add latency per video
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 

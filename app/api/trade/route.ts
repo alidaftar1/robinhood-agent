@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import * as Sentry from "@sentry/nextjs";
+import { isAuthorizedCronRequest } from "@/lib/cron-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, type PortfolioContext } from "@/lib/strategy";
@@ -75,8 +76,7 @@ Use instrument_symbol for symbol, quantity for quantity, average_buy_price for a
 }
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -1,3 +1,4 @@
+import { isAuthorizedCronRequest } from "@/lib/cron-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -88,8 +89,7 @@ async function dispatchCloudAgent(): Promise<{ ok: boolean; detail: string; stat
 }
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -535,7 +535,7 @@ export async function GET(request: Request) {
 
   <p style="font-size:12px;color:#9ca3af;margin-top:24px">
     Sent by Vercel cron at 8am PT — no Mac required.<br/>
-    <a href="${host}/?key=${process.env.CRON_SECRET ?? ""}">Open dashboard</a>
+    <a href="${host}/">Open dashboard</a>
   </p>
 </div>`;
 

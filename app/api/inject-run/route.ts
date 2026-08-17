@@ -1,9 +1,9 @@
+import { isAuthorizedCronRequest } from "@/lib/cron-auth";
 import { saveRun } from "@/lib/run-store";
 import type { TradeRun } from "@/lib/run-store";
 
 export async function POST(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 

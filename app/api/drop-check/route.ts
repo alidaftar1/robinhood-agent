@@ -1,3 +1,4 @@
+import { isAuthorizedCronRequest } from "@/lib/cron-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
@@ -14,8 +15,7 @@ const DROP_THRESHOLD_PCT = -5; // sell if down ≥5% (intraday for main; from bu
 const TAKE_PROFIT_PCT = 40;    // influencer winners: let winners run — lock the gain at +40% from buy price
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -291,7 +291,7 @@ Do NOT rebalance and do NOT open any new position. Only exit the listed position
 
     await sendAlert(
       `${unexpectedBuys.length > 0 ? "⚠️ Risk-Exit + UNEXPECTED BUY" : hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
-      `Sold ${droppedNames}.${buyWarn}\n\nCheck the dashboard:\n${process.env.APP_URL ?? ""}/?key=${process.env.CRON_SECRET ?? ""}`
+      `Sold ${droppedNames}.${buyWarn}\n\nCheck the dashboard:\n${process.env.APP_URL ?? ""}/`
     );
 
     console.log("DROP_CHECK_COMPLETE", { sold: droppedPositions.map(({ position }) => position.symbol) });

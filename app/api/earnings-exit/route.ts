@@ -1,3 +1,4 @@
+import { isAuthorizedCronRequest } from "@/lib/cron-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
@@ -12,8 +13,7 @@ export const maxDuration = 300;
 const ACCOUNT = process.env.AGENTIC_ACCOUNT_ID ?? "";
 
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -181,7 +181,7 @@ Do NOT do a full portfolio rebalance. Only exit the earnings risk and redeploy i
 
     await sendAlert(
       `📋 Earnings Exit Triggered — ${today}`,
-      `Sold ${imminentNames} before earnings.\n\nCheck the dashboard for details:\n${process.env.APP_URL ?? ""}/?key=${process.env.CRON_SECRET ?? ""}`
+      `Sold ${imminentNames} before earnings.\n\nCheck the dashboard for details:\n${process.env.APP_URL ?? ""}/`
     );
 
     console.log("EARNINGS_EXIT_COMPLETE", { sold: imminentPositions.map((p) => p.symbol) });

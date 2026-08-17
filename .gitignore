@@ -6,3 +6,8 @@ node_modules/
 .env*
 .DS_Store
 robinhood-autopilot-logs/
+
+# This repo uses bun (bun.lock) — `npm install` (used locally to verify this
+# fix, no bun available) generates its own lockfile that shouldn't be tracked
+# alongside it.
+package-lock.json

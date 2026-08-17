@@ -1,3 +1,4 @@
+import { isAuthorizedCronRequest } from "@/lib/cron-auth";
 import { computeSignalAttribution } from "@/lib/signal-ledger";
 
 export const maxDuration = 60;
@@ -7,8 +8,7 @@ export const maxDuration = 60;
 // Which signals (★INS, ⚡NEWS, ↑/↓FIRM, earnings record, influencer backing) have actually
 // predicted, measured from our own trades. Forward-only, accumulates from the first buy logged.
 export async function GET(request: Request) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
