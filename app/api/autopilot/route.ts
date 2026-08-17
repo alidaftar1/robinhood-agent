@@ -564,7 +564,7 @@ export async function GET(request: Request) {
     (verifyResult != null && verifyResult.status !== "ok") ||
     selfHealed;
   const cloudDispatch = new URL(request.url).searchParams.get("cloudDispatch") === "1";
-  let cloudDispatched: { ok: boolean; detail: string } | null = null;
+  let cloudDispatched: { ok: boolean; detail: string; status: number } | null = null;
   if (cloudDispatch && emailSent && cloudWorthDispatching) {
     cloudDispatched = await dispatchCloudAgent();
     console.log("CLOUD_DISPATCH", cloudDispatched);
