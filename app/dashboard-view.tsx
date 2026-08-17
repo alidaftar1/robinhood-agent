@@ -259,10 +259,6 @@ const s = {
   btn: { width: "100%", background: "#fff", color: "#000", border: "none", borderRadius: 7, padding: "10px 14px", fontSize: 14, fontWeight: 600, cursor: "pointer" },
 } as const;
 
-export function isAuthed(key: string | null): boolean {
-  return key === process.env.CRON_SECRET;
-}
-
 export function LoginScreen() {
   return (
     <div style={s.loginWrap}>

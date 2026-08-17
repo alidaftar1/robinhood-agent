@@ -15,7 +15,9 @@
 
 // A real CRON_SECRET is a long random string; anything shorter than this is a misconfiguration,
 // not a deliberately weak secret. Reject rather than trust it.
-const MIN_SECRET_LEN = 16;
+// Exported so other secret-gated surfaces (dashboard-auth.ts) share the same floor instead of
+// redefining it and risking the two drifting apart later.
+export const MIN_SECRET_LEN = 16;
 
 /**
  * Returns a rejection Response if the request is not authorized, or null if it is.

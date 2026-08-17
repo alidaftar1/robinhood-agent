@@ -124,7 +124,8 @@ Create `.env.local`:
 ANTHROPIC_API_KEY=           # Claude API key
 UPSTASH_REDIS_REST_URL=      # Upstash Redis URL
 UPSTASH_REDIS_REST_TOKEN=    # Upstash Redis token
-CRON_SECRET=                 # Secret for protecting cron + dashboard endpoints
+CRON_SECRET=                 # Secret for protecting cron/trade endpoints — generate separately from DASHBOARD_SECRET
+DASHBOARD_SECRET=            # Separate secret for the dashboard login (manual entry only — never emailed, must differ from CRON_SECRET)
 RESEND_API_KEY=              # Resend API key for email reports
 FMP_API_KEY=                 # Financial Modeling Prep (market data + insider)
 APP_URL=                     # Your deployed Vercel URL (e.g. https://your-app.vercel.app)

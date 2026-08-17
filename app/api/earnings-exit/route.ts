@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { buildDashboardLoginUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
@@ -178,9 +179,10 @@ Do NOT do a full portfolio rebalance. Only exit the earnings risk and redeploy i
       ...(spyPrice != null ? { spyPrice } : {}),
     });
 
+    const dashboardUrl = await buildDashboardLoginUrl(process.env.APP_URL ?? "");
     await sendAlert(
       `📋 Earnings Exit Triggered — ${today}`,
-      `Sold ${imminentNames} before earnings.\n\nCheck the dashboard for details:\n${process.env.APP_URL ?? ""}/?key=${process.env.CRON_SECRET ?? ""}`
+      `Sold ${imminentNames} before earnings.\n\nCheck the dashboard for details:\n${dashboardUrl}`
     );
 
     console.log("EARNINGS_EXIT_COMPLETE", { sold: imminentPositions.map((p) => p.symbol) });

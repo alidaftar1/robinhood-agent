@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { buildDashboardLoginUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -423,6 +424,8 @@ export async function GET(request: Request) {
       <td style="padding:5px 10px">${value}</td>
     </tr>`;
 
+  const dashboardUrl = await buildDashboardLoginUrl(host);
+
   const html = `
 <div style="font-family:monospace;max-width:600px;margin:0 auto;padding:24px;color:#111">
   <h2 style="margin:0 0 4px">Robinhood Agent — ${today} Report</h2>
@@ -534,7 +537,7 @@ export async function GET(request: Request) {
 
   <p style="font-size:12px;color:#9ca3af;margin-top:24px">
     Sent by Vercel cron at 8am PT — no Mac required.<br/>
-    <a href="${host}/?key=${process.env.CRON_SECRET ?? ""}">Open dashboard</a>
+    <a href="${dashboardUrl}">Open dashboard</a>
   </p>
 </div>`;
 

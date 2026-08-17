@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { buildDashboardLoginUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
@@ -288,9 +289,10 @@ Do NOT rebalance and do NOT open any new position. Only exit the listed position
       ...(spyPrice != null ? { spyPrice } : {}),
     });
 
+    const dashboardUrl = await buildDashboardLoginUrl(process.env.APP_URL ?? "");
     await sendAlert(
       `${unexpectedBuys.length > 0 ? "⚠️ Risk-Exit + UNEXPECTED BUY" : hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
-      `Sold ${droppedNames}.${buyWarn}\n\nCheck the dashboard:\n${process.env.APP_URL ?? ""}/?key=${process.env.CRON_SECRET ?? ""}`
+      `Sold ${droppedNames}.${buyWarn}\n\nCheck the dashboard:\n${dashboardUrl}`
     );
 
     console.log("DROP_CHECK_COMPLETE", { sold: droppedPositions.map(({ position }) => position.symbol) });
