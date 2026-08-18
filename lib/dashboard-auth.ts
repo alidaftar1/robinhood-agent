@@ -24,7 +24,23 @@
 import { redisCommand } from "./run-store";
 import { MIN_SECRET_LEN } from "./auth";
 
-export const DASHBOARD_SESSION_COOKIE = "__Host-dashboard_session";
+// The __Host- prefix requires the Secure attribute on every cookie carrying it — browsers
+// reject the Set-Cookie outright otherwise. Secure cookies DO persist over plain http on
+// localhost in current Chrome/Firefox/Edge (a documented "potentially trustworthy origin"
+// exemption), but that's a browser-specific carve-out, not a guarantee (Safari's track record
+// here is less consistent, and any non-evergreen client wouldn't honor it). Rather than have
+// local dev depend on that exemption at all, use the unprefixed name + a non-Secure cookie
+// outside production — same approach next-auth uses for this exact reason.
+//
+// Computed per-call (not cached at module load) so it always reflects the current
+// NODE_ENV — matters for tests that toggle it, and avoids any import-order surprise.
+export function getSessionCookieConfig(): { name: string; secure: boolean } {
+  const isProduction = process.env.NODE_ENV === "production";
+  return {
+    name: isProduction ? "__Host-dashboard_session" : "dashboard_session",
+    secure: isProduction,
+  };
+}
 
 const LOGIN_TOKEN_PREFIX = "dashboard:login-token:";
 const SESSION_PREFIX = "dashboard:session:";

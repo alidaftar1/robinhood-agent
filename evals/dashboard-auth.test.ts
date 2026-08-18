@@ -5,6 +5,7 @@ import {
   redeemLoginToken,
   createSession,
   touchSession,
+  getSessionCookieConfig,
 } from "@/lib/dashboard-auth";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -14,9 +15,46 @@ function resetEnv() {
   process.env = { ...ORIGINAL_ENV };
 }
 
+// @types/node types NODE_ENV as read-only on ProcessEnv; this is a normal, safe write at
+// runtime (Node itself doesn't enforce that), just not typed for direct assignment.
+function setNodeEnv(value: string | undefined) {
+  if (value === undefined) delete (process.env as Record<string, string | undefined>).NODE_ENV;
+  else (process.env as Record<string, string | undefined>).NODE_ENV = value;
+}
+
 afterEach(() => {
   resetEnv();
   globalThis.fetch = ORIGINAL_FETCH;
+});
+
+// ─── getSessionCookieConfig: __Host- prefix must never appear on a non-Secure cookie ───
+
+describe("getSessionCookieConfig", () => {
+  it("production: uses the __Host- prefix and Secure", () => {
+    resetEnv();
+    setNodeEnv("production");
+    const { name, secure } = getSessionCookieConfig();
+    expect(secure).toBe(true);
+    expect(name).toBe("__Host-dashboard_session");
+  });
+
+  it("non-production: plain name, not Secure — __Host- would be spec-invalid without Secure, and Secure itself isn't guaranteed to persist on every local dev client", () => {
+    resetEnv();
+    setNodeEnv("development");
+    const { name, secure } = getSessionCookieConfig();
+    expect(secure).toBe(false);
+    expect(name).toBe("dashboard_session");
+    expect(name.startsWith("__Host-")).toBe(false);
+  });
+
+  it("invariant: whenever the name carries __Host-, secure is always true (the combination the spec requires)", () => {
+    for (const env of ["production", "development", "test", undefined]) {
+      resetEnv();
+      setNodeEnv(env);
+      const { name, secure } = getSessionCookieConfig();
+      if (name.startsWith("__Host-")) expect(secure).toBe(true);
+    }
+  });
 });
 
 // ─── isValidDashboardKey: pure secret-comparison logic, no Redis involved ───

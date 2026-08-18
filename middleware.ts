@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  DASHBOARD_SESSION_COOKIE,
+  getSessionCookieConfig,
   SESSION_COOKIE_MAX_AGE_SECONDS,
   createSession,
   isValidDashboardKey,
@@ -55,9 +55,10 @@ export async function middleware(request: NextRequest) {
   }
 
   const response = NextResponse.redirect(strippedUrl);
-  response.cookies.set(DASHBOARD_SESSION_COOKIE, sessionId, {
+  const cookieConfig = getSessionCookieConfig();
+  response.cookies.set(cookieConfig.name, sessionId, {
     httpOnly: true,
-    secure: true,
+    secure: cookieConfig.secure,
     sameSite: "strict",
     path: "/",
     maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
