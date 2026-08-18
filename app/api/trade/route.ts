@@ -282,6 +282,17 @@ export async function GET(request: Request) {
       } catch (e) {
         console.error("HELD_DAYS_ENRICHMENT_FAILED — skipping time-stop ages", e);
       }
+      // priceMap so far only covers the S&P universe + this run's top-12 influencer-momentum
+      // tickers (line ~226-234) — a held influencer name that fell out of today's top-12 (or any
+      // held main name outside the universe fetch) has no price yet. Without this, `price` below
+      // is undefined for that symbol, so strategy.ts's `ret`/⏳STALE computation silently goes null
+      // and the staleness tag never renders — the model then reasons blind on a fully-computed
+      // heldDays with no return figure (2026-08-18: CAKE hit heldDays=10/INFLUENCER_STALE_DAYS with
+      // a real +2.4% gain, but the model's own thesis said "I don't have CAKE's current price in
+      // the data" and held it unflagged). enrichPriceMap already exists for the POST-decision
+      // snapshot (below); call it here too so the PROMPT the model reads is never missing a price
+      // for a symbol it currently holds. No-ops (one Map lookup per symbol) when already populated.
+      await enrichPriceMap(positions.map(p => p.symbol), priceMap);
       // Budget the analysis against the USABLE spend limit (broker buffer reserved; notional needs
       // no price cushion — we specify dollars, not shares), not the raw settled figure. fitNotional-
       // BuysToBudget below runs on the raw buyingPower and applies the same broker buffer, so the two
