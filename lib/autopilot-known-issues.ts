@@ -177,6 +177,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Does TRADE_DECISION.buys contain a symbol that is absent from the run's executed buy trades? If so this is ALWAYS worth explaining — first check buySizingAdjustments for a matching '<SYM> buy DROPPED/trimmed' note (guardrail working, note the reason and move on); if the symbol is dropped with NO matching note anywhere, that is a real regression (a guard silently ate a decided buy) — escalate it, don't defer to 'probably fine.' Also worth a light touch on tiny-budget days generally: is the model repeatedly trying to force its entire sub-$50 leftover cash into a single buy instead of just deciding buys=[] like it correctly does most days? A one-off is fine; a recurring pattern of the model fighting its own stated $50 floor would be worth a strategy-analyst hypothesis (not a code change — the floor is a deliberate anti-dust design choice).",
   },
+  {
+    date: "2026-08-14",
+    title: "Reviewer flagged a long-held position's age as 'impossible to verify' because its own history window was too short",
+    lesson:
+      "The skeptical-reviewer prompt (lib/autopilot-review.ts) capped RECENT RUNS at a flat 7 most-recent runs, while heldDaysOf (app/api/trade/route.ts) — the thing that actually computes the heldDays the model reasons from — looks back 60 runs. GOOGL's current lot was bought 2026-07-27 at exactly its stored avgCost ($326.37), a real, correctly-tracked position, but by 08-14 that buy was more than 7 runs back with no other GOOGL activity in between, so the reviewer's own (too-shallow) window couldn't see it and it wrongly concluded the held-days count was 'impossible to verify.' FIXED: the window now covers STALE_DAYS (15, imported from lib/strategy.ts) runs instead of a flat 7, so any position within the actual staleness window has its most recent buy trade visible to the reviewer.",
+    check:
+      "If the reviewer raises a concern that a held position's age or origin 'cannot be verified' or has 'no purchase visible in recent history', first check whether that symbol's buy trade is actually present further back in the FULL run history (not just what the reviewer was shown) — if it is, this is the reviewer under-provisioned, not a real data gap, and heldDaysOf's own (deeper) lookback is unaffected. Only escalate as a real issue if the buy trade is genuinely absent from the entire available run history.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

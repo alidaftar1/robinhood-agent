@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { TradeRun } from "@/lib/run-store";
 import { formatKnownIssues } from "@/lib/autopilot-known-issues";
+import { STALE_DAYS } from "@/lib/strategy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SKEPTICAL-REVIEWER PASS
@@ -126,9 +127,16 @@ ${reconciled
 }
 
 function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[], verify?: VerifyContext | null): string {
+  // Cover the full main-book staleness window (STALE_DAYS) so a held position's most recent
+  // buy trade is always visible here — heldDaysOf (app/api/trade/route.ts) already looks back
+  // 60 runs when computing the age fed to the model, but this reviewer's own window used to be a
+  // flat 7, so any name bought further back than that (e.g. GOOGL, bought 07-27) looked like it
+  // had "no purchase visible in recent history" even though it's held correctly and on-schedule.
+  // A too-short window can't tell a genuinely unverifiable ancient lot apart from one it just
+  // hasn't been shown, which produced exactly that false "impossible to verify" concern 08-14.
   const history = recentRuns
     .filter((r) => r.date !== todayRun.date)
-    .slice(0, 7)
+    .slice(0, STALE_DAYS)
     .map(compactRun);
 
   return `SCHEDULED trade cron time: ${SCHEDULED_TRADE_CRON_UTC}. A today timestamp materially later than that implies the morning failed at least once and silently recovered.
