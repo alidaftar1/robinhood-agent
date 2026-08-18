@@ -4,10 +4,12 @@ name: deploy-on-merge
 # This makes the propose→approve loop seamless: the cloud autopilot opens a PR, the
 # owner reviews + merges, and this ships it — no manual deploy step.
 #
-# SAFETY: fires ONLY on a merged PR (a human approved it). It deliberately does NOT
-# trigger on direct pushes to main — those (e.g. Claude's in-session pushes) stay on
-# the manual, review-gated `REVIEWED=1 vercel deploy --prod` flow. A secret scan + build
-# gate run before the deploy, so a bad/leaky merge can't reach production.
+# SAFETY: fires ONLY on a merged PR authored by the cloud-autopilot bot
+# (github-actions[bot]) — completing its propose→approve→ship self-healing loop. It does
+# NOT auto-deploy (a) direct pushes to main or (b) EXTERNAL/human PRs (Claude's in-session
+# pushes, outside-contributor PRs like Hirad's) — those stay on the manual, review-gated
+# `/code-review` + `REVIEWED=1 vercel deploy --prod` flow, so a human PR to a live-money
+# app never ships without a review pass. A secret scan + build gate also run before deploy.
 on:
   pull_request:
     types: [closed]
@@ -22,7 +24,9 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event.pull_request.merged == true
+    # Autopilot PRs only: author = github-actions[bot] (from `gh pr create` with GITHUB_TOKEN).
+    # Human/external PRs (hirad121, etc.) fall through to the manual review-gated deploy.
+    if: github.event.pull_request.merged == true && github.event.pull_request.user.login == 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -34,8 +38,13 @@ jobs:
         with:
           ref: main
       - uses: oven-sh/setup-bun@v2
-      - name: Install deps
-        run: bun install
+      - name: Install deps (retry — bun install transiently flakes fetching @sentry/cli's binary in CI)
+        run: |
+          for i in 1 2 3; do
+            if bun install; then exit 0; fi
+            echo "bun install failed (attempt $i/3) — retrying in $((i*10))s"; sleep $((i*10))
+          done
+          echo "bun install failed after 3 attempts"; exit 1
       - name: Secret/PII scan (gate)
         run: bun run check:secrets
       - name: Typecheck + build (gate)
