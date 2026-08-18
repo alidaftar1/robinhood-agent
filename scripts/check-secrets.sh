@@ -55,7 +55,7 @@ report "GitHub token"               '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9
 report "AWS access key id"          'AKIA[0-9A-Z]{16}'
 report "URL with embedded creds"    'https?://[A-Za-z0-9._~%-]+:[^@/[:space:]"]+@'
 report "Redis/DB URL with auth"     '(rediss?|postgres(ql)?|mongodb(\+srv)?)://[^@[:space:]"]*:[^@[:space:]"]+@'
-report "Hardcoded secret literal"   "(API_?KEY|APIKEY|ACCESS_TOKEN|AUTH_TOKEN|BEARER_TOKEN|CLIENT_SECRET|PASSWORD|PRIVATE_KEY)[\"']?[[:space:]]*[:=][[:space:]]*[\"'][A-Za-z0-9/_+=.-]{16,}[\"']"
+report "Hardcoded secret literal"   "([A-Za-z0-9]+_)?(SECRET|TOKEN|KEY|PASSWORD|APIKEY)[\"']?[[:space:]]*[:=][[:space:]]*[\"'][A-Za-z0-9/_+=.-]{16,}[\"']"
 
 # ── Personal / account info ──────────────────────────────────────────────────
 report "Personal email address"     '[A-Za-z0-9._%+-]+@(gmail|yahoo|hotmail|outlook|live|icloud|aol|proton(mail)?)\.[a-z]{2,}'
