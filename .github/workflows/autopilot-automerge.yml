@@ -24,10 +24,12 @@ concurrency:
 
 jobs:
   automerge:
-    # Opt-IN + provenance: only the autopilot bot's own branches, only when it explicitly marked the
-    # PR auto-safe. Absent the label → this job is skipped and the PR waits for the owner.
+    # Opt-IN + provenance: only the autopilot's own `autopilot/…` branches, only when it explicitly
+    # marked the PR auto-safe. Absent the label → this job is skipped and the PR waits for the owner.
+    # Provenance is the BRANCH PREFIX (not the PR author): PRs are opened with a PAT so this workflow
+    # triggers at all, which makes the author the PAT owner rather than github-actions[bot]. The
+    # branch prefix + auto-safe label + the deterministic default-deny gate below are the real floor.
     if: >
-      github.event.pull_request.user.login == 'github-actions[bot]' &&
       startsWith(github.event.pull_request.head.ref, 'autopilot/') &&
       contains(github.event.pull_request.labels.*.name, 'autopilot:auto-safe') &&
       !contains(github.event.pull_request.labels.*.name, 'autopilot:needs-human')

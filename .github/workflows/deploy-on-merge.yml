@@ -4,8 +4,8 @@ name: deploy-on-merge
 # This makes the propose→approve loop seamless: the cloud autopilot opens a PR, the
 # owner reviews + merges, and this ships it — no manual deploy step.
 #
-# SAFETY: fires ONLY on a merged PR authored by the cloud-autopilot bot
-# (github-actions[bot]) — completing its propose→approve→ship self-healing loop. It does
+# SAFETY: fires ONLY on a merged PR from an `autopilot/…` branch (the cloud autopilot's own
+# proposal branches) — completing its propose→approve→ship self-healing loop. It does
 # NOT auto-deploy (a) direct pushes to main or (b) EXTERNAL/human PRs (Claude's in-session
 # pushes, outside-contributor PRs like Hirad's) — those stay on the manual, review-gated
 # `/code-review` + `REVIEWED=1 vercel deploy --prod` flow, so a human PR to a live-money
@@ -24,9 +24,11 @@ concurrency:
 
 jobs:
   deploy:
-    # Autopilot PRs only: author = github-actions[bot] (from `gh pr create` with GITHUB_TOKEN).
-    # Human/external PRs (hirad121, etc.) fall through to the manual review-gated deploy.
-    if: github.event.pull_request.merged == true && github.event.pull_request.user.login == 'github-actions[bot]'
+    # Autopilot PRs only, by BRANCH PREFIX (autopilot/…) — token-agnostic, since the autopilot now
+    # opens PRs with a PAT so the author is the PAT owner, not github-actions[bot]. Human/external
+    # PRs (not on an autopilot/ branch — Hirad's fork PRs, direct pushes) fall through to the manual
+    # review-gated deploy.
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'autopilot/')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

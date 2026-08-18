@@ -38,10 +38,18 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
-      GH_TOKEN: ${{ github.token }}   # gh pr create + branch push
+      # PAT (not GITHUB_TOKEN) for `gh pr create` + branch push, so the resulting pull_request
+      # events actually TRIGGER autopilot-automerge + deploy-on-merge. GitHub deliberately suppresses
+      # workflow runs triggered by GITHUB_TOKEN-created events (recursion guard) — which is why
+      # auto-safe PRs silently sat at `action_required` and never merged. Falls back to github.token
+      # when AUTOPILOT_PAT is unset, so this stays non-breaking until the secret is added (the loop
+      # just stays manual-merge until then). PAT needs contents:write + pull-requests:write.
+      GH_TOKEN: ${{ secrets.AUTOPILOT_PAT || github.token }}
       # No VERCEL_* here on purpose — propose mode cannot deploy.
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AUTOPILOT_PAT || github.token }}   # push the proposal branch as the PAT too
       - uses: oven-sh/setup-bun@v2
       - name: Install deps (retry — bun install transiently flakes fetching @sentry/cli's binary in CI)
         run: |
