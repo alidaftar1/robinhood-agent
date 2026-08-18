@@ -43,8 +43,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - name: Install deps
-        run: bun install
+      - name: Install deps (retry — bun install transiently flakes fetching @sentry/cli's binary in CI)
+        run: |
+          for i in 1 2 3; do
+            if bun install; then exit 0; fi
+            echo "bun install failed (attempt $i/3) — retrying in $((i*10))s"; sleep $((i*10))
+          done
+          echo "bun install failed after 3 attempts"; exit 1
       - name: Install Claude Code
         run: npm i -g @anthropic-ai/claude-code
       - name: Configure git for autonomous commits
