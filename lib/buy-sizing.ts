@@ -133,6 +133,32 @@ export function positionCapDollars(heldValue: number, maxPos: number): number {
   return Math.max(0, maxPos - heldValue);
 }
 
+// Enforce the per-position dollar cap across a set of buys — trimming each to its remaining
+// headroom (existing-holding value + new-buy value ≤ maxPos), or dropping it if there's no
+// meaningful room left. Applies to EVERY buy regardless of strategy tag: the influencer sleeve
+// caps the number of names but had no per-position dollar ceiling, so a single influencer buy —
+// or a shortlist name laundered through strategy:"influencer" — could take ~the whole book past
+// the cap (security audit 2026-08-18, finding [3]). Buy-time only: it stops a breach GROWING, it
+// never force-sells an already-over-cap position. Extra fields on each buy are preserved.
+export function applyPerPositionCap<T extends { symbol: string; dollarAmount: number }>(
+  buys: T[],
+  maxPos: number,
+  heldValueOf: (symbol: string) => number,
+): { buys: T[]; notes: string[] } {
+  const notes: string[] = [];
+  const capped = buys.flatMap((b): T[] => {
+    const room = positionCapDollars(heldValueOf(b.symbol), maxPos); // exact $ headroom, no floor-to-shares
+    if (b.dollarAmount <= room) return [b];                          // within cap — untouched
+    if (room < MIN_BUY_DOLLARS) {                                    // no meaningful room — drop the top-up
+      notes.push(`${b.symbol} buy DROPPED — position already at/over the $${maxPos.toFixed(0)} cap`);
+      return [];
+    }
+    notes.push(`${b.symbol} buy trimmed $${b.dollarAmount.toFixed(0)}→$${room.toFixed(0)} — would exceed the $${maxPos.toFixed(0)} per-position cap`);
+    return [{ ...b, dollarAmount: Number(room.toFixed(2)) }];
+  });
+  return { buys: capped, notes };
+}
+
 // Resolve a SELL intent to a concrete share-quantity string against the LIVE held quantity. The
 // model emits intent (exit:"all" / fraction) — NEVER a raw share count — so it can't mistype and
 // over/under-sell. Rules: full exit → the EXACT held string (no float drift, no dust remainder);

@@ -11,7 +11,7 @@ import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
 import { formatMarketContext, type SectorData } from "@/lib/market-data";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
-import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
+import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, applyPerPositionCap, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -1289,5 +1289,35 @@ describe("auth: requireCronAuth fails closed", () => {
 
   it("authorizes (null) a valid secret with the matching token", () => {
     expect(call("a-proper-18-char-secret", "Bearer a-proper-18-char-secret")).toBeNull();
+  });
+});
+
+// ─── Trade-safety: per-position cap binds every buy, incl. influencer (audit finding [3]) ───
+describe("applyPerPositionCap: caps EVERY buy incl. influencer-tagged", () => {
+  const heldValueOf = (s: string) => (s === "AAPL" ? 400 : 0);
+
+  it("trims a would-be-oversized buy laundered through strategy:influencer to the maxPos headroom, preserving other fields", () => {
+    // The exploit: tag a big buy influencer to skip the cap. maxPos 500, AAPL held $400 → $100 room.
+    const { buys, notes } = applyPerPositionCap(
+      [{ symbol: "AAPL", dollarAmount: 2000, strategy: "influencer" }],
+      500,
+      heldValueOf,
+    );
+    expect(buys).toHaveLength(1);
+    expect(buys[0].dollarAmount).toBe(100);
+    expect(buys[0].strategy).toBe("influencer"); // extra fields preserved
+    expect(notes[0]).toMatch(/AAPL buy trimmed/);
+  });
+
+  it("drops a top-up entirely when the position is already at/over cap", () => {
+    const { buys, notes } = applyPerPositionCap([{ symbol: "AAPL", dollarAmount: 300 }], 400, heldValueOf); // room 0
+    expect(buys).toHaveLength(0);
+    expect(notes[0]).toMatch(/DROPPED/);
+  });
+
+  it("leaves a within-cap buy untouched (no note)", () => {
+    const { buys, notes } = applyPerPositionCap([{ symbol: "NVDA", dollarAmount: 300 }], 500, heldValueOf); // new name, room 500
+    expect(buys[0].dollarAmount).toBe(300);
+    expect(notes).toHaveLength(0);
   });
 });

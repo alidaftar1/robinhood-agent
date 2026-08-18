@@ -11,7 +11,7 @@ import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, n
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
-import { fitNotionalBuysToBudget, usableNotionalBudget, positionCapDollars, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
+import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { fetchNewsSignals } from "@/lib/news";
@@ -550,30 +550,21 @@ export async function GET(request: Request) {
     // the model topped up ROST to 3sh = $749 (30.2%) and APA sat at $617 (24.9%) vs the ~$496 (20%)
     // cap. Soft prompt guidance doesn't reliably bind, so enforce the cap in code against
     // existing-holding value + new-buy value. Reduce the buy qty to fit, or drop it. Buy-time guard
-    // only — it stops the breach GROWING; it never force-sells an already-over-cap position. Main
-    // book only (influencer positions have their own 2-slot + sizing framework).
+    // only — it stops the breach GROWING; it never force-sells an already-over-cap position.
+    // Applies to INFLUENCER buys too: the sleeve caps the NUMBER of names (2 slots) but had no
+    // per-position dollar ceiling, so a single influencer buy — or a shortlist name laundered
+    // through strategy:"influencer" — could take ~the whole book past the 20% cap. The same maxPos
+    // ceiling now binds EVERY buy regardless of tag (security audit 2026-08-18, finding [3]).
     {
       const maxPos = maxPositionDollars(agenticBalance ? `$${agenticBalance.totalValue}` : portfolioCtx?.totalValue);
-      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
-        b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
       const heldValueOf = (sym: string) => {
         const p = (portfolioCtx?.positions ?? []).find(pp => pp.symbol === sym);
         if (!p) return 0;
         const price = priceMap.get(sym) ?? (parseFloat(p.avgCost) || 0);
         return (parseFloat(p.quantity) || 0) * price;
       };
-      const capNotes: string[] = [];
-      decision.buys = decision.buys.flatMap(b => {
-        if (isInfluencerBuy(b)) return [b];
-        const room = positionCapDollars(heldValueOf(b.symbol), maxPos); // exact $ headroom, no floor-to-shares
-        if (b.dollarAmount <= room) return [b];               // within cap — untouched
-        if (room < MIN_BUY_DOLLARS) {                         // no meaningful room — drop the top-up
-          capNotes.push(`${b.symbol} buy DROPPED — position already at/over the $${maxPos.toFixed(0)} cap`);
-          return [];
-        }
-        capNotes.push(`${b.symbol} buy trimmed $${b.dollarAmount.toFixed(0)}→$${room.toFixed(0)} — would exceed the $${maxPos.toFixed(0)} per-position cap`);
-        return [{ ...b, dollarAmount: Number(room.toFixed(2)) }];
-      });
+      const { buys: cappedBuys, notes: capNotes } = applyPerPositionCap(decision.buys, maxPos, heldValueOf);
+      decision.buys = cappedBuys;
       if (capNotes.length > 0) {
         console.log("V1_POSITION_CAP_GUARD", { maxPos, notes: capNotes });
         buySizingAdjustments.push(...capNotes); // surface in the run/email like other sizing adjustments
