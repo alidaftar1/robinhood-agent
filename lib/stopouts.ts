@@ -115,3 +115,20 @@ export async function getRecentSells(today: string): Promise<RecentSell[]> {
     return [];
   }
 }
+
+// Resolve a drop-check trigger set into what to SELL vs HOLD, given the reasoning model's
+// sympathy-hold list. Pure + deterministic — the two invariants that must never regress:
+//   1. TAKE-PROFITS ALWAYS SELL — never held on sympathy (a winner locking its gain is not a
+//      thesis-breakdown judgment call), even if the model erroneously lists it as a hold.
+//   2. A STOP-LOSS is SOLD unless the model explicitly held it on sympathy.
+// Buys are impossible here — the caller only ever builds sell orders from `exiting`.
+export function resolveDropCheckExits<T extends { position: { symbol: string }; reason: "stop" | "profit" }>(
+  dropped: T[],
+  sympathyHolds: Set<string>,
+): { exiting: T[]; heldOnSympathy: string[] } {
+  const exiting = dropped.filter((e) => e.reason === "profit" || !sympathyHolds.has(e.position.symbol));
+  const heldOnSympathy = dropped
+    .filter((e) => e.reason === "stop" && sympathyHolds.has(e.position.symbol))
+    .map((e) => e.position.symbol);
+  return { exiting, heldOnSympathy };
+}

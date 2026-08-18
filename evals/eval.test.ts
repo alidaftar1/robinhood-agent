@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll } from "bun:test";
+import { resolveDropCheckExits } from "@/lib/stopouts";
 import { requireCronAuth } from "@/lib/auth";
 import { SCENARIOS, formatFixtureMarketData } from "./fixtures";
 import { runMockAgent, runAnalysisAgent } from "./agent";
@@ -1319,5 +1320,30 @@ describe("applyPerPositionCap: caps EVERY buy incl. influencer-tagged", () => {
     const { buys, notes } = applyPerPositionCap([{ symbol: "NVDA", dollarAmount: 300 }], 500, heldValueOf); // new name, room 500
     expect(buys[0].dollarAmount).toBe(300);
     expect(notes).toHaveLength(0);
+  });
+});
+
+// ─── Trade-safety: drop-check exit resolution — take-profits always sell (audit finding [7]) ───
+describe("resolveDropCheckExits: what drop-check sells vs holds", () => {
+  const mk = (symbol: string, reason: "stop" | "profit") => ({ position: { symbol }, reason });
+
+  it("take-profits ALWAYS sell — never held on sympathy, even if the model erroneously lists one", () => {
+    const { exiting, heldOnSympathy } = resolveDropCheckExits([mk("PLTR", "profit"), mk("AAPL", "stop")], new Set(["PLTR", "AAPL"]));
+    expect(exiting.map((e) => e.position.symbol)).toContain("PLTR"); // profit sells despite being in holds
+    expect(heldOnSympathy).not.toContain("PLTR");
+    expect(heldOnSympathy).toEqual(["AAPL"]);                         // stop held on sympathy
+    expect(exiting.map((e) => e.position.symbol)).not.toContain("AAPL");
+  });
+
+  it("a stop-loss sells unless explicitly held on sympathy", () => {
+    const { exiting, heldOnSympathy } = resolveDropCheckExits([mk("NVDA", "stop"), mk("MSFT", "stop")], new Set(["MSFT"]));
+    expect(exiting.map((e) => e.position.symbol)).toEqual(["NVDA"]);
+    expect(heldOnSympathy).toEqual(["MSFT"]);
+  });
+
+  it("empty sympathy set → sell everything (capital-preservation default on decision failure)", () => {
+    const { exiting, heldOnSympathy } = resolveDropCheckExits([mk("NVDA", "stop"), mk("PLTR", "profit")], new Set());
+    expect(exiting).toHaveLength(2);
+    expect(heldOnSympathy).toHaveLength(0);
   });
 });

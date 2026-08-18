@@ -5,7 +5,7 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap } from "@/lib/market-data";
 import { saveRun, getRuns, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
-import { recordStopout } from "@/lib/stopouts";
+import { recordStopout, resolveDropCheckExits } from "@/lib/stopouts";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
@@ -102,7 +102,7 @@ export async function GET(request: Request) {
 
       return { position: p, change1d, isInfluencer, reason };
     })
-    .filter((e) => e.reason !== null);
+    .filter((e): e is { position: PositionSnapshot; change1d: number; isInfluencer: boolean; reason: "stop" | "profit" } => e.reason !== null);
 
   if (droppedPositions.length === 0) {
     const worst = positionsToCheck
@@ -148,138 +148,229 @@ export async function GET(request: Request) {
     const regimeLine = regime
       ? `MARKET REGIME (use for the sympathy check): ${regime.riskOn ? "RISK-ON" : "RISK-OFF"} — SPY $${regime.spy.toFixed(2)} is ${regime.riskOn ? "ABOVE" : "BELOW"} its 100-day average $${regime.ma.toFixed(2)}. ${regime.riskOn ? "Broad market is in an uptrend, so a single name cratering here is MORE likely name-specific — the drop is real, lean toward CUTTING." : "Broad market is in a downtrend, so a drop is MORE likely broad-market sympathy — a sympathy-HOLD (if fundamentals are intact) is more defensible."}\n`
       : "";
-    const urgentHeader = `🔴 RISK-EXIT RUN — ${today} 🔴
-These held positions hit an exit trigger and must be SOLD:
-  ${droppedNames}
-${hasStop ? `• stop-loss = down ≥${Math.abs(DROP_THRESHOLD_PCT)}% (thesis breakdown — cut it).\n` : ""}${hasProfit ? `• TAKE-PROFIT = an influencer pick up ≥${TAKE_PROFIT_PCT}% from buy. Lock the gain — these are hype names that round-trip; do NOT let it ride.\n` : ""}
-INSTRUCTIONS — deviate from standard process. This is a SELL-ONLY capital-preservation run:
-1. SELL every position listed above — both stop-loss and take-profit exits. Sell the ENTIRE held quantity of each, INCLUDING any fractional shares — quantities may be fractional (e.g. 2.371); sell the exact amount held, do NOT round down to whole shares (that would leave a dangling fraction and an incomplete exit). Use place_equity_order with type=market, time_in_force=gfd, market_hours=regular_hours.
-   - Exception (STOP-LOSS only): if it's clearly sympathy selling (broad market down, fundamentals unchanged), you may use judgment and HOLD the position. A TAKE-PROFIT exit is NOT optional — always lock the gain.
-${regimeLine}
-2. Keep ALL other positions UNCHANGED.
-3. Do NOT BUY anything. Do NOT place any buy order or call place_equity_order with side=buy. Hold the freed cash as-is — the NEXT MORNING rebalance redeploys SETTLED cash under the full ruleset (sector cap, book context). This run is one uncoordinated decision-maker; redeploying here would bypass the morning run's sector cap and could spend same-day sale proceeds that are still unsettled.
-4. Emit PORTFOLIO_SNAPSHOT as usual (trades should contain ONLY sells).
-Do NOT rebalance and do NOT open any new position. Only exit the listed positions.
-
-`;
-
-    const systemPrompt = urgentHeader + basePrompt;
+    const ACCOUNT = process.env.AGENTIC_ACCOUNT_ID ?? "";
+    const dryRun = new URL(request.url).searchParams.get("dryRun") === "1";
     const runTimestamp = new Date().toISOString();
 
-    const response = await (anthropic.beta.messages as any).create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: systemPrompt,
-      messages: [{
-        role: "user",
-        content: `RISK-EXIT: ${droppedPositions.map(({ position, change1d, reason }) => `${position.symbol} ${reason === "profit" ? `is up +${change1d.toFixed(1)}% from buy (take-profit)` : `is down ${change1d.toFixed(1)}% (stop-loss)`}`).join(", ")}. SELL these now and HOLD the freed cash — do NOT buy anything. Place the sell orders now.`,
-      }],
-      mcp_servers: [{
-        type: "url",
-        url: "https://agent.robinhood.com/mcp/trading",
-        name: "robinhood",
-        authorization_token: accessToken,
-      }],
-      betas: ["mcp-client-2025-04-04"],
-    });
+    // ── Reasoning pass — NO trade token (security audit 2026-08-18, finding [7]) ──────
+    // The reasoning model NEVER holds the Robinhood MCP token. It ONLY decides which STOP-LOSS
+    // names to hold on sympathy; a constrained executor (below) places the resulting sells.
+    // Take-profits are non-negotiable (always sold). A BUY cannot happen: no code path builds one
+    // (sells come only from held positions), the reasoning model that ingests untrusted headlines
+    // has no MCP token, and the MCP-enabled executor/verify calls receive only code-controlled
+    // sell/read prompts with no injected data. (place_equity_order is still a tool on the executor's
+    // MCP — safety is the code-controlled prompt + no injection reaching it, not tool removal.)
+    // Replaces the prior design where Sonnet held the token and "don't buy" was prompt-only, caught
+    // after the fact by a detector that couldn't un-place an order.
+    const stopEntries = droppedPositions.filter((e) => e.reason === "stop");
+    const sympathyHolds = new Set<string>();
+    let decisionText = "";
+    if (stopEntries.length > 0) {
+      const decisionSystem = `${basePrompt}
 
-    const textContent = response.content
-      .filter((b: any) => b.type === "text")
-      .map((b: any) => b.text)
-      .join("\n");
-
-    let portfolioAfter: { totalValue: string; cash: string; equity: string; unsettledCash?: string } | null = null;
-    let positions: PositionSnapshot[] = [];
-    let trades: TradeSnapshot[] = [];
-
-    const snapshotMatch = textContent.match(/^PORTFOLIO_SNAPSHOT:(.+)$/m);
-    if (snapshotMatch) {
+🔴 RISK-EXIT DECISION — ${today} 🔴  (DECISION ONLY — you place NO orders)
+These held positions hit a STOP-LOSS (down ≥${Math.abs(DROP_THRESHOLD_PCT)}%): ${stopEntries.map((e) => `${e.position.symbol} (${e.change1d.toFixed(1)}%)`).join(", ")}.
+Default action is to SELL each — a stop-loss is a thesis breakdown, cut it. The ONE exception: if a drop is clearly broad-market SYMPATHY selling (whole market down, fundamentals unchanged), you may HOLD that name and let it recover.
+${regimeLine}For EACH stop-loss name, decide SELL or HOLD-on-sympathy. (Take-profit exits are handled separately in code and are always sold — not your call.)
+Output EXACTLY one line, nothing else:
+SELL_DECISION:{"hold":["SYM",...]}
+List only the names to HOLD on sympathy; every stop-loss not listed will be SOLD. When in doubt, SELL (leave it out) — capital preservation is the default.`;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 60_000);
       try {
-        const snap = JSON.parse(snapshotMatch[1]);
-        const cash = parseFloat(snap.cash ?? "0");
-        // Seed the fresh detection-pass quotes, then fetch a live MARKET price for any surviving
-        // held symbol still missing from the map. Prevents the snapshot from falling back to the
-        // model's self-reported `p.price` (which it sometimes echoes as the position's cost basis),
-        // which would inject a phantom day-over-day move into the sleeve-return series.
-        for (const [sym, q] of liteMap) if (q && q.price > 0) priceMap.set(sym, q.price);
-        const snapPositions = (snap.positions ?? []) as any[];
-        const unresolved = await enrichPriceMap(snapPositions.map((p) => String(p.symbol ?? "")), priceMap);
-        if (unresolved.length > 0) console.warn("POSITION_PRICE_UNRESOLVED — drop-check snapshot falling back to reported price", { symbols: unresolved });
-        positions = snapPositions.map((p: any) => ({
-          symbol: String(p.symbol ?? ""),
-          quantity: String(p.quantity ?? "0"),
-          avgCost: String(p.avgCost ?? "0"),
-          price: String(priceMap.get(String(p.symbol ?? "")) ?? p.price ?? 0),
-        }));
-        trades = (snap.trades ?? []).map((t: any) => {
-          const sym = String(t.symbol ?? "");
-          const side = String(t.side ?? "");
-          // Sell-price capture: the model reports its PORTFOLIO_SNAPSHOT before the market order
-          // actually fills, and sometimes echoes the position's cost basis (e.g. 2026-07-08 recorded
-          // MSTR sold at its $98.54 buy price when it filled ~$92.93 — a real loss shown as flat).
-          // A market sell fills at ~the live price we quoted the instant the exit triggered, so for
-          // SELLS prefer that quote over the model's self-report. Falls back to the reported price
-          // if we have no live quote for the symbol.
-          const quoted = liteMap.get(sym)?.price;
-          const avgPrice = side === "sell" && typeof quoted === "number" && quoted > 0
-            ? String(quoted)
-            : String(t.avgPrice ?? "0");
-          return { symbol: sym, side, quantity: String(t.quantity ?? "0"), avgPrice, state: String(t.state ?? "submitted") };
-        });
-        const equity = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
-        const sellProceeds = trades.filter(t => t.side === "sell").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
-        // Prefer the LIVE balance (settled cash + true unsettled = cash − buying power) so this
-        // thin stop-loss run records ALL of today's unsettled proceeds — including the morning
-        // rebalance's sells — not just its own. Otherwise the dashboard's "Cash Clearing"
-        // undercounts on days with both a rebalance and a stop. Fall back to the model snapshot.
-        const live = await fetchAgenticBalance(anthropic, accessToken);
-        if (live) {
-          portfolioAfter = {
-            totalValue: (live.buyingPower + live.unsettled + equity).toFixed(2),
-            cash: live.buyingPower.toFixed(2),
-            equity: equity.toFixed(2),
-            unsettledCash: live.unsettled.toFixed(2),
-          };
-        } else {
-          portfolioAfter = {
-            totalValue: (cash + equity).toFixed(2),
-            cash: cash.toFixed(2),
-            equity: equity.toFixed(2),
-            unsettledCash: (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0).toFixed(2),
-          };
+        const resp = await (anthropic.beta.messages as any).create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1024,
+          system: decisionSystem,
+          messages: [{ role: "user", content: "Decide SELL or HOLD-on-sympathy for each stop-loss name. Output the SELL_DECISION line only." }],
+          // NO mcp_servers on purpose — this model cannot place orders. Execution is code-driven below.
+        }, { signal: ctrl.signal });
+        decisionText = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        const m = decisionText.match(/^SELL_DECISION:(.+)$/m);
+        if (m) {
+          const parsed = JSON.parse(m[1]) as { hold?: string[] };
+          for (const s of parsed.hold ?? []) {
+            const sym = String(s).toUpperCase();
+            // Only honor a HOLD for a name that actually triggered a stop — never invent a hold.
+            if (stopEntries.some((e) => e.position.symbol === sym)) sympathyHolds.add(sym);
+          }
         }
-        console.log("DROP_CHECK_SNAPSHOT_PARSED", { cash, sold: droppedPositions.map(({ position }) => position.symbol) });
       } catch (e) {
-        console.warn("DROP_CHECK_SNAPSHOT_PARSE_FAILED", e instanceof Error ? e.message : String(e));
+        // Fail-safe: on any decision error, HOLD NONE → sell every triggered stop. A stopped
+        // position defaulting to SOLD is the capital-preservation choice; never hold on an error.
+        console.warn("DROP_CHECK_DECISION_FAILED — defaulting to SELL all stops", e instanceof Error ? e.message : String(e));
+      } finally {
+        clearTimeout(timer);
       }
     }
 
-    // Record stop-loss exits so the next analysis run can REASON about re-entry instead
-    // of blindly re-buying the name it just dumped (the GOOGL 07-23→07-24 whipsaw). Only
-    // stop-losses — a take-profit exit went UP, so its re-entry is a different decision.
-    // Best-effort; a missed record only degrades to today's blind behavior.
-    for (const { position, change1d, reason } of droppedPositions) {
-      if (reason === "stop") await recordStopout(position.symbol, today, change1d);
+    // ── Code builds the sell set — full held quantity of every name we're exiting ─────
+    // Take-profits (always) + stop-losses not held on sympathy. Quantity is the EXACT held
+    // amount (incl. fractional) so no dangling fraction is left. Nothing else can be sold; and
+    // there is no code path that constructs a BUY.
+    const { exiting, heldOnSympathy } = resolveDropCheckExits(droppedPositions, sympathyHolds);
+    const sellsToExecute = exiting
+      .map((e) => ({ symbol: e.position.symbol, quantity: e.position.quantity }))
+      .filter((s) => (parseFloat(s.quantity) || 0) > 0);
+
+    let portfolioAfter: { totalValue: string; cash: string; equity: string; unsettledCash?: string } | null = null;
+    let positions: PositionSnapshot[] = [];
+    const trades: TradeSnapshot[] = [];
+
+    // DRY RUN: report the decision + the sells we WOULD place, then stop — place nothing, save nothing.
+    if (dryRun) {
+      return Response.json({
+        dryRun: true, today, scope: scope ?? "all",
+        triggered: droppedPositions.map((e) => ({ symbol: e.position.symbol, reason: e.reason, change1d: Number(e.change1d.toFixed(2)) })),
+        heldOnSympathy,
+        wouldSell: sellsToExecute,
+        decision: decisionText.slice(0, 200),
+      });
+    }
+
+    // ── Constrained executor (Haiku, MCP) — handed ONLY the sell list; cannot buy ─────
+    // Mirrors /api/trade's runSellSession/verifySells: place one at a time, verify each hit
+    // Robinhood via get_equity_orders, retry any that didn't ONCE, record only confirmed fills.
+    const mcpServer = { type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken };
+    const sellStrategyTag = (sym: string) => (influencerSymbols.has(sym) ? "influencer" : undefined);
+
+    async function runSellSession(sells: Array<{ symbol: string; quantity: string }>, timeoutMs: number): Promise<boolean> {
+      if (sells.length === 0) return true;
+      const lines = sells.map((s) => `- sell ${s.quantity} shares of ${s.symbol}`).join("\n");
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const resp = await (anthropic.beta.messages as any).create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 1024,
+          system: `Place these market sell orders one at a time for account ${ACCOUNT} using place_equity_order. Use type=market, time_in_force=gfd, market_hours=regular_hours. Quantities may be fractional (e.g. 2.37) — pass the exact quantity given. Place each order sequentially and wait for confirmation before the next. Do not skip any. Do not analyze — just execute.\n${lines}\nOutput: SELLS_DONE`,
+          messages: [{ role: "user", content: "Execute the sells now, one at a time." }],
+          mcp_servers: [mcpServer],
+          betas: ["mcp-client-2025-04-04"],
+        }, { signal: ctrl.signal });
+        const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        console.log("DROP_CHECK_SELLS_DONE", { count: sells.length, result: txt.slice(0, 100) });
+        return true;
+      } catch (e) {
+        console.warn("DROP_CHECK_SELLS_FAILED", e instanceof Error ? e.message : String(e));
+        return false;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    type VerifiedSell = { symbol: string; quantity: string; avgPrice: string; state: string };
+    async function verifySells(): Promise<Map<string, VerifiedSell>> {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 20_000);
+      try {
+        const resp = await (anthropic.beta.messages as any).create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 512,
+          system: `Call get_equity_orders for account ${ACCOUNT} filtered to today (${today}). Output exactly one line:
+VERIFIED_SELLS:[{"symbol":"XX","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
+Include only SELL orders placed today that are filled or pending (not cancelled/rejected). If none, output VERIFIED_SELLS:[]. Output nothing else.`,
+          messages: [{ role: "user", content: "Verify today's sell orders." }],
+          mcp_servers: [mcpServer],
+          betas: ["mcp-client-2025-04-04"],
+        }, { signal: ctrl.signal });
+        const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        // Tolerate the model pretty-printing the array across lines despite "one line": take the
+        // first complete [...] after the marker. verifySells is the ONLY source of truth for what
+        // actually filled now, so a parse miss = a real sell recorded as still-held (phantom holding).
+        const idx = txt.indexOf("VERIFIED_SELLS:");
+        if (idx === -1) return new Map();
+        const arr = txt.slice(idx).match(/\[[\s\S]*\]/);
+        if (!arr) return new Map();
+        return new Map((JSON.parse(arr[0]) as VerifiedSell[]).map((o) => [o.symbol, o]));
+      } catch {
+        return new Map();
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    if (sellsToExecute.length > 0) {
+      const ok = await runSellSession(sellsToExecute, 120_000);
+      if (!ok) console.warn("DROP_CHECK_SELL_SESSION_ABORTED — verifying anyway (an order may have filled before the abort)");
+      // Verify REGARDLESS of ok: an aborted/timed-out place session can still have filled orders on
+      // Robinhood. verifySells reads get_equity_orders (ground truth), so we record what truly filled
+      // and never assume "nothing executed" just because the place call errored.
+      let verified = await verifySells();
+      let missing = sellsToExecute.filter((s) => !verified.has(s.symbol));
+      if (missing.length > 0) {
+        console.warn("DROP_CHECK_SELL_VERIFY_MISSING — retrying", { missing: missing.map((s) => s.symbol) });
+        await runSellSession(missing, 90_000); // retry only the dropped orders
+        verified = await verifySells();
+        missing = sellsToExecute.filter((s) => !verified.has(s.symbol));
+      }
+      // Record ONLY confirmed sells. A decided sell with no confirmed order didn't execute —
+      // leave it unrecorded (the position stays held) and alert. Prefer the REAL fill price from
+      // get_equity_orders; fall back to the live detection quote.
+      for (const s of sellsToExecute) {
+        const v = verified.get(s.symbol);
+        if (!v) continue;
+        const fill = parseFloat(v.avgPrice) > 0 ? v.avgPrice : String(liteMap.get(s.symbol)?.price ?? priceMap.get(s.symbol) ?? 0);
+        trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, strategy: sellStrategyTag(s.symbol) });
+      }
+      if (missing.length > 0) {
+        console.warn("DROP_CHECK_SELL_STILL_MISSING", { missing: missing.map((s) => s.symbol) });
+        await sendAlert(
+          `⚠️ Drop-check sells not confirmed — ${today}`,
+          `These exits did NOT execute even after a retry: ${missing.map((s) => s.symbol).join(", ")}.\nThey are still held. The next run will re-attempt, or sell them manually in Robinhood.`,
+        );
+      }
+    }
+
+    // Surviving positions = held minus CONFIRMED sells (a sympathy-hold or an unconfirmed sell stays held).
+    const soldSymbols = new Set(trades.filter((t) => t.side === "sell").map((t) => t.symbol));
+    const survivors = heldPositions.filter((p) => !soldSymbols.has(p.symbol));
+    // Live-fetch a market price for any survivor missing from priceMap/liteMap — otherwise it falls
+    // back to avgCost, injecting a phantom 0% day-over-day move into the sleeve-return series (the
+    // old snapshot path guarded this with the same enrichPriceMap call).
+    await enrichPriceMap(survivors.map((p) => p.symbol), priceMap);
+    positions = survivors
+      .map((p) => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost, price: String(priceMap.get(p.symbol) ?? liteMap.get(p.symbol)?.price ?? p.avgCost) }));
+    const equity = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
+    const sellProceeds = trades.filter((t) => t.side === "sell").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+    // Prefer the LIVE balance (settled + true unsettled) so this thin run records ALL of today's
+    // unsettled proceeds — incl. the morning rebalance's sells — not just its own. Fall back to
+    // the prior run's cash + this run's proceeds.
+    const live = await fetchAgenticBalance(anthropic, accessToken);
+    if (live) {
+      portfolioAfter = {
+        totalValue: (live.buyingPower + live.unsettled + equity).toFixed(2),
+        cash: live.buyingPower.toFixed(2),
+        equity: equity.toFixed(2),
+        unsettledCash: live.unsettled.toFixed(2),
+      };
+    } else {
+      const cash = parseFloat(previousRun?.portfolioAfter?.cash ?? "0");
+      portfolioAfter = {
+        totalValue: (cash + equity).toFixed(2),
+        cash: cash.toFixed(2),
+        equity: equity.toFixed(2),
+        unsettledCash: (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0).toFixed(2),
+      };
+    }
+
+    // Record stop-loss exits we ACTUALLY sold (not sympathy-holds) so the next analysis can reason
+    // about re-entry instead of blindly re-buying the name it just dumped. Take-profits went UP —
+    // a different re-entry decision, so skip those. Best-effort.
+    for (const e of stopEntries) {
+      if (soldSymbols.has(e.position.symbol)) await recordStopout(e.position.symbol, today, e.change1d);
     }
 
     // Carry forward influencer tracking: surviving influencer positions only (sold ones drop out).
     const influencerPositions = positions.filter((p) => influencerSymbols.has(p.symbol));
 
-    // SELL-ONLY invariant backstop: this run must never buy. We can't un-place an order (no
-    // off-process cancels), so if the model disobeyed and placed a buy, surface it LOUDLY —
-    // in the log, the saved summary, and the alert — so it's never silent.
-    const unexpectedBuys = trades.filter((t) => t.side === "buy");
-    const buyWarn = unexpectedBuys.length > 0
-      ? `\n\n⚠️ SELL-ONLY VIOLATION — drop-check placed ${unexpectedBuys.length} unexpected BUY(s): ${unexpectedBuys.map((t) => `${t.symbol} x${t.quantity} @ ${t.avgPrice}`).join(", ")}. Investigate — this run is not supposed to buy.`
-      : "";
-    if (unexpectedBuys.length > 0) {
-      console.error("DROP_CHECK_UNEXPECTED_BUY", unexpectedBuys.map((t) => `${t.symbol} x${t.quantity} @ ${t.avgPrice}`));
-    }
+    const sympathyNote = heldOnSympathy.length > 0 ? `\n\nHELD on sympathy (stop-loss judged broad-market): ${heldOnSympathy.join(", ")}.` : "";
+    const soldList = trades.filter((t) => t.side === "sell").map((t) => `${t.symbol} x${t.quantity} @ ${t.avgPrice}`).join(", ") || "none confirmed";
 
     await saveRun({
       timestamp: runTimestamp,
       date: today,
-      summary: `[RISK-EXIT] Sold: ${droppedNames}${buyWarn}\n\n${textContent}`,
+      summary: `[RISK-EXIT] Sold: ${soldList}.${sympathyNote}`,
       portfolioAfter,
       positions,
       trades,
@@ -291,12 +382,12 @@ Do NOT rebalance and do NOT open any new position. Only exit the listed position
 
     const dashboardUrl = await buildDashboardLoginUrl(process.env.APP_URL ?? "");
     await sendAlert(
-      `${unexpectedBuys.length > 0 ? "⚠️ Risk-Exit + UNEXPECTED BUY" : hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
-      `Sold ${droppedNames}.${buyWarn}\n\nCheck the dashboard:\n${dashboardUrl}`
+      `${hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
+      `Sold: ${soldList}.${sympathyNote}\n\nCheck the dashboard:\n${dashboardUrl}`,
     );
 
-    console.log("DROP_CHECK_COMPLETE", { sold: droppedPositions.map(({ position }) => position.symbol) });
-    return Response.json({ success: true, sold: droppedPositions.map(({ position }) => position.symbol), date: today });
+    console.log("DROP_CHECK_COMPLETE", { sold: [...soldSymbols], heldOnSympathy });
+    return Response.json({ success: true, sold: [...soldSymbols], heldOnSympathy, date: today });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("DROP_CHECK_ERROR", message);
