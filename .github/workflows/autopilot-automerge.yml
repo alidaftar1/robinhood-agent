@@ -45,8 +45,13 @@ jobs:
         run: bash scripts/check-automerge-safe.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
 
       - uses: oven-sh/setup-bun@v2
-      - name: Install deps
-        run: bun install
+      - name: Install deps (retry — bun install transiently flakes fetching @sentry/cli's binary in CI)
+        run: |
+          for i in 1 2 3; do
+            if bun install; then exit 0; fi
+            echo "bun install failed (attempt $i/3) — retrying in $((i*10))s"; sleep $((i*10))
+          done
+          echo "bun install failed after 3 attempts"; exit 1
       - name: Secret/PII scan (gate)
         run: bun run check:secrets
       - name: Typecheck + build (gate)
@@ -54,7 +59,11 @@ jobs:
 
       - name: Auto-merge (PAT → triggers deploy-on-merge)
         env:
-          GH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+          # AUTOPILOT_PAT (contents + pull-requests: write) — the same PAT that opens the PR. Merging
+          # with a PAT (not GITHUB_TOKEN) is what lets the resulting merge trigger deploy-on-merge.
+          # The old GH_DISPATCH_TOKEN was scoped for workflow-dispatch (actions:write) only, so
+          # `gh pr merge` failed auth (exit 4) the first time this step actually ran (2026-08-19).
+          GH_TOKEN: ${{ secrets.AUTOPILOT_PAT }}
         run: |
           echo "All gates passed + trading-neutral + auto-safe label → merging PR #${{ github.event.pull_request.number }}"
           gh pr merge "${{ github.event.pull_request.number }}" \
