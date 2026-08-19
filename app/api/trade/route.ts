@@ -7,7 +7,7 @@ import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, type Portfol
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
-import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, type MomentumSignal } from "@/lib/influencer-signals";
+import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -628,6 +628,32 @@ export async function GET(request: Request) {
       });
       if (rejected.length > 0) {
         console.log("INFLUENCER_DOWNTREND_REJECTED", { rejected });
+      }
+    }
+
+    // ── Pre-buy net-score guard: reject influencer picks below the mandatory net≥3 floor ──
+    // The influencer-signals prompt tells the model "if ANY ticker has NET score ≥ 3, you SHOULD
+    // buy 1-2 of them" and lists only price-cap / imminent-earnings / no-settled-cash as valid
+    // reasons to skip the sleeve — a sub-floor net score has no stated exception, including a
+    // rumor-driven catalyst. Soft prompt guidance doesn't reliably bind (2026-08-19: PYPL bought at
+    // net=2 on an unconfirmed Stripe/Advent acquisition rumor, below its own mandatory floor).
+    // Enforce the floor in code, same pattern as the downtrend guard above.
+    {
+      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
+        b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
+      const rejected: string[] = [];
+      decision.buys = decision.buys.filter(b => {
+        if (!isInfluencerBuy(b)) return true; // main strategy has no net-score floor
+        const net = influencerNet[b.symbol] ?? 0;
+        if (net < INFLUENCER_BUY_FLOOR) {
+          rejected.push(`${b.symbol} (net=${net}, below the ${INFLUENCER_BUY_FLOOR} floor)`);
+          return false;
+        }
+        return true;
+      });
+      if (rejected.length > 0) {
+        console.log("INFLUENCER_NET_FLOOR_REJECTED", { rejected });
+        buySizingAdjustments.push(...rejected.map(r => `Influencer buy REJECTED — ${r}`));
       }
     }
 
