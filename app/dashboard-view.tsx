@@ -1,6 +1,6 @@
 import React from "react";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
-import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, probBeatsSpy, sharpeProbPositive, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
+import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, probBeatsSpy, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
 // Native `title` tooltips are slow and don't show on tap. This is a pure-CSS
@@ -434,7 +434,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const influencerDdN = returnSeries.filter(p => p.influencer != null).length; // sleeve days behind the drawdown
   const influencerSharpe = computeSharpe(runs, r => r.influencerDailyReturn);
   const influencerBeatsSpy = probBeatsSpy(runs, r => r.influencerDailyReturn); // confidence it beats SPY
-  const influencerRewardReal = influencerSharpe ? sharpeProbPositive(influencerSharpe.sharpe, influencerSharpe.n) : null; // P(reward > 0)
   // SPY's Sharpe over the SLEEVE's window (from its series start), computed from consecutive runs so
   // the daily SPY returns aren't distorted by the sleeve's sparse active days — the benchmark bar.
   const inflSpySharpe = seriesSince.influencer
@@ -607,11 +606,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerSharpe != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. Two confidence figures: 'beats SPY' is the chance the slice genuinely beats the index (the hard, decision-relevant bar, from its daily excess returns) — 'not luck' is the easier chance its reward-for-risk is merely positive vs random noise (Sharpe > 0). ~50% = a coin flip for each; they climb only as a real edge holds up over more days. Statistical confidence levels, not guarantees." />
+              <Tip style={s.perfLabel} label="Reward for the Risk" def="How much return the slice earns for the wild swings it takes — is it being paid for the risk? (This is the Sharpe ratio.) The real bar is beating SPY's Sharpe over the same window, shown as 'vs SPY' — a very volatile sleeve has to clear a high bar to be worth it over just holding the index. The 'beats SPY' figure is the chance the slice genuinely beats the index (the hard, decision-relevant bar, from its daily excess returns): ~50% = a coin flip, and it climbs only as a real edge over the index holds up over more days. A statistical confidence level, not a guarantee." />
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${influencerSharpe.sharpe >= inflSpySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{influencerBeatsSpy ? `~${Math.round(influencerBeatsSpy.prob * 100)}% beats SPY · ` : ""}{influencerRewardReal != null ? `~${Math.round(influencerRewardReal * 100)}% not luck · ` : ""}{influencerSharpe.n} days</span>
+              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${influencerSharpe.sharpe >= inflSpySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{influencerBeatsSpy ? `~${Math.round(influencerBeatsSpy.prob * 100)}% beats SPY · ` : ""}{influencerSharpe.n} days</span>
             </div>
           )}
           {influencerPositions.length > 0 && (
