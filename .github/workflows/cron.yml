@@ -15,7 +15,19 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Call endpoint
+      - name: Validate endpoint input (default-deny allowlist)
+        env:
+          ENDPOINT: ${{ github.event.inputs.endpoint }}
         run: |
-          curl -sf --max-time 290 -X GET "${{ env.APP_URL }}${{ github.event.inputs.endpoint }}" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+          case "$ENDPOINT" in
+            /api/autopilot|/api/debug|/api/drop-check|/api/earnings-exit|/api/influencer-cache|/api/influencer-ledger|/api/inject-run|/api/insider|/api/runs|/api/signal-ledger|/api/trade|/api/verify) ;;
+            *) echo "::error::disallowed endpoint: $ENDPOINT"; exit 1 ;;
+          esac
+
+      - name: Call endpoint
+        env:
+          ENDPOINT: ${{ github.event.inputs.endpoint }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -sf --max-time 290 -X GET "${APP_URL}${ENDPOINT}" \
+            -H "Authorization: Bearer ${CRON_SECRET}"
