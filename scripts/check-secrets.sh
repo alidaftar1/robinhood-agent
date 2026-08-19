@@ -33,17 +33,45 @@ EXCLUDES=(
   ":(exclude)*.lockb"
 )
 
-# Lines matching these are legitimate (env-var refs, CI secret refs, service
-# placeholders) and are filtered out before a hit is reported.
+# Text matching these is legitimate (env-var refs, CI secret refs, service
+# placeholders) and doesn't count as a hit on its own.
 ALLOWLIST='process\.env|os\.environ|import\.meta\.env|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|secrets\.[A-Z_]+|onboarding@resend\.dev|noreply@|example\.(com|org)|YOUR_|placeholder|<[A-Za-z_]+>|xxxx'
 
 hits=0
 report() { # <name> <extended-regex>
-  local name="$1" pat="$2" out
-  out=$(git grep -nIE "$pat" -- . "${EXCLUDES[@]}" 2>/dev/null | grep -vE "$ALLOWLIST")
+  local name="$1" pat="$2" matches out=""
+  # -o: the MATCHED SPAN only, not the whole line. Testing ALLOWLIST against the whole
+  # line (as this used to) drops a real hardcoded fallback secret whenever the same line
+  # also happens to mention process.env/$VAR elsewhere — exactly the fail-open shape this
+  # scanner exists to catch (`TOKEN = process.env.TOKEN || "hardcoded-fallback-literal"`).
+  # Testing only the matched span means an unrelated env-var reference on the same line
+  # can no longer mask a real literal.
+  matches=$(git grep -nIoE "$pat" -- . "${EXCLUDES[@]}" 2>/dev/null)
+  while IFS= read -r m; do
+    [ -z "$m" ] && continue
+    local filepath="${m%%:*}" rest="${m#*:}"
+    local linenum="${rest%%:*}" span="${rest#*:}"
+    # Narrow carve-out: `process.env.NAME = "literal"` (test/setup code WRITING a value INTO
+    # process.env — e.g. evals/dashboard-auth.test.ts's fixtures) is not a leak; it's the
+    # opposite shape from the dangerous `NAME = process.env.NAME || "literal"` READ-with-
+    # fallback idiom this pattern exists to catch. Distinguish by requiring the SAME variable
+    # name immediately fused to "process.env." with a plain "=" on the full source line — not
+    # just "process.env appears somewhere on this line" (that blanket version is the exact
+    # masking bug this rewrite fixes elsewhere).
+    local varname
+    varname=$(printf '%s' "$span" | grep -oE '^[A-Za-z0-9_]+')
+    local fullline=""
+    [ -n "$varname" ] && fullline=$(sed -n "${linenum}p" "$filepath" 2>/dev/null)
+    if printf '%s' "$fullline" | grep -qE "process\\.env\\.${varname}[[:space:]]*=[[:space:]]*[\"']"; then
+      continue
+    fi
+    if ! printf '%s' "$span" | grep -qE "$ALLOWLIST"; then
+      out="${out}${m}"$'\n'
+    fi
+  done <<< "$matches"
   if [ -n "$out" ]; then
     printf '✗ %s\n' "$name"
-    printf '%s\n\n' "$out" | sed 's/^/    /'
+    printf '%s\n' "$out" | sed 's/^/    /'
     hits=1
   fi
 }
@@ -55,7 +83,15 @@ report "GitHub token"               '(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9
 report "AWS access key id"          'AKIA[0-9A-Z]{16}'
 report "URL with embedded creds"    'https?://[A-Za-z0-9._~%-]+:[^@/[:space:]"]+@'
 report "Redis/DB URL with auth"     '(rediss?|postgres(ql)?|mongodb(\+srv)?)://[^@[:space:]"]*:[^@[:space:]"]+@'
-report "Hardcoded secret literal"   "(API_?KEY|APIKEY|ACCESS_TOKEN|AUTH_TOKEN|BEARER_TOKEN|CLIENT_SECRET|PASSWORD|PRIVATE_KEY)[\"']?[[:space:]]*[:=][[:space:]]*[\"'][A-Za-z0-9/_+=.-]{16,}[\"']"
+report "Resend API key"             're_[A-Za-z0-9_]{16,}'
+# Vercel tokens are opaque random strings with no distinguishing prefix/shape to pattern-
+# match by value — "Hardcoded secret literal" below already catches a hardcoded VERCEL_TOKEN
+# by variable name (the *_TOKEN suffix), which is the only reliable signal available for it.
+# Operator alternation includes ||/?? (not just :/=) so this also catches the classic
+# fail-open fallback idiom itself — `process.env.SECRET || "hardcoded-literal"` — not just
+# a bare `SECRET = "literal"` assignment. Before this, that idiom wasn't matched at all,
+# regardless of the allowlist: the old :/= -only version never even reached the literal.
+report "Hardcoded secret literal"   "([A-Za-z0-9]+_)?(SECRET|TOKEN|KEY|PASSWORD|APIKEY)[\"']?[[:space:]]*(:|=|\\|\\||\\?\\?)[[:space:]]*[\"'][A-Za-z0-9/_+=.-]{16,}[\"']"
 
 # ── Personal / account info ──────────────────────────────────────────────────
 report "Personal email address"     '[A-Za-z0-9._%+-]+@(gmail|yahoo|hotmail|outlook|live|icloud|aol|proton(mail)?)\.[a-z]{2,}'
