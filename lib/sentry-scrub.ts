@@ -6,13 +6,17 @@
 //      DASHBOARD_SECRET) — lands in event.request.url / event.request.query_string, and in
 //      navigation breadcrumbs, for that one request.
 //   2. Outgoing calls to market-data providers (FMP `?apikey=`, NewsAPI `?apiKey=`, YouTube
-//      `?key=`, see lib/analyst.ts, lib/earnings.ts, lib/market-data.ts,
-//      lib/influencer-signals.ts) — Sentry's HTTP auto-instrumentation (tracesSampleRate: 1.0)
-//      records these as child spans on every trade/analysis run, storing the request URL in
-//      event.spans[].data, and as 'http' breadcrumbs — a different capture point from #1,
-//      needing separate handling.
+//      `?key=`, Finnhub `?token=` — see lib/analyst.ts, lib/earnings.ts, lib/market-data.ts,
+//      lib/influencer-signals.ts) — Sentry's fetch auto-instrumentation (tracesSampleRate: 1.0)
+//      records these as child spans AND as 'http' breadcrumbs on every trade/analysis run.
+//      Verified against the installed SDK's own source (node_modules/@sentry/node-core's
+//      outgoingFetchRequest.js / node's http.js): the query string lands in span.data under
+//      "http.url"/"url.full" (full URL) and separately "http.query" (query only), and in a
+//      breadcrumb's data under the same "http.query" key — Sentry's own sanitizer already
+//      strips the query from breadcrumb.data.url, but NOT from http.query, so that field still
+//      needs scrubbing here.
 // Matched case-insensitively since real-world providers spell it differently
-// (apikey/apiKey/APIKEY) — see [[lib/market-data.ts]] etc. for the actual call sites.
+// (apikey/apiKey/APIKEY) — see the lib/ call sites above for the actual param names used.
 const SENSITIVE_PARAMS = new Set(["token", "key", "apikey"]);
 
 function isSensitiveParam(name: string): boolean {
@@ -53,13 +57,37 @@ function scrubBareQueryString(raw: string): string {
   return changed ? params.toString() : raw;
 }
 
+// Shared by both spans and http breadcrumbs — both carry the same attribute shape
+// (verified against the SDK source, see the file-header comment): a full-URL field under a
+// key ending "url"/"full" ("url", "http.url", "url.full") and/or a query-only field ending
+// "query" ("http.query"), which need different parsing since a bare query string isn't valid
+// URL input on its own.
+function scrubUrlLikeData(data: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...data };
+  for (const key of Object.keys(out)) {
+    const value = out[key];
+    if (typeof value !== "string") continue;
+    const lower = key.toLowerCase();
+    if (lower.endsWith("query")) {
+      out[key] = scrubBareQueryString(value);
+    } else if (lower.endsWith("url") || lower.endsWith("full")) {
+      out[key] = scrubUrl(value);
+    }
+  }
+  return out;
+}
+
 function scrubBreadcrumb(breadcrumb: import("@sentry/nextjs").Breadcrumb): import("@sentry/nextjs").Breadcrumb {
   const data = breadcrumb.data;
   if (!data) return breadcrumb;
-  for (const field of ["url", "to", "from"] as const) {
-    const value = data[field];
-    if (typeof value === "string") data[field] = scrubUrl(value);
+  const scrubbed = scrubUrlLikeData(data as Record<string, unknown>);
+  // Navigation breadcrumbs' to/from fields don't end in "url"/"query"/"full", so
+  // scrubUrlLikeData's key-suffix sniffing doesn't reach them — handle explicitly.
+  for (const field of ["to", "from"] as const) {
+    const value = scrubbed[field];
+    if (typeof value === "string") scrubbed[field] = scrubUrl(value);
   }
+  breadcrumb.data = scrubbed;
   return breadcrumb;
 }
 
@@ -79,29 +107,9 @@ function scrubQueryString(qs: QueryParams): QueryParams {
   return out;
 }
 
-// Outgoing-HTTP-call spans (the market-data-provider requests, auto-instrumented at
-// tracesSampleRate: 1.0) store their URL in span.data under a key whose exact name varies by
-// SDK/semantic-convention version ("url", "http.url", "url.full") and sometimes as a
-// query-only fragment ("http.query", "url.query") rather than a full URL — key-name-sniff
-// which scrubber applies, since a bare query string and a full URL need different parsing.
-function scrubSpanData(data: Record<string, unknown>): Record<string, unknown> {
-  const out = { ...data };
-  for (const key of Object.keys(out)) {
-    const value = out[key];
-    if (typeof value !== "string") continue;
-    const lower = key.toLowerCase();
-    if (lower.endsWith("query")) {
-      out[key] = scrubBareQueryString(value);
-    } else if (lower.endsWith("url") || lower.endsWith("full")) {
-      out[key] = scrubUrl(value);
-    }
-  }
-  return out;
-}
-
 /**
- * Scrubs event.request.url, event.request.query_string, span data (outgoing-HTTP-call spans),
- * and any breadcrumb URL fields. Shared by beforeSend / beforeSendTransaction.
+ * Scrubs event.request.url, event.request.query_string, span data (outgoing-fetch-call
+ * spans), and any breadcrumb URL/query fields. Shared by beforeSend / beforeSendTransaction.
  */
 export function scrubEvent<
   T extends {
@@ -113,7 +121,7 @@ export function scrubEvent<
   if (event.request?.url) event.request.url = scrubUrl(event.request.url);
   if (event.request?.query_string) event.request.query_string = scrubQueryString(event.request.query_string);
   event.breadcrumbs = event.breadcrumbs?.map(scrubBreadcrumb);
-  event.spans = event.spans?.map((span) => (span.data ? { ...span, data: scrubSpanData(span.data) } : span));
+  event.spans = event.spans?.map((span) => (span.data ? { ...span, data: scrubUrlLikeData(span.data) } : span));
   return event;
 }
 
