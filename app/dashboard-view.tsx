@@ -419,8 +419,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // returns (strategy − SPY). The decision-relevant bar for a benchmarked book (vs the weaker
   // "Sharpe > 0"). ~50% = a coin flip; climbs only as a real edge over the index holds over more days.
   const mainBeatsSpy = probBeatsSpy(v1MainRuns, r => r.mainDailyReturn);
-  // The weaker "reward is positive vs noise" bar (P Sharpe > 0) — shown in the risk panel, not as the headline.
-  const mainRewardReal = mainSharpe ? sharpeProbPositive(mainSharpe.sharpe, mainSharpe.n) : null;
 
   // "% of days the MAIN book beat SPY" — daily alpha win rate for the core strategy (not the
   // blended book). Isolates skill instead of measuring the market's own up-day frequency.
@@ -689,15 +687,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 {bookBeta ? `${betaDescription(bookBeta.beta)}${bookBeta.coveragePct < 70 ? " · partial data" : ""}` : "need current holdings"}
               </span>
             </div>
-            {mainRewardReal != null && (
-              <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
-                <Tip style={s.perfLabel} label="Reward Confidence" def="The chance the main book's reward-for-risk (Sharpe) is genuinely positive — i.e. it's earning money adjusted for risk rather than random noise. This is the easy 'better than cash / not luck' bar; it clears readily in an up market. The tougher, decision-relevant bar — the chance it actually BEATS the S&P — is on the Reward-for-the-Risk card up top (an active book has to beat the index, not just zero)." />
-                <span style={{ ...s.perfValue, color: "#e5e5e5" }}>
-                  ~{Math.round(mainRewardReal * 100)}%
-                </span>
-                <span style={s.perfSince}>odds the reward is real (not noise)</span>
-              </div>
-            )}
             <div style={{ ...s.perfStat, flex: "1 1 150px", minWidth: 0 }}>
               <Tip style={s.perfLabel} label="Cash on Hand" def="Cash that's settled and ready to trade right now, as a % of the account. Does not include money from recent sales that hasn't cleared yet." />
               <span style={{ ...s.perfValue, color: cashPct != null && cashPct > 10 ? "#e8943a" : "#e5e5e5" }}>
