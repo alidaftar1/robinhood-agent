@@ -1370,3 +1370,13 @@ describe("V1 prompt: market-headlines block is defended against injection", () =
     expect(prompt).toContain("Fed holds rates steady");
   });
 });
+
+// ─── V1 prompt: loss-discipline for materially-underwater main-book holdings (STLD 2026-08-19) ───
+describe("V1 prompt: underwater main-book holdings must earn their keep", () => {
+  const prompt = buildV1AnalysisPrompt("2026-08-19", "(t)", { buyingPower: "$500", totalValue: "$2500", positions: [] });
+  it("requires a NAME-SPECIFIC reason to keep a MAIN name >10% below cost (not a sector rationale)", () => {
+    expect(prompt).toContain("LOSS DISCIPLINE");
+    expect(prompt).toMatch(/10% below entry|down >10% from cost/);
+    expect(prompt).toContain("NAME-SPECIFIC");
+  });
+});
