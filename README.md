@@ -35,9 +35,10 @@ All crons are scheduled via **Vercel** (`vercel.json`), which sends `Authorizati
 | 7:30am | `/api/trade` | Daily rebalance |
 | 8:00am | `/api/autopilot` | Monitoring email + self-heal |
 | 10:00am | `/api/drop-check` | Stop-loss: exit any position down ≥5% intraday |
-| 12:00pm | `/api/earnings-exit` | Exit positions with earnings within 2 days |
 
 `.github/workflows/cron.yml` is kept as a manual fallback (`workflow_dispatch`) for triggering individual endpoints on demand.
+
+`/api/earnings-exit` is **not** on the schedule — it's a manual/latent fallback (a blunt force-sell of any holding within ~3 days of earnings). Earnings are instead handled as a per-position judgment in the daily `/api/trade` run (hold serial beaters through the print, trim/exit weak-thesis names), so the mechanical pre-earnings exit is deliberately kept off the cron.
 
 ### Signal stack
 
