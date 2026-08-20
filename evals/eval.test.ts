@@ -909,6 +909,13 @@ describe("influencer candidates carry the SAME universal risk flags as the main 
   it("renders a bearish ⚡NEWS↓ material event on a candidate", () => {
     expect(row(new Map(), new Map([["PLTR", { direction: "-", summary: "DOJ probe reported" }]]))).toMatch(/⚡NEWS↓ "DOJ probe reported"/);
   });
+  it("states a HARD net≥3 floor (no rumor/catalyst exception) and that an empty sleeve is correct", () => {
+    const full = formatInfluencerSignals(cache, new Map([["PLTR", 161.64]]), mom, new Map(), new Map(), "2026-08-05", new Map());
+    expect(full).toContain("score floor is HARD");
+    expect(full).toMatch(/NEVER buy a pick with net < 3/);
+    expect(full).toMatch(/UNCONFIRMED M&A/);
+    expect(full).toMatch(/buy NOTHING in the sleeve/);
+  });
 });
 
 describe("V1 notional prompt (deterministic — no LLM)", () => {

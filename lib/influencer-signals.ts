@@ -571,10 +571,11 @@ This is a deliberate HIGH-RISK / HIGH-REWARD sleeve — ~25% of the total portfo
 allocated to following these creators' picks. It runs ALONGSIDE your main momentum book,
 NOT instead of it. Do not skip it just because your momentum table looks better.
 
-ACTION REQUIRED — fill the influencer sleeve when a qualifying signal exists:
+FILL THE SLEEVE ONLY ON A QUALIFYING SIGNAL — an empty sleeve is a valid, correct outcome:
 • "net" = creator BUY consensus (confidence-weighted) MINUS any AVOID calls from other creators. A higher net = broader, less-contested agreement. When a row shows a "(X buy − Y avoid)" split, creators DISAGREE on it — treat it as weaker than a clean-consensus name of the same net.
-• If ANY ticker below has NET score ≥ 3, you SHOULD buy 1–2 of them this run (target ~25% of the portfolio),
-  UNLESS every qualifying pick is disqualified (price above the per-position cap, ⚠⚠ imminent earnings, or no settled cash).
+• The score floor is HARD. Buy an influencer pick ONLY if its NET score is ≥ 3. If ANY ticker below is ≥ 3, you SHOULD buy 1–2 of them this run (target ~25% of the portfolio), UNLESS every qualifying pick is disqualified (price above the per-position cap, ⚠⚠ imminent earnings, or no settled cash).
+• NEVER buy a pick with net < 3 — there is NO catalyst / rumor / "I like the thesis" exception to the score floor; a net < 3 is simply not a qualifying signal. In particular, an UNCONFIRMED M&A / acquisition / deal rumor is NOT a buy reason: rumor pops are binary (they evaporate if the deal is denied), and this sleeve buys creator momentum CONSENSUS, not deal speculation.
+• If NO pick is ≥ 3 this run, buy NOTHING in the sleeve — that is the CORRECT, expected outcome on a day with no qualifying signal, NOT a reason to stretch for a sub-threshold name. Do not manufacture a rationale to force a buy; leave the sleeve in cash and state "no pick ≥ 3" as the disqualifier.
 • HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
 • Same per-position cap as the main strategy, min $50. Size each buy as a DOLLAR AMOUNT ("dollarAmount") — the broker fills fractional shares; do not compute a share count.
 • Prefer the highest NET score; a net-6 pick is a strong, broadly-covered, uncontested signal — do not ignore it. Between two similar nets, prefer the one with NO avoid split (cleaner consensus).
