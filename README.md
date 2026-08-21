@@ -65,6 +65,34 @@ rank = sharpe5d × 0.6 + sharpe14d × 0.4
 
 ---
 
+## The YouTube-influencer sleeve (experimental)
+
+Alongside the momentum book, ~25% of the portfolio is a separate, deliberately **high-risk / high-reward** sleeve that trades on what finance YouTubers are actually saying — an independent, momentum-oriented crowd signal that occasionally surfaces names the quality-momentum screen would never buy.
+
+**Signal pipeline** (refreshed every weekday at 6am PT via `/api/influencer-cache`):
+
+1. Pull recent videos from a fixed set of **10 finance channels** (Meet Kevin, Tom Nash, Ticker Symbol YOU, Joseph Carlson, InvestAnswers, …).
+2. Fetch each video's **transcript** (Supadata; falls back to title + description) — the real thesis lives in what they *say*, not the clickbait title.
+3. Claude Haiku extracts a structured **buy / avoid / insight** per video. Transcript text is delimited + spotlighted so it can't inject instructions into the extractor.
+4. Aggregate into a **net conviction score** per ticker = confidence-weighted buys (high = 3, medium = 2, low = 0) − avoid mentions, then validate every ticker for real tradeable liquidity.
+
+**Entry rules (enforced in code, not just the prompt):**
+
+- **Hard floor** — buy a pick only if its **net score ≥ 3**. No catalyst/rumor exception; if nothing clears the bar, buying *nothing* is the correct outcome.
+- **Falling-knife screen** — reject any pick down **>8% over 5 days** or **>15% below its 10-day high** (popularity ≠ price trend — a crashing stock is often the most-talked-about one), unless it has reclaimed its 5-day average.
+- **Per-position cap** applied in code regardless of the influencer tag; at most ~2 sleeve slots at a time.
+
+**Exit rules** (`/api/drop-check?scope=influencer`, checked several times a day — far more often than the main book's once-daily stop, because these names are volatile):
+
+- **−5% stop-loss from the buy price** (tighter, and measured from cost rather than the main book's intraday-from-prev-close).
+- **+40% take-profit**, always sold in code — a winner locking its gain is never held on sympathy.
+
+**Attribution ledger** — every qualifying pick is logged with its entry price, and `/api/influencer-ledger` tracks each channel's **forward returns and alpha vs SPY** (which YouTubers' picks actually work, stripped of the market's move). Small, correlated samples: a ranking hint, not a verdict.
+
+> This sleeve is really an experiment in turning a noisy, unstructured, adversarial signal (video transcripts) into a disciplined, guardrailed strategy. It has **no proven edge** — it's sized small precisely so it can take these higher-variance bets without threatening the book.
+
+---
+
 ## Security & responsible disclosure
 
 This agent trades **real money**, so security is a hard constraint, not an afterthought. The repo enforces a set of **Security Invariants** (documented in [`CLAUDE.md`](./CLAUDE.md)):
