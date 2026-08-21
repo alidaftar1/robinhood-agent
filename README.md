@@ -65,6 +65,18 @@ rank = sharpe5d × 0.6 + sharpe14d × 0.4
 
 ---
 
+## Security & responsible disclosure
+
+This agent trades **real money**, so security is a hard constraint, not an afterthought. The repo enforces a set of **Security Invariants** (documented in [`CLAUDE.md`](./CLAUDE.md)):
+
+- a reasoning LLM **never holds the trade token** — it emits a decision, code applies the guardrails, and a constrained executor places only pre-computed orders;
+- **every buy is capped in code**, regardless of strategy;
+- **auth fails closed** on a missing secret (no `SECRET ?? ""` fallback), and no secret ever lives in a URL or a tracked file — a committed scanner (`bun run check:secrets`) gates every push and prod deploy.
+
+Much of this hardening was set off by a **responsible disclosure from [@hirad121](https://github.com/hirad121)**, who spotted a fail-open authentication gap — which then prompted a full whole-repo security audit and a wave of fixes, several contributed by Hirad himself. See [`SECURITY.md`](./SECURITY.md) to report a vulnerability.
+
+---
+
 ## Stack
 
 | Layer | Tech |
