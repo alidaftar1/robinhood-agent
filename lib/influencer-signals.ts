@@ -41,6 +41,10 @@ export interface InfluencerCache {
   tickerCounts: Record<string, number>;
   // Bearish/avoid tickers across all signals, by mention count (informational)
   avoidCounts?: Record<string, number>;
+  // Transcript pipeline health for this refresh. Lets the email distinguish "creators said
+  // nothing actionable" (videos>0, withTranscript>0, empty signals) from "the transcript source
+  // is down/quota-exhausted" (videos>0, withTranscript=0) — otherwise both silently show nothing.
+  transcriptCoverage?: { videos: number; withTranscript: number };
 }
 
 // ─── Redis ─────────────────────────────────────────────────────────────────────
@@ -235,11 +239,14 @@ async function transcriptCacheSet(videoId: string, text: string): Promise<void> 
 // fetch from unblocked infra — direct YouTube caption scraping is blocked from datacenter IPs,
 // verified 0/22 in prod). Auto-Whispers videos with no captions. Fail-safe: returns null on any
 // error, timeout, or missing key → caller falls back to title+description.
-async function fetchTranscript(videoId: string): Promise<string | null> {
+async function fetchTranscript(videoId: string, quota?: { exhausted: boolean }): Promise<string | null> {
   const key = process.env.SUPADATA_API_KEY;
   if (!key) return null;
   const cached = await transcriptCacheGet(videoId);
-  if (cached !== null) return cached === "" ? null : cached; // cache hit ("" = known-none)
+  if (cached !== null) return cached === "" ? null : cached; // cache hit ("" = known-none) — free, never 429s
+  // Per-run breaker: once the plan quota is hit, every remaining NETWORK call 429s identically — skip
+  // the fetch + retries. Placed AFTER the cache read so already-cached transcripts are still served.
+  if (quota?.exhausted) return null;
   const url = `https://api.supadata.ai/v1/transcript?url=https://youtu.be/${videoId}`;
   // Retry on 429 with backoff: the free tier is 1 req/sec, and we fetch a batch concurrently,
   // so most of a batch gets rate-limited on the first try — back off instead of dropping the
@@ -248,6 +255,18 @@ async function fetchTranscript(videoId: string): Promise<string | null> {
     try {
       const res = await fetch(url, { headers: { "x-api-key": key }, signal: AbortSignal.timeout(20000) });
       if (res.status === 429) {
+        // Two very different 429s. The free tier's 1-req/sec RATE limit is transient → back off and
+        // retry. The monthly PLAN QUOTA being exhausted is NOT retryable — every call this run will
+        // 429 identically. Match the EXACT error code ("limit-exceeded"), NOT a loose substring: a
+        // rate-limit code like "rate-limit-exceeded" *contains* that substring and would false-trip
+        // the breaker on an ordinary throttle → a self-inflicted, run-wide transcript outage.
+        let errorCode = "";
+        try { errorCode = (JSON.parse(await res.text()) as { error?: string }).error ?? ""; } catch { /* non-JSON body → treat as transient */ }
+        if (errorCode === "limit-exceeded") {
+          if (quota) quota.exhausted = true;
+          console.warn("SUPADATA_QUOTA_EXHAUSTED — plan usage limit hit; skipping transcript fetches for the rest of this run");
+          return null;
+        }
         await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
         continue;
       }
@@ -365,7 +384,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   );
 
   if (candidateVideos.length === 0) {
-    const empty: InfluencerCache = { refreshedAt: new Date().toISOString(), signals: [], tickerCounts: {} };
+    const empty: InfluencerCache = { refreshedAt: new Date().toISOString(), signals: [], tickerCounts: {}, transcriptCoverage: { videos: 0, withTranscript: 0 } };
     await cacheSet(empty);
     return empty;
   }
@@ -378,12 +397,13 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   // via Haiku. Transcript is the real signal; title+description is the fallback. Batch-throttled.
   const signals: InfluencerSignal[] = [];
   let transcriptHits = 0;
+  const quota = { exhausted: false }; // per-run Supadata plan-quota breaker (see fetchTranscript)
   const BATCH = 5;
   for (let i = 0; i < candidateVideos.length; i += BATCH) {
     const batch = candidateVideos.slice(i, i + BATCH);
     const extracted = await Promise.allSettled(
       batch.map(async v => {
-        const transcript = await fetchTranscript(v.item.id.videoId);
+        const transcript = await fetchTranscript(v.item.id.videoId, quota);
         if (transcript) transcriptHits++;
         const result = await extractSignal(
           anthropic,
@@ -452,6 +472,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
     signals: validatedSignals,
     tickerCounts,
     avoidCounts,
+    transcriptCoverage: { videos: candidateVideos.length, withTranscript: transcriptHits },
   };
   await cacheSet(cache);
   return cache;

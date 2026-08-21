@@ -405,6 +405,19 @@ export async function GET(request: Request) {
     .slice(0, 5)
     .map((s) => ({ channel: s.channelName, text: s.insight as string }));
   const hasInfluencerDigest = topBuys.length > 0 || topAvoids.length > 0 || insights.length > 0;
+  // When the digest is empty, say WHY — a silently-omitted section can't distinguish "creators said
+  // nothing actionable" from "the transcript pipeline is down/quota-exhausted" (they both render as
+  // nothing). Coverage is the tell: 0 candidate videos = upstream YouTube fetch problem; LOW coverage
+  // (transcripts on < half the videos — normally ~all, since Supadata auto-Whispers captionless ones)
+  // = the transcript source is down or over quota, whether it fails from the start or trips mid-run.
+  const cov = influencerCache?.transcriptCoverage;
+  const influencerEmptyReason = !influencerCache
+    ? "the weekly cache is unavailable — the 6am refresh may have failed"
+    : cov && cov.videos === 0
+      ? "no candidate videos were found this week — verify the upstream YouTube fetch isn't failing"
+      : cov && cov.withTranscript < cov.videos / 2
+        ? `low transcript coverage (${cov.withTranscript}/${cov.videos} videos) — the transcript source (Supadata) looks down or over its plan quota, so the sleeve ran mostly blind on titles only`
+        : "creators named no qualifying picks this week — an empty sleeve is a valid outcome";
 
   // ─── Email ────────────────────────────────────────────────────────────────────
 
@@ -489,7 +502,10 @@ export async function GET(request: Request) {
     ${insights.length > 0 ? `<p style="margin:8px 0 2px;font-size:13px"><strong>Insights:</strong></p><ul style="margin:0;padding-left:20px;font-size:13px">${insights.map((i) => `<li><span style="color:#6b7280">[${i.channel}]</span> ${i.text.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</li>`).join("")}</ul>` : ""}
     <p style="margin:6px 0 0;font-size:11px;color:#9ca3af">Informational — buys feed the sleeve (score ≥ 3); avoids/insights are visibility only, not wired into trades.</p>
   </div>`
-    : ""}
+    : `<div style="background:#f9fafb;border-left:4px solid #9ca3af;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🎬 Influencer signals this week:</strong>
+    <p style="margin:6px 0 0;font-size:13px;color:#6b7280">None — ${influencerEmptyReason}.</p>
+  </div>`}
 
   ${ledgerChannels.length > 0
     ? `<div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:12px 16px;margin-bottom:16px;border-radius:4px">
