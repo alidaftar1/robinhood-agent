@@ -2,6 +2,10 @@
 
 An autonomous equity trading agent built with Claude AI and the Robinhood MCP server. Runs daily on Vercel, rebalances a real portfolio, and emails a summary report — no human required.
 
+### ▶ [Live dashboard — real portfolio vs. the S&P 500](https://robinhood-agent.vercel.app/public)
+
+Updated every trading day. No login required — it's the real account (number redacted).
+
 > ⚠️ **Disclaimer — not financial advice.** This is a personal, experimental engineering project built for **educational and portfolio purposes only**. It is **not financial, investment, or trading advice**, and nothing here is a recommendation to buy or sell any security. The author is **not a licensed financial advisor**. Autonomous trading carries real risk: this software trades a real brokerage account and **can and does lose money**; past performance does not indicate future results. The software is provided **"as is," without warranty of any kind**, and the author accepts **no liability** for any loss or damage arising from its use. It is **not affiliated with, endorsed by, or sponsored by** Robinhood, Anthropic, or any other company named here. **Use at your own risk.**
 
 ## How it works
@@ -23,7 +27,7 @@ Claude Haiku places all buy orders, one at a time, using only settled cash (T+1 
 **Session 4 — Haiku verification (MCP)**
 Calls `get_equity_orders` to confirm every order actually exists in Robinhood. Replaces unconfirmed placeholders with real fill prices. Sends an alert if any order is missing.
 
-The run is saved to Upstash Redis and surfaced on a dashboard.
+The run is saved to Upstash Redis and surfaced on a [live dashboard](https://robinhood-agent.vercel.app/public).
 
 ### Additional crons
 
