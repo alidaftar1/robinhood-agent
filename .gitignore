@@ -7,3 +7,7 @@ node_modules/
 .DS_Store
 robinhood-autopilot-logs/
 package-lock.json
+
+# Personal LinkedIn / marketing prep — not part of the product; screenshots can contain PII
+Linkedin Post1 Assets/
+linkedin-assets/
