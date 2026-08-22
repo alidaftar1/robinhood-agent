@@ -95,9 +95,24 @@ report "Hardcoded secret literal"   "([A-Za-z0-9]+_)?(SECRET|TOKEN|KEY|PASSWORD|
 
 # ── Personal / account info ──────────────────────────────────────────────────
 report "Personal email address"     '[A-Za-z0-9._%+-]+@(gmail|yahoo|hotmail|outlook|live|icloud|aol|proton(mail)?)\.[a-z]{2,}'
-report "Account number literal"      '[Aa]ccount[^A-Za-z0-9]{0,16}(number|num|id|#)?[^A-Za-z0-9]{0,4}[0-9]{8,}'
+# "account" (any casing, singular/plural) followed within ~24 non-digit chars by an 8+ digit
+# run. Broadened 2026-08-21: the old pattern required the digits to sit within 4 chars of an
+# optional "number/num/id/#" token, so `Account numbers (670284256, ...)` — the plural word plus
+# the " (" before the digits — slipped straight through and reached the public repo.
+report "Account number literal"      '[Aa]ccount[sS]?[^0-9]{0,24}[0-9]{8,}'
 
-# Exact account IDs — only checked when exported (never committed to this file).
+# Exact account IDs — only matched by VALUE when the env vars are present (they are never
+# committed to this file). When they're absent the check above is the only account-number
+# defense, so say so LOUDLY: a silent skip here is exactly what let two account numbers reach
+# the public repo (2026-08-21) — a green scan must never be mistaken for "IDs verified".
+if [ -z "${PERSONAL_ACCOUNT_ID:-}" ] || [ -z "${AGENTIC_ACCOUNT_ID:-}" ]; then
+  MISSING=""
+  [ -z "${PERSONAL_ACCOUNT_ID:-}" ] && MISSING="PERSONAL_ACCOUNT_ID"
+  [ -z "${AGENTIC_ACCOUNT_ID:-}" ]  && MISSING="${MISSING:+$MISSING, }AGENTIC_ACCOUNT_ID"
+  echo "⚠️  check-secrets: exact account-ID matching DISABLED for: ${MISSING}."
+  echo "    Relying on the generic 'Account number literal' pattern only. Export the real ID(s)"
+  echo "    (env or .env.local) to also match your account numbers by exact value."
+fi
 [ -n "${PERSONAL_ACCOUNT_ID:-}" ] && report "Personal account ID (\$PERSONAL_ACCOUNT_ID)" "${PERSONAL_ACCOUNT_ID}"
 [ -n "${AGENTIC_ACCOUNT_ID:-}" ]  && report "Agentic account ID (\$AGENTIC_ACCOUNT_ID)"   "${AGENTIC_ACCOUNT_ID}"
 
