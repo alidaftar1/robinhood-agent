@@ -44,24 +44,27 @@ All crons are scheduled via **Vercel** (`vercel.json`), which sends `Authorizati
 
 `/api/earnings-exit` is **not** on the schedule — it's a manual/latent fallback (a blunt force-sell of any holding within ~3 days of earnings). Earnings are instead handled as a per-position judgment in the daily `/api/trade` run (hold serial beaters through the print, trim/exit weak-thesis names), so the mechanical pre-earnings exit is deliberately kept off the cron.
 
-### Signal stack
+### Signal stack (quality-momentum)
 
-The agent ranks stocks by a composite momentum score:
+The agent builds a deterministic **shortlist** ("the rails") that the LLM may pick from, then reasons within it. Two signals do the work — one gates, one ranks:
 
-```
-rank = sharpe5d × 0.6 + sharpe14d × 0.4
-```
+- **Quality — the GATE.** A name must clear an SEC-derived quality percentile (0–1) to be a candidate at all.
+- **12-1 momentum — the RANK.** Among quality-eligible names with *positive* 12-1 momentum (12-month return **excluding the most recent month** — the classic momentum factor; skipping the last month avoids short-term reversal noise), the shortlist is ranked by that momentum, subject to the per-sector cap.
 
-- **sharpe5d** — 5-day return / annualized volatility (primary: what's moving *now*)
-- **sharpe14d** — 14-day return / annualized volatility (confirmation: sustained trend vs spike)
+The following are **context signals** shown alongside each candidate — they inform the LLM's choice *within* the rails but do not change eligibility or the ranking:
+
 - **α (alpha)** — return vs SPY over the same window
 - **Insider buys** — recent EDGAR Form 4 filings by officers/directors
-- **Analyst upgrades** — recent rating changes with price targets
+- **Analyst upgrades / raised price targets** — recent rating changes
+- **Material news (⚡NEWS)** — a distilled corporate event (M&A, guidance, litigation, product) with direction
+- **Earnings-beat record** — last-8-quarter surprise history for held names near earnings
+
+> **Note:** short-horizon risk-adjusted momentum (`mom5`/`mom14`, "sharpe5d/14d") was the *primary* ranking signal in an earlier version (V0). It is **not** used in the live strategy — short-window returns mean-revert, so 12-1 momentum replaced it.
 
 ### Safety rails
 
 - **T+1 settlement**: buys only use settled cash, never same-day sell proceeds
-- **Position cap**: no single buy exceeds 40% of total portfolio value
+- **Position cap**: no single position exceeds ~20% of book value (max of $400 or 20%); a soft ~40% cap per sector
 - **Earnings blackout**: exits all positions before imminent earnings (≤2 days)
 - **Stop-loss**: intraday drop ≥5% triggers an immediate sell
 - **Minimum buy**: $50 floor — no fractional deploys
