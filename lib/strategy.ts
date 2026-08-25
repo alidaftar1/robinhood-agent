@@ -289,6 +289,7 @@ Use these ONLY to gauge the regime — risk-on vs risk-off, Fed / rates / tariff
     ? `\nRECENTLY STOPPED OUT — you SOLD these on a −5% breakdown; do NOT reflexively re-buy:
 ${recentStopouts.map(s => `  ${s.symbol} — stopped ${s.date} at ${s.changePct.toFixed(1)}% (${Math.round((new Date(today).getTime() - new Date(s.date).getTime()) / 86_400_000)}d ago)`).join("\n")}
 A stopped name may reappear on the shortlist — that alone is NOT a reason to re-enter (the list ranks 12-month momentum + quality, which a one-day breakdown barely moves). DEFAULT: leave a recently-stopped name OUT and let the weakness resolve. Re-buy one ONLY with a SPECIFIC reason the breakdown no longer applies — a confirmed reversal, a fresh catalyst (★INS / ⚡↑), or clear evidence it was broad-market sympathy selling that has since reversed — NOT "high quality/momentum" (that's merely why it's on the list). If you re-buy a stopped name, your thesis MUST justify it explicitly.
+ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a ⚡NEWS↑ / analyst upgrade or raised price target / ★INS insider buy is DATED AFTER the stop date shown. A catalyst that predates the stop (already public when it broke down) does NOT count — don't waste the slot re-buying without a genuinely post-stop development.
 `
     : "";
   // Companion to the stop-out block for the OTHER re-entry blind spot: names you DISCRETIONARILY
@@ -299,6 +300,7 @@ A stopped name may reappear on the shortlist — that alone is NOT a reason to r
     ? `\nRECENTLY SOLD (discretionary — you rotated these OUT of the main book, NOT a stop); a re-buy is CHURN unless a genuine fresh reason exists:
 ${recentSells.map(s => `  ${s.symbol} — sold ${s.date} @ $${s.price.toFixed(2)} (${Math.round((new Date(today).getTime() - new Date(s.date).getTime()) / 86_400_000)}d ago)`).join("\n")}
 A name you just sold WILL reappear on the shortlist (that's why you held it before) — that alone is NOT a reason to re-buy it. DEFAULT: do NOT re-buy a name you sold in the last few days. Re-buy ONLY with a SPECIFIC fresh reason the exit no longer applies — a NEW catalyst since the sale (★INS / ⚡↑ / ⚡NEWS↑), or a confirmed change in the thesis — NOT "it's on the shortlist / momentum is strong" (both were true when you sold it, so re-buying at the same level realizes the round-trip for nothing). If you re-buy a recently-sold name, your thesis MUST name the specific new development.
+ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a ⚡NEWS↑ / analyst upgrade or raised price target / ★INS insider buy is DATED AFTER the sale date shown. A catalyst that was already public when you sold (its date is on/before the sale date shown — e.g. the same earnings you sold into) does NOT count; only a genuinely post-sale development lets the re-buy through.
 `
     : "";
   // Days until a held name's earnings (from the FMP-backfilled dates), so the model can SEE which

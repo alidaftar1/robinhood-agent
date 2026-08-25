@@ -13,6 +13,7 @@ import { formatMarketContext, type SectorData } from "@/lib/market-data";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, applyPerPositionCap, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
+import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -1327,6 +1328,72 @@ describe("applyPerPositionCap: caps EVERY buy incl. influencer-tagged", () => {
     const { buys, notes } = applyPerPositionCap([{ symbol: "NVDA", dollarAmount: 300 }], 500, heldValueOf); // new name, room 500
     expect(buys[0].dollarAmount).toBe(300);
     expect(notes).toHaveLength(0);
+  });
+});
+
+// ─── Anti-churn re-buy cooldown gate (2026-08-25: 9 re-entries/30 runs; ROST catalyst predated sale) ───
+describe("findPostSaleCatalyst: only a catalyst DATED AFTER the exit counts", () => {
+  it("accepts bullish news dated after the exit", () => {
+    expect(findPostSaleCatalyst("2026-08-20", { news: { direction: "+", summary: "acquired X", date: "2026-08-22" } }))
+      .toMatch(/NEWS/);
+  });
+  it("REJECTS the ROST pattern — a catalyst that predates the sale (earnings 08-19, sold 08-20)", () => {
+    expect(findPostSaleCatalyst("2026-08-20", { news: { direction: "+", summary: "raised guidance", date: "2026-08-19" } }))
+      .toBeNull();
+  });
+  it("REJECTS a same-day catalyst (not STRICTLY after the exit)", () => {
+    expect(findPostSaleCatalyst("2026-08-20", { news: { direction: "+", summary: "news", date: "2026-08-20" } })).toBeNull();
+  });
+  it("ignores bearish news even if dated after the exit", () => {
+    expect(findPostSaleCatalyst("2026-08-20", { news: { direction: "-", summary: "lawsuit", date: "2026-08-22" } })).toBeNull();
+  });
+  it("accepts an analyst upgrade / raised PT after the exit but not a downgrade", () => {
+    expect(findPostSaleCatalyst("2026-08-20", { analyst: [{ action: "upgrade", firmShort: "GS", date: "2026-08-21" }] })).toMatch(/FIRM/);
+    expect(findPostSaleCatalyst("2026-08-20", { analyst: [{ action: "downgrade", firmShort: "GS", date: "2026-08-21" }] })).toBeNull();
+  });
+  it("accepts an insider buy filed after the exit", () => {
+    expect(findPostSaleCatalyst("2026-08-20", { insider: [{ filingDate: "2026-08-23" }] })).toMatch(/INS/);
+  });
+  it("returns null when there are no signals at all", () => {
+    expect(findPostSaleCatalyst("2026-08-20", {})).toBeNull();
+  });
+});
+
+describe("applyRebuyCooldown: drops a churny main re-buy, keeps legit + non-cooldown + influencer", () => {
+  const cd = (m: Record<string, CooldownExit>) => (s: string) => m[s] ?? null;
+  const notInf = () => false;
+  it("DROPS a re-buy of a recently-sold main name with no post-sale catalyst (the churn)", () => {
+    const { buys, notes } = applyRebuyCooldown(
+      [{ symbol: "ROST", dollarAmount: 90 }],
+      notInf,
+      cd({ ROST: { symbol: "ROST", date: "2026-08-20", kind: "sold" } }),
+      () => null, // no catalyst postdates the sale
+    );
+    expect(buys).toHaveLength(0);
+    expect(notes[0]).toMatch(/ROST re-buy BLOCKED.*churn/);
+  });
+  it("KEEPS the re-buy when a catalyst postdates the exit", () => {
+    const { buys, notes } = applyRebuyCooldown(
+      [{ symbol: "MU", dollarAmount: 90 }],
+      notInf,
+      cd({ MU: { symbol: "MU", date: "2026-08-18", kind: "stopped" } }),
+      () => "⚡NEWS↑ new deal (2026-08-21)",
+    );
+    expect(buys).toHaveLength(1);
+    expect(notes).toHaveLength(0);
+  });
+  it("KEEPS a buy of a name not in cooldown", () => {
+    const { buys } = applyRebuyCooldown([{ symbol: "GOOGL", dollarAmount: 90 }], notInf, cd({}), () => null);
+    expect(buys).toHaveLength(1);
+  });
+  it("SKIPS influencer buys via the injected predicate (own guards; exits aren't tracked here)", () => {
+    const { buys } = applyRebuyCooldown(
+      [{ symbol: "PLTR", dollarAmount: 90, strategy: "influencer" }],
+      (b) => b.strategy === "influencer",
+      cd({ PLTR: { symbol: "PLTR", date: "2026-08-20", kind: "sold" } }),
+      () => null,
+    );
+    expect(buys).toHaveLength(1); // not dropped despite being in cooldown
   });
 });
 

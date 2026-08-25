@@ -72,7 +72,10 @@ export function daysAgo(from: string, to: string): number {
 // churn; registry #14). Same hybrid: tracking + the churn FLAG are deterministic
 // (code); whether a re-buy is justified by a genuine fresh catalyst is the LLM's call.
 const SELLS_KEY = "recent-sells";
-const RECENT_SELL_DAYS = 5; // churn is a within-a-few-days re-buy; an exit re-bought weeks later isn't churn
+const RECENT_SELL_DAYS = 7; // churn is a within-a-week re-buy; 7 calendar days covers a full trading
+                            // week INCLUDING a weekend (a Fri sell / next-Thu re-buy is 6 cal days —
+                            // the old 5-day window let that slip through). Also feeds the re-buy
+                            // cooldown gate (lib/rebuy-cooldown.ts).
 
 export interface RecentSell {
   symbol: string;

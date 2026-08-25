@@ -8,6 +8,7 @@ import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, form
 import { getQualityScores } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
+import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -654,6 +655,41 @@ export async function GET(request: Request) {
       if (rejected.length > 0) {
         console.log("INFLUENCER_NET_FLOOR_REJECTED", { rejected });
         buySizingAdjustments.push(...rejected.map(r => `Influencer buy REJECTED — ${r}`));
+      }
+    }
+
+    // ── Anti-churn re-buy cooldown (MAIN book): drop a re-buy of a recently sold/stopped name
+    // unless a catalyst (bullish ⚡NEWS / analyst upgrade / ★INS insider buy) is dated AFTER the exit.
+    // Promotes the advisory RE-ENTRY / ROTATION-CHURN flags above into an ENFORCED gate — measured
+    // 2026-08-25: 9 re-entries in 30 runs (ILMN ×3); ROST sold 08-20 then re-bought citing earnings
+    // dated 08-19, a "catalyst" that PREDATED the sale. A catalyst already public when it sold can't
+    // justify the round-trip. Influencer buys are skipped (they have their own net-floor/downtrend guards).
+    {
+      const cooldownOf = (sym: string): CooldownExit | null => {
+        const sold = recentSells.find(s => s.symbol === sym);
+        const stopped = recentStopouts.find(s => s.symbol === sym);
+        if (!sold && !stopped) return null;
+        // If in both registries, the catalyst must beat the MOST RECENT exit.
+        if (sold && stopped) return sold.date >= stopped.date
+          ? { symbol: sym, date: sold.date, kind: "sold" }
+          : { symbol: sym, date: stopped.date, kind: "stopped" };
+        return sold
+          ? { symbol: sym, date: sold.date, kind: "sold" }
+          : { symbol: sym, date: stopped!.date, kind: "stopped" };
+      };
+      const catalystOf = (sym: string, exitDate: string) => findPostSaleCatalyst(exitDate, {
+        news: newsSignals.get(sym),
+        analyst: marketData.analystRatings[sym],
+        insider: marketData.insiderBuys[sym],
+      });
+      // Same influencer classification as the net-floor guard above (tag OR off-shortlist candidate).
+      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
+        b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
+      const { buys: cooled, notes: cooldownNotes } = applyRebuyCooldown(decision.buys, isInfluencerBuy, cooldownOf, catalystOf);
+      decision.buys = cooled;
+      if (cooldownNotes.length > 0) {
+        console.log("REBUY_COOLDOWN_BLOCKED", { blocked: cooldownNotes });
+        buySizingAdjustments.push(...cooldownNotes);
       }
     }
 
