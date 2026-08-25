@@ -1,5 +1,5 @@
 /**
- * Braintrust eval runner — analysis path (Sonnet + buildAnalysisPrompt).
+ * Braintrust eval runner — analysis path (Sonnet + the LIVE V1 prompt via buildV1PromptFromScenario).
  * Matches the actual production decision-making path, not the Haiku execution layer.
  *
  * Usage:
@@ -9,11 +9,10 @@
  */
 
 import { initExperiment } from "braintrust";
-import { SCENARIOS, formatFixtureMarketData } from "./fixtures";
+import { SCENARIOS, buildV1PromptFromScenario } from "./fixtures";
 import { runAnalysisAgent } from "./agent";
 import { runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
-import { buildAnalysisPrompt } from "@/lib/strategy";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
@@ -33,29 +32,8 @@ let total = 0;
 for (const scenario of SCENARIOS) {
   process.stdout.write(`  ${scenario.name} ... `);
 
-  const insiderBuys = scenario.insiderBuys ?? {};
-  const earningsOverrides = scenario.earningsOverrides ?? {};
-  const analystRatings = scenario.analystRatings ?? {};
-
-  const systemPrompt = buildAnalysisPrompt(
-    TODAY,
-    formatFixtureMarketData(
-      scenario.marketState ?? "default",
-      insiderBuys,
-      earningsOverrides,
-      analystRatings,
-      scenario.stockOverrides ?? {},
-    ),
-    {
-      buyingPower: scenario.buyingPower,
-      totalValue: scenario.totalValue,
-      positions: scenario.positions.map((p) => ({
-        symbol: p.symbol,
-        quantity: p.quantity,
-        avgCost: p.average_buy_price,
-      })),
-    },
-  );
+  const insiderBuys = scenario.insiderBuys ?? {}; // used by the insider-awareness scorer + span logging
+  const systemPrompt = buildV1PromptFromScenario(scenario, TODAY);
 
   const span = experiment.startSpan({ name: scenario.name });
 

@@ -24,7 +24,7 @@ export const maxDuration = 300;
 
 // Risk section injected into the buy prompt: current book β vs SPY + sector exposure.
 // Gives the agent the "how much beta / sector risk am I already carrying" baseline so
-// it can weigh each new buy's MARGINAL impact (see buildAnalysisPrompt) instead of
+// it can weigh each new buy's MARGINAL impact (see buildV1AnalysisPrompt) instead of
 // picking names in isolation. Beta per holding is looked up from today's market data.
 function buildRiskSection(
   positions: Array<{ symbol: string; quantity: string; avgCost: string }>,

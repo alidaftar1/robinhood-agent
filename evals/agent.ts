@@ -1,7 +1,7 @@
 /**
  * Eval runners for both layers of the production architecture:
  *
- * 1. runAnalysisAgent — tests the Sonnet analysis session (buildAnalysisPrompt).
+ * 1. runAnalysisAgent — tests the Sonnet analysis session (the live V1 buildV1AnalysisPrompt).
  *    No tool calls; validates TRADE_DECISION JSON output.
  *
  * 2. runMockAgent — tests the Haiku execution session (buildSystemPrompt).

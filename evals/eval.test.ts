@@ -1,11 +1,11 @@
 import { describe, it, expect, afterAll } from "bun:test";
 import { resolveDropCheckExits } from "@/lib/stopouts";
 import { requireCronAuth } from "@/lib/auth";
-import { SCENARIOS, formatFixtureMarketData, buildMarketData } from "./fixtures";
+import { SCENARIOS, formatFixtureMarketData, buildV1PromptFromScenario } from "./fixtures";
 import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
-import { buildSystemPrompt, buildAnalysisPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
+import { buildSystemPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, probBeatsSpy, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
@@ -22,39 +22,11 @@ const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Builds the LIVE (V1) analysis prompt from a scenario — the SAME buildV1AnalysisPrompt the trade
-// route uses, fed a V1 shortlist built from the scenario's fixture stocks (quality-eligible = all,
-// a permissive gate for tests; ranked by mom12_1). This is what makes the behavioral scenario evals
+// Builds the LIVE (V1) analysis prompt from a scenario via the shared helper — the SAME
+// buildV1AnalysisPrompt the trade route uses. This is what makes the behavioral scenario evals
 // exercise the strategy that actually runs in production, not the retired V0 path.
 function buildV1SystemPrompt(scenario: (typeof SCENARIOS)[number]) {
-  const md = buildMarketData(
-    scenario.marketState ?? "default",
-    scenario.insiderBuys ?? {},
-    scenario.earningsOverrides ?? {},
-    scenario.analystRatings ?? {},
-    scenario.stockOverrides ?? {},
-  );
-  const heldMain = new Set(scenario.positions.map((p) => p.symbol));
-  const eligible = new Set(md.stocks.map((s) => s.symbol)); // permissive quality gate for fixtures
-  const { buy, retained } = buildV1Shortlist(md.stocks, eligible, { held: heldMain });
-  const shortlistTable = formatV1Shortlist([...buy, ...retained], {}, md.insiderBuys, md.analystRatings, heldMain);
-  const earningsDates = Object.fromEntries(
-    md.stocks.filter((s) => s.earningsDate).map((s) => [s.symbol, s.earningsDate as string]),
-  );
-  return buildV1AnalysisPrompt(
-    TODAY,
-    shortlistTable,
-    {
-      buyingPower: scenario.buyingPower,
-      totalValue: scenario.totalValue,
-      positions: scenario.positions.map((p) => ({
-        symbol: p.symbol,
-        quantity: p.quantity,
-        avgCost: p.average_buy_price,
-      })),
-    },
-    "", "", [], [], [], earningsDates,
-  );
+  return buildV1PromptFromScenario(scenario, TODAY);
 }
 
 function buildExecutionSystemPrompt(scenario: (typeof SCENARIOS)[number], urgentHeader?: string) {
@@ -126,7 +98,7 @@ describe("meta-guard: evals exercise the production analysis prompt", () => {
 });
 
 // ─── Analysis-session scenario tests (primary) ────────────────────────────────
-// Tests buildAnalysisPrompt (Sonnet, no tools) → TRADE_DECISION JSON.
+// Tests the live V1 buildV1AnalysisPrompt (Sonnet, no tools) → TRADE_DECISION JSON.
 // These match the actual production code path.
 
 const ANALYSIS_SCENARIOS = SCENARIOS.filter(
@@ -789,12 +761,12 @@ describe("benchmark-awareness: beta math", () => {
     expect(bySym.AAPL ?? 0).toBeLessThan(5); // the shrinkable buy yields instead
   });
 
-  it("buildAnalysisPrompt runs a concentrated book (4–6 total names, conviction in size)", () => {
+  it("the V1 analysis prompt runs a concentrated book (4–6 total names, conviction in size)", () => {
     const pf = { buyingPower: "$100", totalValue: "$1000", positions: [] } as any;
-    const prompt = buildAnalysisPrompt("2026-07-06", "", pf, "", "");
-    expect(prompt).toContain("CONCENTRATION");
-    expect(prompt).toContain("4–6");
-    expect(prompt).not.toContain("RISK-ON");   // regime overlay reverted — no regime block
+    const prompt = buildV1AnalysisPrompt("2026-07-06", "", pf, "", "");
+    expect(prompt).toContain("concentrated");   // V1 wording: "a concentrated ~6-name book beats a long thin tail"
+    expect(prompt).toContain("up to 6");         // V1: "pick up to 6 MAIN-book names"
+    expect(prompt).not.toContain("RISK-ON");     // no marketRegime passed → no regime block
     expect(prompt).not.toContain("RISK-OFF");
   });
 
@@ -831,8 +803,8 @@ describe("benchmark-awareness: beta math", () => {
 });
 
 // ─── V1 NOTIONAL analysis-path coverage (PR2) ─────────────────────────────────
-// The legacy scenario suite exercises buildAnalysisPrompt (whole-share). These cover the LIVE V1
-// path (buildV1AnalysisPrompt) after the notional migration: (a) deterministic — the prompt
+// The scenario suite above now grades the live V1 prompt end-to-end; these add focused checks on the
+// V1 NOTIONAL path (buildV1AnalysisPrompt): (a) deterministic — the prompt
 // instructs dollar-amount buys / intent sells and renders fractional positions; (b) LLM — the model
 // emits a VALID notional decision (dollarAmount buys within budget+cap+rails, valid sell intent).
 
@@ -1196,7 +1168,7 @@ describe("dashboard reconciliation: deterministic audit of derived numbers", () 
 });
 
 describe("time-stop: staleness rule wiring in the buy prompt", () => {
-  const build = (positions: PortfolioContextPositions) => buildAnalysisPrompt(
+  const build = (positions: PortfolioContextPositions) => buildV1AnalysisPrompt(
     TODAY, "TABLE",
     { buyingPower: "$1000.00", totalValue: "$5000.00", positions },
     undefined, "\nSECTOR EXPOSURE...\n",
@@ -1210,9 +1182,13 @@ describe("time-stop: staleness rule wiring in the buy prompt", () => {
     expect(prompt).toContain("TIME-STOP");
   });
 
-  it("omits the TIME-STOP rule when positions carry no holding age (fallback path)", () => {
+  it("does NOT tag a position ⏳STALE when it carries no holding age (fallback path)", () => {
+    // V1 states the TIME-STOP RULE unconditionally; the per-position ⏳STALE TAG is what's conditional
+    // (needs heldDays ≥ threshold AND flat return). No age → no stale tag on the line.
     const prompt = build([{ symbol: "MKC", quantity: "2", avgCost: "50.00" }]);
-    expect(prompt).not.toContain("TIME-STOP");
+    // Match the per-position TAG ("⏳STALE (held 20d, ...") specifically — the RULE text also contains
+    // "⏳STALE (held ≥ 15 trading days ...", so a bare substring would false-match the always-present rule.
+    expect(prompt).not.toMatch(/⏳STALE \(held \d+d/);
   });
 });
 
@@ -1222,16 +1198,19 @@ describe("benchmark-awareness: prompt wiring", () => {
     expect(table).toContain("β");
   });
 
-  it("buildAnalysisPrompt injects the marginal-impact guidance + β reading key", () => {
-    const prompt = buildAnalysisPrompt(
+  it("tracks that V1 dropped V0's explicit marginal-impact guidance (β shown, instruction not)", () => {
+    const prompt = buildV1AnalysisPrompt(
       TODAY, "TABLE",
       { buyingPower: "$1000.00", totalValue: "$1000.00", positions: [] },
       undefined,
       "\nSECTOR EXPOSURE (current holdings, by value):\n  • Financials: 50%\n",
     );
-    expect(prompt).toContain("MARGINAL BENCHMARK IMPACT");
-    expect(prompt).toContain("β = beta vs SPY");
-    expect(prompt).toContain("marginal impact vs SPY"); // thesis requirement (gated on sector section)
+    // β-awareness itself is covered by the β-column test above (V1 shows per-name β in the shortlist
+    // table). But V0's explicit "MARGINAL BENCHMARK IMPACT — weigh each buy's marginal β/sector vs the
+    // CURRENT BOOK β" reasoning instruction was NOT carried into V1 — a dropped-in-V1 signal for the
+    // V1-reconciliation backlog. This marker documents the drop and FAILS (prompting a decision) if that
+    // guidance is ever re-added, rather than silently re-adding strategy text to force the eval green.
+    expect(prompt).not.toContain("MARGINAL BENCHMARK IMPACT");
   });
 });
 

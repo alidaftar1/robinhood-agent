@@ -196,76 +196,13 @@ Rules for each field:
 - Use prices from the market data table.`;
 }
 
-export function buildAnalysisPrompt(today: string, marketData: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string): string {
-  const maxPos = maxPositionDollars(portfolio.totalValue);
-  const hasAges = !!portfolio.positions?.some(p => p.heldDays != null);
-  const positionsLines = portfolio.positions?.length
-    ? portfolio.positions.map(p => {
-        const avg = parseFloat(p.avgCost);
-        const ret = p.price && avg > 0 ? ((p.price - avg) / avg) * 100 : null;
-        const age = p.heldDays != null ? `, held ${p.heldDays}d` : "";
-        const retStr = ret != null ? `, ${ret >= 0 ? "+" : ""}${ret.toFixed(1)}% since entry` : "";
-        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${age}${retStr}`;
-      }).join("\n")
-    : "  (none — full cash)";
-
-  return `You are an autonomous equity trading agent. Analyze the portfolio and market data and decide what trades to make. Do NOT place any orders — output only a structured decision.
-
-${marketData}
-
-PORTFOLIO STATE (live from Robinhood):
-- Settled buying power: ${portfolio.buyingPower} — this is your ENTIRE budget for buys today.
-- Total value: ${portfolio.totalValue ?? "unknown"}
-- Current positions:
-${positionsLines}
-${sectorSection ?? ""}
-Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} | Today: ${today}
-
-T+1 SETTLEMENT RULE: This is a cash account. Sell proceeds do NOT settle until tomorrow. Your buy budget is the settled buying power above — it does NOT increase when you sell positions today. Plan buys within the settled buying power only.
-
-READING THE MARKET DATA TABLE:
-- mom5 = PRIMARY rank signal (5-day risk-adjusted momentum). Prefer high values — this reflects what's moving now.
-- α5d = 5-day alpha vs SPY. Prefer high alongside high mom5.
-- mom14 = CONFIRMATION signal. High mom5 + high mom14 = sustained trend. High mom5 + low mom14 = spike only (be cautious).
-- α14d = 14-day alpha. Secondary confirmation alongside mom14.
-- 30d = macro context only. Don't stock-pick on 30d alone.
-- β = beta vs SPY (~1mo daily returns). >1 swings HARDER than the market (more risk AND more upside); <1 cushions; "—" = insufficient history, treat as market-like. A high-β name adds market risk to the book — only worth it if its alpha (α5d/α14d) justifies the extra swing.
-- ★INS = insider buying last 30 days. Strong conviction signal — weight heavily.
-- ⚡↑FIRM = impactful upgrade (≥15% upside). Treat like ★INS.
-- ↑FIRM / ↓FIRM = regular analyst action. Minor signal.
-- ⚠⚠ IMMINENT = earnings ≤3 days away. Do NOT buy. If holding: judgment call — trim if oversized/weak-thesis, else a high-conviction name may ride through (drift favors winners).
-- ⚠EARN = earnings within 30 days. Size down or avoid adding.
-
-CONSTRAINTS:
-- Gradual rotation: sell at most a few positions per run — don't liquidate everything at once.
-- Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive mom5 or mom14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis. For every current holding not in the top table, explicitly state in your thesis why it's being kept or sold.${hasAges ? `
-- TIME-STOP (staleness — free dead capital): each holding shows "held Nd, ±X% since entry". A position held ≥ ${STALE_DAYS} trading days that is still roughly flat (up less than +${STALE_RETURN_PCT}% since entry) is dead money — the thesis has had weeks to work and the capital is earning nothing. Sell it and redeploy, UNLESS it currently shows strong momentum (high mom5/mom14 in the table) or a fresh ★INS/⚡↑ signal worth waiting on — let genuine winners run, cut the stale flat ones. State the time-stop decision in your thesis for any holding at or past ${STALE_DAYS} days.` : ""}
-- Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
-- Max $${maxPos} per position (compute max_qty = floor(${maxPos} / price)), min $50. Whole shares only. Stocks from table only.
-- Never buy ⚠⚠ IMMINENT.
-- SECTOR CAP (risk control): avoid holding more than ~40% of the portfolio in any single sector. Momentum tends to cluster in one sector — don't sleepwalk into a concentrated sector bet. If a buy would push a sector past 40%, prefer an equally-strong name from an underweight sector instead. If you're ALREADY over 40% in a sector (see SECTOR EXPOSURE above), lean toward trimming it and redeploying into underweight sectors — unless you can give a specific reason the concentration is worth the risk.
-- CONCENTRATION (conviction in SIZE — the guardrails let you be aggressive): run a CONCENTRATED book of ~4–6 total positions (your very highest-conviction names, INCLUDING the ≤2 influencer slots). Put real size into the best momentum/alpha picks rather than spreading thin across a long tail of small, mediocre positions — a few strong bets beat a diluted book. The −5% stops + 40% sector cap bound the per-name and sector downside, so express conviction in SIZE. If you already hold more than ~6, trim the weakest (lowest mom5/α, no active signal) and redeploy into your best. Do NOT chase market beta for its own sake — concentrate where the ALPHA is.
-- MARGINAL BENCHMARK IMPACT (evaluate EVERY buy against the CURRENT book, not in isolation): your benchmark is SPY. Before adding a name, ask "does this IMPROVE the risk-adjusted book, or just pile on risk I already carry?" Weigh three things: (1) SECTOR — a buy in a sector that's already among your heaviest (see SECTOR EXPOSURE) adds concentration, not diversification; prefer a comparable-strength name from an underweight sector. (2) BETA — compare the name's β to the CURRENT BOOK β above; buying names with β well above the book raises how hard you swing vs SPY, justified only by real alpha (positive α5d/α14d), not momentum alone. If book β is already >1.1, lean toward market-like-or-lower β names unless the alpha is exceptional. (3) NOISE vs EDGE — a name very similar to what you already hold (same sector AND similar β) mostly adds correlated noise: more swing, no distinct edge. A buy earns its place by adding alpha or diversification, ideally both. A buy that stacks sector concentration + above-book beta + no distinct alpha is exactly the "more risk, no improvement" trade to avoid.
-- HARD LIMIT: total cost of all buys ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} (settled buying power). This number is fixed — selling today does NOT increase it. If you sell $300 of stock today and settled power is $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}, you can still only spend $${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")} on buys.
-${influencerSection ?? ""}
-
-Write a brief thesis (2–4 sentences). ${sectorSection ? "Your thesis MUST note your sector balance — confirm you're within the ~40% per-sector cap, or if you're deliberately over it, justify why — AND for each buy, state its marginal impact vs SPY: whether it improves the book (adds alpha or diversification) or just adds sector/beta/noise, referencing the name's β and sector against the CURRENT BOOK β and SECTOR EXPOSURE above. " : ""}${influencerSection ? "It MUST also state your influencer-bucket decision: which influencer pick(s) you're buying and why, OR — if you're buying none — the specific disqualifier (all picks priced above the per-position cap, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer bucket." : ""} Then, before writing TRADE_DECISION, compute sum(buys[i].quantity × buys[i].price) and verify it is ≤ ${(portfolio.buyingPower ?? "").replace(/[^0-9.]/g, "")}. If it exceeds that, reduce or remove the most expensive buy until it fits. Then output exactly one line:
-TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","quantity":N}],"buys":[{"symbol":"X","quantity":N,"price":P,"strategy":"main"}]}
-
-Rules:
-- sells = only symbols you currently hold that you want to exit
-- buys = new or added positions, total cost ≤ settled buying power, prices from the market data table or influencer price column
-- strategy = "main" for S&P 500 picks (default), "influencer" for picks from the INFLUENCER SIGNALS section
-- If nothing to sell: sells=[]
-- If not enough buying power or no good opportunities: buys=[]`;
-}
-
 // ── V1 Quality-Momentum analysis prompt ──────────────────────────────────────────────────────────────
 // Purpose-built for the V1 strategy (docs/strategy-quality-momentum.md). The main-book universe is the
 // pre-screened shortlist (12-1 momentum + above-median quality + 40% sector cap, built deterministically
 // in lib/market-data buildV1Shortlist). The model may ONLY buy MAIN-book names from that shortlist — a
 // hard filter in the trade route enforces this regardless of what the model outputs. The influencer
-// sleeve is unchanged (≤2 slots on its own signal). Kept separate from buildAnalysisPrompt for rollback.
+// sleeve is unchanged (≤2 slots on its own signal). This is the sole analysis-prompt builder (the V0
+// buildAnalysisPrompt was removed 2026-08-25 once the evals were migrated to grade V1).
 export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = [], marketRegime: string = ""): string {
   // MACRO-REGIME context only (Phase 0 news). The analysis is otherwise macro-blind,
   // yet it's asked to judge whether a move is broad-market SYMPATHY vs name-specific.

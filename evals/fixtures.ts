@@ -1,6 +1,7 @@
 import type { StockData, MarketData, InsiderBuy, AnalystRating } from "@/lib/market-data";
 import { SP500_UNIVERSE } from "@/lib/strategy";
-import { formatMarketDataForPrompt, momentumScore } from "@/lib/market-data";
+import { formatMarketDataForPrompt, momentumScore, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
+import { buildV1AnalysisPrompt } from "@/lib/strategy";
 
 // Controlled prices for key S&P 100 stocks.
 // All prices chosen to be ≤ $400 (affordable on $1k budget) unless noted.
@@ -132,6 +133,36 @@ export function formatFixtureMarketData(
   stockOverrides: Record<string, { change1d?: number; change5d?: number; change14d?: number; change30d?: number }> = {}
 ): string {
   return formatMarketDataForPrompt(buildMarketData(state, insiderBuys, earningsOverrides, analystRatings, stockOverrides));
+}
+
+// Builds the LIVE V1 analysis prompt from a scenario (V1 shortlist from the fixture stocks →
+// buildV1AnalysisPrompt). Shared by the bun-test harness (eval.test.ts) AND the Braintrust runner so
+// both grade the SAME production prompt from a single source that can't drift between the two.
+export function buildV1PromptFromScenario(scenario: Scenario, today: string): string {
+  const md = buildMarketData(
+    scenario.marketState ?? "default",
+    scenario.insiderBuys ?? {},
+    scenario.earningsOverrides ?? {},
+    scenario.analystRatings ?? {},
+    scenario.stockOverrides ?? {},
+  );
+  const heldMain = new Set(scenario.positions.map((p) => p.symbol));
+  const eligible = new Set(md.stocks.map((s) => s.symbol)); // permissive quality gate for fixtures
+  const { buy, retained } = buildV1Shortlist(md.stocks, eligible, { held: heldMain });
+  const shortlistTable = formatV1Shortlist([...buy, ...retained], {}, md.insiderBuys, md.analystRatings, heldMain);
+  const earningsDates = Object.fromEntries(
+    md.stocks.filter((s) => s.earningsDate).map((s) => [s.symbol, s.earningsDate as string]),
+  );
+  return buildV1AnalysisPrompt(
+    today,
+    shortlistTable,
+    {
+      buyingPower: scenario.buyingPower,
+      totalValue: scenario.totalValue,
+      positions: scenario.positions.map((p) => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.average_buy_price })),
+    },
+    "", "", [], [], [], earningsDates,
+  );
 }
 
 export function formatCompactMarketData(

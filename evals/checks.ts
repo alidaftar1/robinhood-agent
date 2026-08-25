@@ -364,7 +364,7 @@ export function checkSnapshotCashMath(summary: string, calls: ToolCall[], scenar
 }
 
 // ─── Decision-based checks (analysis session) ─────────────────────────────────
-// These operate on the TRADE_DECISION JSON produced by buildAnalysisPrompt,
+// These operate on the TRADE_DECISION JSON produced by the live V1 buildV1AnalysisPrompt,
 // not on MCP tool calls. They mirror the constraints enforced in that prompt.
 
 /** TRADE_DECISION line must be present and parse to valid JSON with required fields. */
