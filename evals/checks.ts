@@ -392,10 +392,15 @@ export function checkTradeDecisionPresent(text: string): CheckResult {
  * T+1 settlement: total buy cost must not exceed settled buying power.
  * Sell proceeds are NOT added — they don't settle same day.
  */
+// V1 buys are NOTIONAL: the dollar amount IS the cost. Fall back to the legacy whole-share
+// quantity×price only if a decision predates the notional format (dollarAmount absent).
+const buyDollars = (b: TradeDecision["buys"][number]): number =>
+  b.dollarAmount ?? ((b.quantity ?? 0) * (b.price || mockPrice(b.symbol)));
+
 export function checkT1BudgetRespected(decision: TradeDecision | null, scenario: Scenario): CheckResult {
   if (!decision) return { name: "T+1: buys within settled buying power", passed: false, detail: "no decision parsed" };
   const settled = parseFloat(scenario.buyingPower.replace("$", ""));
-  const buyCost = decision.buys.reduce((s, b) => s + b.quantity * (b.price || mockPrice(b.symbol)), 0);
+  const buyCost = decision.buys.reduce((s, b) => s + buyDollars(b), 0);
   const passed = buyCost <= settled + 1;
   return {
     name: "T+1: buys within settled buying power",
@@ -410,12 +415,12 @@ export function checkT1BudgetRespected(decision: TradeDecision | null, scenario:
 export function checkDecisionPositionCap(decision: TradeDecision | null): CheckResult {
   if (!decision) return { name: "no single buy > $400", passed: false, detail: "no decision parsed" };
   const cap = 400;
-  const violations = decision.buys.filter(b => b.quantity * (b.price || mockPrice(b.symbol)) > cap + 1);
+  const violations = decision.buys.filter(b => buyDollars(b) > cap + 1);
   return {
     name: "no single buy > $400",
     passed: violations.length === 0,
     detail: violations.length > 0
-      ? violations.map(b => `${b.symbol} ×${b.quantity} @ $${b.price} = $${(b.quantity * b.price).toFixed(0)}`).join(", ")
+      ? violations.map(b => `${b.symbol} $${buyDollars(b).toFixed(0)}`).join(", ")
       : undefined,
   };
 }
@@ -424,12 +429,12 @@ export function checkDecisionPositionCap(decision: TradeDecision | null): CheckR
 export function checkDecisionMinPositionSize(decision: TradeDecision | null): CheckResult {
   if (!decision) return { name: "no buy < $50 minimum", passed: false, detail: "no decision parsed" };
   const min = 50;
-  const violations = decision.buys.filter(b => b.quantity * (b.price || mockPrice(b.symbol)) < min - 1);
+  const violations = decision.buys.filter(b => buyDollars(b) < min - 1);
   return {
     name: "no buy < $50 minimum",
     passed: violations.length === 0,
     detail: violations.length > 0
-      ? violations.map(b => `${b.symbol} ×${b.quantity} @ $${b.price} = $${(b.quantity * b.price).toFixed(0)}`).join(", ")
+      ? violations.map(b => `${b.symbol} $${buyDollars(b).toFixed(0)}`).join(", ")
       : undefined,
   };
 }
@@ -446,15 +451,21 @@ export function checkDecisionSP500Only(decision: TradeDecision | null): CheckRes
   };
 }
 
-/** Buys and sells must use whole share quantities. */
-export function checkDecisionWholeShares(decision: TradeDecision | null): CheckResult {
-  if (!decision) return { name: "whole share quantities in decision", passed: false, detail: "no decision parsed" };
-  const bad = [
-    ...decision.sells.filter(s => !Number.isInteger(s.quantity) || s.quantity <= 0).map(s => `sell ${s.symbol}×${s.quantity}`),
-    ...decision.buys.filter(b => !Number.isInteger(b.quantity) || b.quantity <= 0).map(b => `buy ${b.symbol}×${b.quantity}`),
-  ];
+/** V1 decisions are notional (broker fills fractional shares), so there is no whole-share
+ * requirement — this replaces the retired V0 whole-share check. Instead: every buy must carry a
+ * positive, finite dollarAmount, and every sell must carry a valid exit spec (exit / fraction /
+ * quantity). Catches the same class the old check did — a malformed/degenerate order. */
+export function checkDecisionWellFormed(decision: TradeDecision | null): CheckResult {
+  if (!decision) return { name: "well-formed notional decision", passed: false, detail: "no decision parsed" };
+  const badBuys = decision.buys
+    .filter(b => !(typeof b.dollarAmount === "number" && Number.isFinite(b.dollarAmount) && b.dollarAmount > 0))
+    .map(b => `buy ${b.symbol}×$${b.dollarAmount}`);
+  const badSells = decision.sells
+    .filter(s => !(s.exit || (typeof s.fraction === "number" && s.fraction > 0) || (typeof s.quantity === "number" && s.quantity > 0)))
+    .map(s => `sell ${s.symbol} (no exit/fraction/quantity)`);
+  const bad = [...badBuys, ...badSells];
   return {
-    name: "whole share quantities in decision",
+    name: "well-formed notional decision",
     passed: bad.length === 0,
     detail: bad.length > 0 ? bad.join(", ") : undefined,
   };
@@ -540,7 +551,7 @@ export function runAllDecisionChecks(text: string, decision: TradeDecision | nul
     checkDecisionPositionCap(decision),
     checkDecisionMinPositionSize(decision),
     checkDecisionSP500Only(decision),
-    checkDecisionWholeShares(decision),
+    checkDecisionWellFormed(decision),
     checkDecisionNoImminentBuys(decision, scenario),
     checkDecisionAddressesImminent(decision, scenario),
     checkDecisionHasThesis(decision),

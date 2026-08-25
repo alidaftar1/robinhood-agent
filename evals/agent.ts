@@ -14,10 +14,13 @@ import { SP500_UNIVERSE } from "@/lib/strategy";
 
 // ─── Analysis session runner ───────────────────────────────────────────────────
 
+// V1 decision shape: buys are NOTIONAL (dollarAmount, broker fills fractional shares); sells use an
+// exit spec (exit:"all" | fraction | quantity). The legacy V0 whole-share quantity/price fields are
+// kept optional so any old fixture/parse path still type-checks during the transition.
 export interface TradeDecision {
   thesis: string;
-  sells: Array<{ symbol: string; quantity: number }>;
-  buys: Array<{ symbol: string; quantity: number; price: number }>;
+  sells: Array<{ symbol: string; exit?: string; fraction?: number; quantity?: number; strategy?: string }>;
+  buys: Array<{ symbol: string; dollarAmount: number; strategy?: string; quantity?: number; price?: number }>;
 }
 
 export interface AnalysisResult {

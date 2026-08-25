@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from "bun:test";
 import { resolveDropCheckExits } from "@/lib/stopouts";
 import { requireCronAuth } from "@/lib/auth";
-import { SCENARIOS, formatFixtureMarketData } from "./fixtures";
+import { SCENARIOS, formatFixtureMarketData, buildMarketData } from "./fixtures";
 import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
@@ -14,22 +14,36 @@ import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type T
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, applyPerPositionCap, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const _d = new Date();
 const TODAY = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildAnalysisSystemPrompt(scenario: (typeof SCENARIOS)[number]) {
-  return buildAnalysisPrompt(
+// Builds the LIVE (V1) analysis prompt from a scenario — the SAME buildV1AnalysisPrompt the trade
+// route uses, fed a V1 shortlist built from the scenario's fixture stocks (quality-eligible = all,
+// a permissive gate for tests; ranked by mom12_1). This is what makes the behavioral scenario evals
+// exercise the strategy that actually runs in production, not the retired V0 path.
+function buildV1SystemPrompt(scenario: (typeof SCENARIOS)[number]) {
+  const md = buildMarketData(
+    scenario.marketState ?? "default",
+    scenario.insiderBuys ?? {},
+    scenario.earningsOverrides ?? {},
+    scenario.analystRatings ?? {},
+    scenario.stockOverrides ?? {},
+  );
+  const heldMain = new Set(scenario.positions.map((p) => p.symbol));
+  const eligible = new Set(md.stocks.map((s) => s.symbol)); // permissive quality gate for fixtures
+  const { buy, retained } = buildV1Shortlist(md.stocks, eligible, { held: heldMain });
+  const shortlistTable = formatV1Shortlist([...buy, ...retained], {}, md.insiderBuys, md.analystRatings, heldMain);
+  const earningsDates = Object.fromEntries(
+    md.stocks.filter((s) => s.earningsDate).map((s) => [s.symbol, s.earningsDate as string]),
+  );
+  return buildV1AnalysisPrompt(
     TODAY,
-    formatFixtureMarketData(
-      scenario.marketState ?? "default",
-      scenario.insiderBuys ?? {},
-      scenario.earningsOverrides ?? {},
-      scenario.analystRatings ?? {},
-      scenario.stockOverrides ?? {},
-    ),
+    shortlistTable,
     {
       buyingPower: scenario.buyingPower,
       totalValue: scenario.totalValue,
@@ -39,6 +53,7 @@ function buildAnalysisSystemPrompt(scenario: (typeof SCENARIOS)[number]) {
         avgCost: p.average_buy_price,
       })),
     },
+    "", "", [], [], [], earningsDates,
   );
 }
 
@@ -94,6 +109,22 @@ function printExecutionResults(
   }
 }
 
+// ─── Meta-guard: the behavioral evals must exercise the SAME analysis prompt as production ──────
+// The 2026-08-25 gap: the scenario evals graded V0 (buildAnalysisPrompt) while the live route ran
+// V1 (buildV1AnalysisPrompt) — a green suite silently validating a RETIRED strategy. This guard makes
+// that drift fail loudly: it asserts the live trade route builds its analysis prompt with the same
+// builder the scenario harness (buildV1SystemPrompt) runs. A future strategy swap that repoints prod
+// without migrating these evals will trip it.
+describe("meta-guard: evals exercise the production analysis prompt", () => {
+  const routeSrc = readFileSync(join(import.meta.dir, "..", "app", "api", "trade", "route.ts"), "utf8");
+  it("the live trade route builds its analysis prompt with buildV1AnalysisPrompt (what the harness runs)", () => {
+    expect(routeSrc).toContain("buildV1AnalysisPrompt(");
+  });
+  it("the retired V0 buildAnalysisPrompt is not invoked in the live trade path", () => {
+    expect(routeSrc).not.toMatch(/\bbuildAnalysisPrompt\(/);
+  });
+});
+
 // ─── Analysis-session scenario tests (primary) ────────────────────────────────
 // Tests buildAnalysisPrompt (Sonnet, no tools) → TRADE_DECISION JSON.
 // These match the actual production code path.
@@ -105,7 +136,7 @@ const ANALYSIS_SCENARIOS = SCENARIOS.filter(
 for (const scenario of ANALYSIS_SCENARIOS) {
   describe(`analysis: ${scenario.name}`, () => {
     it(scenario.description, async () => {
-      const systemPrompt = buildAnalysisSystemPrompt(scenario);
+      const systemPrompt = buildV1SystemPrompt(scenario);
       const { text, decision } = await runAnalysisAgent(systemPrompt);
       const checks = runAllDecisionChecks(text, decision, scenario);
 
@@ -124,7 +155,7 @@ for (const scenario of ANALYSIS_SCENARIOS) {
 describe("analysis constraint: min position size", () => {
   it("emits buys=[] when settled buying power is below $50 minimum", async () => {
     const scenario = SCENARIOS.find((s) => s.name === "min-position-size")!;
-    const { decision } = await runAnalysisAgent(buildAnalysisSystemPrompt(scenario));
+    const { decision } = await runAnalysisAgent(buildV1SystemPrompt(scenario));
     console.log(`\n── min-position-size ─────────────────────────────`);
     console.log(`Buys: ${JSON.stringify(decision?.buys)}`);
     expect(decision?.buys ?? []).toHaveLength(0);
@@ -134,7 +165,7 @@ describe("analysis constraint: min position size", () => {
 describe("analysis constraint: imminent earnings no-buy", () => {
   it("does not buy top-momentum stock with earnings in 2 days", async () => {
     const scenario = SCENARIOS.find((s) => s.name === "imminent-earnings")!;
-    const { decision } = await runAnalysisAgent(buildAnalysisSystemPrompt(scenario));
+    const { decision } = await runAnalysisAgent(buildV1SystemPrompt(scenario));
     const imminentBuys = (decision?.buys ?? []).filter((b) =>
       Object.keys(scenario.earningsOverrides ?? {}).includes(b.symbol),
     );
@@ -150,7 +181,7 @@ describe("analysis constraint: earnings awareness", () => {
   // the thesis to explicitly REASON about the imminent-earnings holding, not sell it.
   it("addresses a held position's imminent earnings in its reasoning", async () => {
     const scenario = SCENARIOS.find((s) => s.name === "earnings-exit")!;
-    const { text, decision } = await runAnalysisAgent(buildAnalysisSystemPrompt(scenario));
+    const { text, decision } = await runAnalysisAgent(buildV1SystemPrompt(scenario));
     console.log(`\n── earnings awareness ─────────────────────────────`);
     console.log(`Thesis: ${decision?.thesis}`);
     console.log(`Sells: ${JSON.stringify(decision?.sells)}`);
@@ -619,7 +650,7 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
 describe("llm-eval: insider signal awareness", () => {
   it("acknowledges ★INS signal in analysis reasoning (score >= 0.5)", async () => {
     const scenario = SCENARIOS.find((s) => s.name === "insider-signal")!;
-    const { text, decision } = await runAnalysisAgent(buildAnalysisSystemPrompt(scenario));
+    const { text, decision } = await runAnalysisAgent(buildV1SystemPrompt(scenario));
     const result = await scoreInsiderAwareness(text, scenario.insiderBuys ?? {}, []);
 
     console.log(`\n── insider-signal LLM eval ───────────────────────`);

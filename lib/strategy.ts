@@ -387,7 +387,7 @@ STRATEGY — QUALITY-MOMENTUM (main book):
 
 CONSTRAINTS:
 - Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
-- Size each buy as a DOLLAR AMOUNT ("dollarAmount"), NOT a share count: min $50, max $${maxPos} per position. Buys are NOTIONAL — the broker fills fractional shares from your dollar amount, so you never compute a share count, and there is no whole-share remainder or stranded cash.
+- Size each buy as a DOLLAR AMOUNT ("dollarAmount"), NOT a share count: min $50, max $${maxPos} per position. The $50 minimum is a HARD FLOOR — if your settled buying power is itself below $50, you CANNOT make a valid buy, so buy NOTHING ("buys":[]); never shrink a buy below $50 just to deploy a smaller balance. Buys are NOTIONAL — the broker fills fractional shares from your dollar amount, so you never compute a share count, and there is no whole-share remainder or stranded cash.
 - MAIN-book buys ONLY from the shortlist above; INFLUENCER buys ONLY from the INFLUENCER SIGNALS section.
 - Never buy a name flagged with earnings ≤3 days away (⚠EARN with a date within 3 days).
 - EARNINGS ON A HELD NAME (judgment call, NOT an automatic exit): if a name you HOLD shows ⚠EARN within ~3 days, decide whether to trim/exit or ride through. A high-conviction momentum winner can ride through — post-earnings drift tends to favor established winners — but TRIM or exit if the position is oversized (near the per-position cap) or its thesis is weak. State your call and reason for any held name with imminent earnings. Do NOT blanket-sell before earnings; the point is a considered decision, not a reflex.

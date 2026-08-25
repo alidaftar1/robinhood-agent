@@ -83,6 +83,7 @@ export function buildMarketData(
       ...s,
       change30d: s.change30d - 15,
       change1d: s.change1d - 1.5,
+      mom12_1: (s.change30d - 15) * 4, // keep 12-1 (V1's RANK signal) consistent with change30d
     }));
   }
   if (Object.keys(earningsOverrides).length > 0) {
@@ -103,6 +104,9 @@ export function buildMarketData(
         merged.sharpe14d = momentumScore(ov.change14d, 10, s.volatility30d);
         merged.relStrength14d = ov.change14d - SPY_MOCK.change30d * 0.6;
       }
+      // V1 ranks on 12-1 momentum, so a change30d override must drive mom12_1 too, or a scenario
+      // that tunes change30d to make a name attractive would not surface it in the V1 shortlist.
+      if (ov.change30d != null) merged.mom12_1 = ov.change30d * 4;
       return merged;
     });
   }
