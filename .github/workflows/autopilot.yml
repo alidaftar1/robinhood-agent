@@ -50,6 +50,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.AUTOPILOT_PAT || github.token }}   # push the proposal branch as the PAT too
+          fetch-depth: 0   # FULL history — a shallow (depth-1) checkout makes `git merge-base` with an
+                           # older branch return nothing, which the autopilot misreads as "main was
+                           # squashed to a single commit" (false alarm, 2026-08-25). Full history fixes it.
       - uses: oven-sh/setup-bun@v2
       - name: Install deps (retry — bun install transiently flakes fetching @sentry/cli's binary in CI)
         run: |
