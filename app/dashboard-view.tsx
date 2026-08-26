@@ -466,7 +466,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
 
       <div style={{ background: "#111", border: "1px solid #222", borderLeft: "3px solid #3b6ea5", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13, lineHeight: 1.6, color: "#bbb" }}>
         <span style={{ color: "#e5e5e5", fontWeight: 700 }}>Strategy update · 2026-07-09 — </span>
-        the main book switched to a <span style={{ color: "#e5e5e5", fontWeight: 600 }}>quality-momentum</span> strategy: rank the S&amp;P 500 by 12-month momentum (skipping the most recent month), keep only above-median-quality names (profitability &amp; low debt, from SEC filings), cap any single sector at 40%, and hold ~6 high-conviction names. The YouTube-influencer sleeve is unchanged. Running as a 2-week live trial.
+        the main book switched to a <span style={{ color: "#e5e5e5", fontWeight: 600 }}>quality-momentum</span> strategy: rank the S&amp;P 500 by 12-month momentum (skipping the most recent month), keep only above-median-quality names (profitability &amp; low debt, from SEC filings), cap any single sector at 40%, and hold ~6 high-conviction names. The YouTube-influencer sleeve is unchanged.
       </div>
 
       {runs.length >= 2 && (
@@ -508,7 +508,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={s.perfSince}>the market, same period</span>
           </div>
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="Quality-Momentum · new" def="The NEW quality-momentum main-book strategy's return since it took over on 2026-07-09 — anchored once the book was fully rebuilt after T+1 settlement, so the transition days don't distort it. This is the live 2-week trial's scorecard; the 'Main Book Return' spans the whole account history (old momentum strategy + new)." />
+            <Tip style={s.perfLabel} label="Quality-Momentum · new" def="The NEW quality-momentum main-book strategy's return since it took over on 2026-07-09 — anchored once the book was fully rebuilt after T+1 settlement, so the transition days don't distort it. This is the new strategy's live scorecard; the 'Main Book Return' spans the whole account history (old momentum strategy + new)." />
             <span style={{ ...s.perfValue, color: returnColor(v1MainReturn) }}>
               {v1MainReturn != null ? fmtPct(v1MainReturn) : "—"}
             </span>
