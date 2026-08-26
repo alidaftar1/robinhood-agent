@@ -15,6 +15,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
+import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
 import { fetchNewsSignals } from "@/lib/news";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
@@ -1068,6 +1069,30 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       console.log("SIGNAL_LEDGER", { buys: buyPicks.length, recorded: rec.recorded, skipped: rec.skipped ?? false });
     } catch (e) {
       console.warn("SIGNAL_LEDGER_SKIP", e);
+    }
+
+    // ── Mean-reversion SHADOW capture (Phase 1: ZERO capital) ──────────────────────────────────────
+    // Log what an oversold-quality "buy the dip" sleeve WOULD pick today, so we can later MEASURE
+    // whether it is uncorrelated with the momentum book (the diversification thesis) BEFORE committing
+    // any capital. Reuses this run's already-fetched marketData / quality / news / earnings — no extra
+    // I/O. FAIL-SAFE: pure observability, can never affect the trade.
+    try {
+      if (quality) {
+        const mrEligible = new Set(Object.entries(quality.scores).filter(([, v]) => v.eligible).map(([s]) => s));
+        const qualityOf = (sym: string) => quality.scores[sym]?.quality ?? 0;
+        const isBroken = (sym: string) => {
+          if (newsSignals.get(sym)?.direction === "-") return true;                    // bearish material news
+          if ((marketData.analystRatings[sym] ?? []).some(r => r.action === "downgrade" || r.action === "lower_pt")) return true; // analyst downgrade/PT-cut
+          const ed = earningsDatesMap[sym];
+          if (ed) { const d = (new Date(ed).getTime() - new Date(today).getTime()) / 86_400_000; if (d >= 0 && d <= 3) return true; } // imminent earnings
+          return false;
+        };
+        const mrCands = screenMeanReversionCandidates(marketData.stocks, mrEligible, qualityOf, isBroken);
+        const mrRec = await recordMeanRevShadow(mrCands, today);
+        console.log("MEANREV_SHADOW", { candidates: mrCands.length, symbols: mrCands.map(c => c.symbol), logged: mrRec.logged, skipped: mrRec.skipped ?? false });
+      }
+    } catch (e) {
+      console.warn("MEANREV_SHADOW_SKIP", e);
     }
 
     // Compute transfer-adjusted daily return.

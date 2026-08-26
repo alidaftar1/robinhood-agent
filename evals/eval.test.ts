@@ -14,6 +14,7 @@ import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type T
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, applyPerPositionCap, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
+import { screenMeanReversionCandidates } from "@/lib/mean-reversion";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -1338,6 +1339,48 @@ describe("applyPerPositionCap: caps EVERY buy incl. influencer-tagged", () => {
     const { buys, notes } = applyPerPositionCap([{ symbol: "NVDA", dollarAmount: 300 }], 500, heldValueOf); // new name, room 500
     expect(buys[0].dollarAmount).toBe(300);
     expect(notes).toHaveLength(0);
+  });
+});
+
+// ─── Mean-reversion shadow screen (Phase 1 diversifier: oversold quality, not broken, stabilizing) ───
+describe("screenMeanReversionCandidates: oversold quality that's stabilizing and not broken", () => {
+  // minimal StockData-shaped fixtures (screen reads symbol/price/distFrom52wHigh/change5d/change1d/change30d)
+  const stock = (o: Partial<{ symbol: string; price: number; distFrom52wHigh: number; change5d: number; change1d: number; change30d: number }>) =>
+    ({ symbol: "X", price: 100, distFrom52wHigh: -20, change5d: -8, change1d: 0.5, change30d: -12, ...o }) as any;
+  const eligible = new Set(["OVSD", "JUNK", "BROKE", "KNIFE", "HIGH", "MILD"]);
+  const q = (s: string) => (s === "OVSD" ? 0.8 : 0.6);
+  const notBroken = () => false;
+
+  it("INCLUDES an oversold, quality-eligible, stabilizing, not-broken name", () => {
+    const out = screenMeanReversionCandidates([stock({ symbol: "OVSD" })], eligible, q, notBroken);
+    expect(out.map(c => c.symbol)).toEqual(["OVSD"]);
+  });
+  it("EXCLUDES a name not quality-eligible (oversold junk)", () => {
+    const out = screenMeanReversionCandidates([stock({ symbol: "NOTQ" })], new Set(), q, notBroken);
+    expect(out).toHaveLength(0);
+  });
+  it("EXCLUDES a name near its highs (not actually pulled back)", () => {
+    const out = screenMeanReversionCandidates([stock({ symbol: "HIGH", distFrom52wHigh: -3 })], eligible, q, notBroken);
+    expect(out).toHaveLength(0);
+  });
+  it("EXCLUDES a name whose 5-day drop is too mild (no reversal setup)", () => {
+    const out = screenMeanReversionCandidates([stock({ symbol: "MILD", change5d: -2 })], eligible, q, notBroken);
+    expect(out).toHaveLength(0);
+  });
+  it("EXCLUDES a name still cratering today (change1d < 0 — falling knife, not stabilizing)", () => {
+    const out = screenMeanReversionCandidates([stock({ symbol: "KNIFE", change1d: -3 })], eligible, q, notBroken);
+    expect(out).toHaveLength(0);
+  });
+  it("EXCLUDES a broken thesis (bearish news / downgrade / imminent earnings)", () => {
+    const out = screenMeanReversionCandidates([stock({ symbol: "BROKE" })], eligible, q, (s) => s === "BROKE");
+    expect(out).toHaveLength(0);
+  });
+  it("RANKS deeper-drawdown × higher-quality first", () => {
+    const out = screenMeanReversionCandidates(
+      [stock({ symbol: "MILDDROP", change5d: -6 }), stock({ symbol: "OVSD", change5d: -15 })],
+      eligible, q, notBroken,
+    );
+    expect(out[0].symbol).toBe("OVSD"); // deeper drop AND higher quality → top
   });
 });
 
