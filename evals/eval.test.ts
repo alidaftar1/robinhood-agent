@@ -15,6 +15,7 @@ import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { screenMeanReversionCandidates } from "@/lib/mean-reversion";
+import { screenGivebackStops } from "@/lib/giveback-shadow";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -1370,6 +1371,34 @@ describe("applyConcentrationTrim: trims a MAIN name that appreciated past the co
   it("skips an unpriced (value 0) position rather than dividing by zero", () => {
     const { trims } = applyConcentrationTrim(["NOPRICE"], maxPos, () => 0);
     expect(trims).toHaveLength(0);
+  });
+});
+
+// ─── Give-back stop shadow screen (Phase 1: the slow bleed the −5% intraday stop misses, 2026-08-27) ───
+describe("screenGivebackStops: flags MAIN holdings in a ≥5%/5d slow bleed", () => {
+  const h = (o: Partial<{ symbol: string; price: number; change5d: number; distFromHigh: number; retFromCostPct: number | null }>) =>
+    ({ symbol: "X", price: 100, change5d: -3, distFromHigh: -10, retFromCostPct: 5, ...o });
+  it("FLAGS a name down ≥5% over 5d (the slow bleed)", () => {
+    const out = screenGivebackStops([h({ symbol: "APA", change5d: -7.7 })]);
+    expect(out.map(x => x.symbol)).toEqual(["APA"]);
+  });
+  it("does NOT flag a name whose 5d decline is milder than the threshold", () => {
+    expect(screenGivebackStops([h({ change5d: -3.7 })])).toHaveLength(0); // APA's worst single day, but 5d must clear -5
+  });
+  it("does NOT flag a rising name", () => {
+    expect(screenGivebackStops([h({ change5d: +2 })])).toHaveLength(0);
+  });
+  it("carries retFromCostPct so Phase-1b can separate winner-giveback from loss-bleed", () => {
+    const out = screenGivebackStops([h({ symbol: "APA", change5d: -7.7, retFromCostPct: 22.7 }), h({ symbol: "LLY", change5d: -5.2, retFromCostPct: -4.6 })]);
+    expect(out.find(x => x.symbol === "APA")!.retFromCostPct).toBeCloseTo(22.7);
+    expect(out.find(x => x.symbol === "LLY")!.retFromCostPct).toBeCloseTo(-4.6);
+  });
+  it("sorts deepest bleed first", () => {
+    const out = screenGivebackStops([h({ symbol: "MILD", change5d: -5.2 }), h({ symbol: "DEEP", change5d: -7.7 })]);
+    expect(out.map(x => x.symbol)).toEqual(["DEEP", "MILD"]);
+  });
+  it("ignores a non-finite change5d rather than flagging it", () => {
+    expect(screenGivebackStops([h({ change5d: NaN })])).toHaveLength(0);
   });
 });
 

@@ -16,6 +16,7 @@ import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, app
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
+import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow";
 import { fetchNewsSignals } from "@/lib/news";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
@@ -1127,6 +1128,28 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       }
     } catch (e) {
       console.warn("MEANREV_SHADOW_SKIP", e);
+    }
+
+    // ── Give-back stop SHADOW capture (Phase 1: ZERO capital) ──────────────────────────────────────
+    // The −5% intraday stop misses SLOW BLEEDS (APA/LLY/AMAT bled 4–8% over 5d, none fired, 2026-08-27).
+    // Log which MAIN holdings WOULD trip a give-back stop (down ≥5% over 5d) + their price, so we can
+    // later measure the forward outcome: did shadow-cut names keep falling (a stop helps) or bounce (it
+    // whipsaws)? MAIN book only (the sleeve has its own stop). FAIL-SAFE observability, cannot trade.
+    try {
+      const stockBySym = new Map(marketData.stocks.map(s => [s.symbol, s]));
+      const gbHoldings = (portfolioCtx?.positions ?? [])
+        .filter(p => !influencerHeld.has(p.symbol) && stockBySym.has(p.symbol)) // MAIN, priced in the S&P universe
+        .map(p => {
+          const s = stockBySym.get(p.symbol)!;
+          const px = priceMap.get(p.symbol) ?? s.price;
+          const avg = parseFloat(p.avgCost) || 0;
+          return { symbol: p.symbol, price: px, change5d: s.change5d, distFromHigh: s.distFrom52wHigh, retFromCostPct: avg > 0 ? (px - avg) / avg * 100 : null };
+        });
+      const gbTrig = screenGivebackStops(gbHoldings);
+      const gbRec = await recordGivebackShadow(gbTrig, today);
+      console.log("GIVEBACK_SHADOW", { triggered: gbTrig.length, symbols: gbTrig.map(h => `${h.symbol}(${h.change5d.toFixed(1)}%)`), logged: gbRec.logged, skipped: gbRec.skipped ?? false });
+    } catch (e) {
+      console.warn("GIVEBACK_SHADOW_SKIP", e);
     }
 
     // Compute transfer-adjusted daily return.
