@@ -248,12 +248,25 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
     const n = Math.round((Date.parse(d) - Date.parse(today)) / 86_400_000);
     return Number.isFinite(n) ? n : null;
   };
+  // Book total + the concentration trigger, computed the SAME way the code trim is (maxPos×1.25), so
+  // the per-name ⚠CONCEN flag below fires exactly when the code will trim — and shows the REAL value
+  // and %-of-book (the prompt's "~25%" is approximate on a small book where the $400 buy-floor binds;
+  // the flag's actual number is the source of truth the model should read).
+  const bookTotal = parseFloat((portfolio.totalValue ?? "").replace(/[^0-9.]/g, "")) || 0;
+  const concenTrigger = maxPositionDollars(portfolio.totalValue) * 1.25;
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => {
         const avg = parseFloat(p.avgCost);
         const ret = p.price && avg > 0 ? ((p.price - avg) / avg) * 100 : null;
         const retStr = ret != null ? `, ${ret >= 0 ? "+" : ""}${ret.toFixed(1)}% since entry` : "";
         const isInfl = influencerHeld.includes(p.symbol);
+        // Concentration flag (MAIN names only — the code trim excludes the influencer sleeve). Shows
+        // current market value + %-of-book when the name is over the trim trigger, so the model can
+        // choose to FULL-EXIT a broken concentrated name instead of letting the code trim it to the cap.
+        const curVal = p.price ? (parseFloat(p.quantity) || 0) * p.price : null;
+        const concenTag = (!isInfl && curVal != null && curVal > concenTrigger)
+          ? `  ⚠CONCEN $${curVal.toFixed(0)}${bookTotal > 0 ? ` (${(curVal / bookTotal * 100).toFixed(0)}% of book)` : ""} — over the concentration cap; code will TRIM it to ~$${maxPositionDollars(portfolio.totalValue).toFixed(0)} unless you EXIT it`
+          : "";
         const ageStr = p.heldDays != null ? `, held ${p.heldDays}d` : "";
         // Staleness flag: a name held long enough that's still roughly flat has not done its job
         // (the −5% stop covers the downside; this is the flat middle). Influencer names are on a
@@ -287,7 +300,7 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
         // pop is a take-profit/trim candidate, a big drop a reassess. (companion to the ⚠EARN flag)
         const re = recentEarnings.get(p.symbol);
         const reportedTag = re ? formatPostEarnings(re, change1dOf[p.symbol], change5dOf[p.symbol]) : "";
-        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${ageStr}${tag}${staleTag}${earnTag}${beatTag}${newsTag}${reportedTag}`;
+        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${ageStr}${tag}${concenTag}${staleTag}${earnTag}${beatTag}${newsTag}${reportedTag}`;
       }).join("\n")
     : "  (none — full cash)";
 
@@ -320,6 +333,7 @@ STRATEGY — QUALITY-MOMENTUM (main book):
 - INFLUENCER TIME-STOP (this applies to the sleeve TOO — do not skip it): a ⏳STALE INFLUENCER holding is on the SAME forced-default — its "[INFLUENCER SLEEVE]" do-not-sell protection does NOT apply while it's ⏳STALE (its line says so). You MUST rotate it out (into a qualifying higher-net influencer pick if one exists, ELSE TO CASH) unless it's re-accelerating with a named signal (rising 5d / ↑RECOVERING). "The sleeve is full (2/2)" or "buying power is low" is NOT a reason to keep a stale name — freeing the slot IS the action; a stale name held is worse than an empty slot. Review EVERY influencer holding for ⏳STALE the same way you review the main book, not just for earnings/news.
 - DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −5%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist. THREE EXCEPTIONS where you MAY trim/exit an influencer holding (tag the sell "strategy":"influencer"): (1) EARNINGS — if it shows ⚠⚠ IMMINENT EARNINGS (≤3 days), the earnings hold-judgment applies (these names gap ±10%+ on the print) — trim/exit, or let a high-conviction one ride. If it carries a strong 📈EARN-RECORD (beat most of its last quarters, positive avg surprise), that is a real reason to HOLD it through — even if it's ⏳STALE — since a serial beater's flat run tends to resolve UP on the print (this is exactly the PLTR case: sold as stale+earnings while a 4/4 beater, then +20% on the beat). Name the record in your thesis. (2) NEWS — if it shows a bearish ⚡NEWS↓ material event (lawsuit, cut guidance, deal collapse, regulatory action), that is a real reason to trim/exit — name the event in your thesis. (3) STALE (DEFAULT IS ROTATE) — if it's tagged ⏳STALE (held ≥ ${INFLUENCER_STALE_DAYS} trading days and still up less than +${INFLUENCER_STALE_RETURN_PCT}%), it has NOT caught a move: the sleeve exists to catch BIG momentum and has only 2 scarce slots, so a flat name is dead weight blocking a fresher pick. You MUST ROTATE it out (into a qualifying higher-net influencer pick if one exists, else to cash) UNLESS it is genuinely RE-ACCELERATING — and you cite the signal (rising 5d momentum / ↑RECOVERING). "Might still pop" is NOT a valid keep-reason. If you keep a ⏳STALE influencer holding, your thesis MUST name the re-acceleration signal.
 - The shortlist already limits NEW picks to ≤2 per sector. Still, if adding a name would push a sector (counting your CURRENT holdings) past ~40% of the book, prefer another shortlist name from a lighter sector.
+- CONCENTRATION CAP (ENFORCED IN CODE): no single MAIN holding may exceed the concentration cap (~25% of the book on a normally-sized account) — a winner that appreciates past it is automatically TRIMMED back to the per-position cap after your decision, regardless of momentum (a 28% single-name bet is what turned a −2% week into −4% when its sector sold off). A holding over the cap is marked ⚠CONCEN on its position line, showing its current value and %-of-book. You cannot KEEP a ⚠CONCEN name over the cap; your only choice is HOW to reduce it: if you believe its thesis has WEAKENED, FULL-exit it yourself (exit:"all") — a code trim only brings it to the cap, it does not exit a broken name. If the thesis is intact, do nothing: the code trims it to the cap for you and the winner keeps running at capped size.
 - Do NOT chase names that just spiked; the shortlist is already the right, evidence-backed set. Conviction goes into SIZE among these names.
 
 CONSTRAINTS:

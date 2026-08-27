@@ -159,6 +159,44 @@ export function applyPerPositionCap<T extends { symbol: string; dollarAmount: nu
   return { buys: capped, notes };
 }
 
+// ── Concentration trim-on-drift (risk control) ────────────────────────────────────────────────
+// The per-position cap (applyPerPositionCap) only bounds NEW BUYS — a winner can still APPRECIATE
+// past it (APA drifted to 28% of the book with the 20% cap never trimming it; when Energy sold off
+// 2026-08-27 that single name was >half the week's −4% loss). This enforces the cap on HELD value
+// too: any MAIN position over the TRIGGER (a band above target, so a name hovering at the cap isn't
+// re-trimmed daily) is trimmed back to TARGET (= the buy cap). Deliberately in tension with "let
+// winners run" — it caps single-name DRAWDOWN risk at the cost of some upside; that's the point.
+//
+// Returns partial-sell intents ({symbol, fraction}) for the executor + human-readable notes. Pure.
+// The band: TRIGGER = target × TRIM_TRIGGER_MULT (default 1.25). TARGET = maxPos (the buy cap), so a
+// trim never fights a fresh buy (trigger is always ABOVE the buy cap → no buy/trim churn). NOTE: on a
+// SMALL book the buy cap is the $400 FLOOR (maxPositionDollars = max($400, 0.2×total)), not 20%, so
+// the effective concentration % is higher than ~25% there — an intentional consequence of the min-buy
+// floor (you can't both require $50–$400 deployable positions AND cap a name at 20% of a ~$1500 book).
+// The account is well above that floor; this is a latent small-book note, not a live gap.
+export const TRIM_TRIGGER_MULT = 1.25;
+
+export function applyConcentrationTrim(
+  symbols: string[],                       // MAIN-book held symbols to check (influencer sleeve excluded by caller)
+  maxPos: number,                          // the per-position dollar cap (= TARGET) — maxPositionDollars(totalValue)
+  heldValueOf: (symbol: string) => number, // current market value of the held position
+  triggerMult: number = TRIM_TRIGGER_MULT,
+): { trims: Array<{ symbol: string; fraction: number; strategy: "main" }>; notes: string[] } {
+  const trigger = maxPos * triggerMult;
+  const trims: Array<{ symbol: string; fraction: number; strategy: "main" }> = [];
+  const notes: string[] = [];
+  for (const sym of symbols) {
+    const value = heldValueOf(sym);
+    if (!(value > trigger)) continue;            // within the band (or unpriced=0) — leave it
+    // Sell down to the TARGET (maxPos), not the trigger — the same level a fresh buy is capped at.
+    const fraction = (value - maxPos) / value;   // 0<fraction<1 (value>trigger>maxPos ⇒ numerator>0)
+    if (!(fraction > 0 && fraction < 1)) continue; // safety: never a full liquidation from a trim
+    trims.push({ symbol: sym, fraction: Number(fraction.toFixed(4)), strategy: "main" });
+    notes.push(`${sym} TRIMMED — position $${value.toFixed(0)} exceeds the ~${(triggerMult * 100).toFixed(0)}%-of-cap concentration trigger ($${trigger.toFixed(0)}); trimming ${(fraction * 100).toFixed(0)}% back to the $${maxPos.toFixed(0)} cap`);
+  }
+  return { trims, notes };
+}
+
 // Resolve a SELL intent to a concrete share-quantity string against the LIVE held quantity. The
 // model emits intent (exit:"all" / fraction) — NEVER a raw share count — so it can't mistype and
 // over/under-sell. Rules: full exit → the EXACT held string (no float drift, no dust remainder);

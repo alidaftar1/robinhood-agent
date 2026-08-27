@@ -12,7 +12,7 @@ import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
 import { formatMarketContext, type SectorData } from "@/lib/market-data";
 import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
-import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, applyPerPositionCap, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
+import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { screenMeanReversionCandidates } from "@/lib/mean-reversion";
 import { readFileSync } from "node:fs";
@@ -1339,6 +1339,37 @@ describe("applyPerPositionCap: caps EVERY buy incl. influencer-tagged", () => {
     const { buys, notes } = applyPerPositionCap([{ symbol: "NVDA", dollarAmount: 300 }], 500, heldValueOf); // new name, room 500
     expect(buys[0].dollarAmount).toBe(300);
     expect(notes).toHaveLength(0);
+  });
+});
+
+// ─── Concentration trim-on-drift (risk cap on HELD value; APA 28% → −4% week, 2026-08-27) ───
+describe("applyConcentrationTrim: trims a MAIN name that appreciated past the concentration ceiling", () => {
+  const maxPos = 500; // 20% of a $2500 book; trigger = 500×1.25 = $625
+  it("TRIMS a position over the trigger back to the cap (APA $700 → $500)", () => {
+    const { trims, notes } = applyConcentrationTrim(["APA"], maxPos, () => 700);
+    expect(trims).toHaveLength(1);
+    // sell (700-500)/700 = 0.2857 so the remaining value = 700×(1-0.2857) ≈ 500
+    expect(trims[0].fraction).toBeCloseTo(0.2857, 3);
+    expect(700 * (1 - trims[0].fraction)).toBeCloseTo(500, 0);
+    expect(trims[0].strategy).toBe("main");
+    expect(notes[0]).toMatch(/APA TRIMMED/);
+  });
+  it("does NOT trim a position within the band (at the cap but below the trigger)", () => {
+    const { trims } = applyConcentrationTrim(["X"], maxPos, () => 560); // >cap 500 but <trigger 625
+    expect(trims).toHaveLength(0); // the band prevents churn-trimming a name hovering at the cap
+  });
+  it("does NOT trim a normal-sized position", () => {
+    const { trims } = applyConcentrationTrim(["X"], maxPos, () => 300);
+    expect(trims).toHaveLength(0);
+  });
+  it("never emits a full liquidation (fraction stays < 1) even for an extreme overweight", () => {
+    const { trims } = applyConcentrationTrim(["HUGE"], maxPos, () => 5000);
+    expect(trims[0].fraction).toBeLessThan(1);
+    expect(trims[0].fraction).toBeGreaterThan(0);
+  });
+  it("skips an unpriced (value 0) position rather than dividing by zero", () => {
+    const { trims } = applyConcentrationTrim(["NOPRICE"], maxPos, () => 0);
+    expect(trims).toHaveLength(0);
   });
 });
 

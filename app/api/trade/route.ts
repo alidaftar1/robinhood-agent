@@ -12,7 +12,7 @@ import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/l
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
-import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
+import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
@@ -706,6 +706,38 @@ export async function GET(request: Request) {
       decision.buys = sized;
     }
 
+    // ── Concentration trim-on-drift (code-enforced risk cap on HELD value) ─────────
+    // A code trim is a RISK reduction of a STILL-HELD name — NOT a discretionary exit — so it must be
+    // kept out of the recent-sells registry (else the next run's rebuy-cooldown would block adding to a
+    // name we still own, and the prompt would mislabel a held winner as "rotated OUT"). Tracked here.
+    const trimmedSymbols = new Set<string>();
+    // The buy cap only bounds new buys; a winner can appreciate past it (APA drifted to 28% with the
+    // 20% cap never trimming, then was >half the −4% week when Energy sold off 2026-08-27). Enforce
+    // the cap on held value too: a MAIN name over ~25% of the book is trimmed back to the 20% cap.
+    // The LLM chooses exit-vs-trim (it's shown the flag); code enforces the CEILING — if the LLM
+    // already sells the name (exit/fraction), we DON'T double-trim (respect its decision).
+    {
+      const trimMaxPos = maxPositionDollars(agenticBalance ? `$${agenticBalance.totalValue}` : portfolioCtx?.totalValue);
+      const trimHeldValueOf = (sym: string) => {
+        const p = (portfolioCtx?.positions ?? []).find(pp => pp.symbol === sym);
+        if (!p) return 0;
+        return (parseFloat(p.quantity) || 0) * (priceMap.get(sym) ?? (parseFloat(p.avgCost) || 0));
+      };
+      // MAIN-book holds only (influencer sleeve has its own sizing/stops), and only names the LLM
+      // hasn't ALREADY put a sell on — so a model exit/trim takes precedence over the code trim.
+      const alreadySelling = new Set(decision.sells.map(s => s.symbol));
+      const mainHeld = (portfolioCtx?.positions ?? [])
+        .map(p => p.symbol)
+        .filter(sym => !influencerHeld.has(sym) && !alreadySelling.has(sym));
+      const { trims, notes: trimNotes } = applyConcentrationTrim(mainHeld, trimMaxPos, trimHeldValueOf);
+      if (trims.length > 0) {
+        decision.sells.push(...trims); // flow through the normal sell resolve → execute → verify path
+        for (const t of trims) trimmedSymbols.add(t.symbol);
+        console.log("CONCENTRATION_TRIM", { trims: trimNotes });
+        buySizingAdjustments.push(...trimNotes);
+      }
+    }
+
     // ── Resolve sell INTENT → concrete share quantity from the LIVE held position ──
     // The model emits intent (exit:"all" / fraction), NEVER a fractional share count, so it can't
     // mistype and over/under-sell. A full exit sells the EXACT held qty (no dust remainder); a trim
@@ -804,7 +836,9 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
           trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, strategy: sellStrategyTag(s.symbol) });
           // Record a MAIN-book discretionary sell so a next-run re-buy trips the rotation-churn flag.
           // (Influencer-sleeve sells have their own rotation logic; the churn concern is the main book.)
-          if (sellStrategyTag(s.symbol) !== "influencer") await recordSell(s.symbol, today, parseFloat(fill) || 0);
+          // EXCLUDE a concentration TRIM — it's a risk reduction of a still-held name, not an exit, so
+          // it must not enter the recent-sells registry (would poison the rebuy-cooldown + mislabel it).
+          if (sellStrategyTag(s.symbol) !== "influencer" && !trimmedSymbols.has(s.symbol)) await recordSell(s.symbol, today, parseFloat(fill) || 0);
         }
         if (missing.length > 0) {
           console.warn("SELL_STILL_MISSING_AFTER_RETRY", { missing: missing.map(s => s.symbol) });
