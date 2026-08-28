@@ -22,7 +22,7 @@ export interface QualityScore {
   quality: number;        // 0–1 cross-sectional percentile composite (higher = better)
   roe: number | null;     // null when equity is non-positive (ROE undefined; scored on ROA + leverage)
   roa: number;
-  lev: number | null;     // null for Financials/Real Estate (leverage term dropped)
+  lev: number | null;     // null for Financials/Real Estate AND known-negative-equity names (leverage term dropped — it's a buyback artifact there)
   eligible: boolean;      // quality >= universe median
 }
 export interface QualityData {
@@ -90,12 +90,19 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
     if (cik == null) continue;
     const e = eq[cik], a = ast[cik], l = lia[cik], n = ni[cik];
     // Need Assets (>0) + NetIncome. NEGATIVE stockholders' equity is common in strong buyback-heavy
-    // names (HD, MCD, ABBV, PM, AZO…) — do NOT exclude them; ROE is just meaningless there, so drop the
-    // ROE term and score on ROA + leverage. (Excluding them would blacklist them from the whole book.)
+    // names (DPZ, PM, YUM, BKNG, LOW, HD, MCD, ABBV…) — do NOT penalize them; both equity-based terms
+    // are artifacts there. ROE is meaningless (drop it). AND book leverage (liabilities/assets) is
+    // ALSO an artifact: when equity is negative, liabilities EXCEED assets by construction, so l/a
+    // balloons past 100% and reads as "over-levered" even for an elite, shareholder-friendly business
+    // (measured 2026-08-28: DPZ ROA 35% — one of the S&P's most profitable names — was excluded on
+    // this). So for KNOWN-negative-equity names, drop the leverage term too and score on ROA alone (the
+    // robust quality signal there). NOTE: only when equity is KNOWN negative (e ≤ 0) — an UNREPORTED
+    // equity (e == null) leaves l/a meaningful, so we keep leverage then.
     if (a == null || n == null || a <= 0) continue;
     const sec = STOCK_SECTOR[sym];
     const isFin = sec === "XLF" || sec === "XLRE";       // banks/REITs: drop the leverage term
-    raw[sym] = { roe: e != null && e > 0 ? n / e : null, roa: n / a, lev: !isFin && l != null ? l / a : null };
+    const negEq = e != null && e <= 0;                   // buyback-driven negative book equity
+    raw[sym] = { roe: e != null && e > 0 ? n / e : null, roa: n / a, lev: (!isFin && !negEq && l != null) ? l / a : null };
   }
 
   // Cross-sectional percentiles.

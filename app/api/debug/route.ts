@@ -3,6 +3,7 @@ import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, co
 import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
+import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
 
@@ -265,6 +266,18 @@ export async function GET(request: Request) {
       results.recomputeSleeves = changes.length ? `patched ${changes.length}: ${changes.join(" | ")}` : "no changes";
     } catch (e) {
       results.recomputeSleeves = `error: ${e}`;
+    }
+  }
+
+  // Force-refresh the SEC quality scores from source (bypasses the ~weekly cache). Use after a change
+  // to the quality screen so the next trade run picks it up immediately instead of waiting out the TTL.
+  if (url.searchParams.get("refreshQuality")) {
+    try {
+      const q = await getQualityScores(true);
+      const elig = q ? Object.values(q.scores).filter(s => s.eligible).length : 0;
+      results.refreshQuality = q ? `refreshed: ${Object.keys(q.scores).length} scored, ${elig} eligible (period ${q.period})` : "failed (SEC/Redis unavailable)";
+    } catch (e) {
+      results.refreshQuality = `error: ${e}`;
     }
   }
 
