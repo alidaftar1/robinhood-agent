@@ -182,14 +182,31 @@ export async function GET(request: Request) {
       if (orphaned.length > 0) {
         const result = await callDebug("patchTrades=1");
         const msg = result?.patchTrades ?? "";
+        // Always refetch, even on "no missing sells detected" — that message doesn't mean nothing
+        // changed, it can mean patchTrades' OWN independent read (a separate /api/debug call, a beat
+        // later) already found the sell recorded, because a concurrently-running cron (e.g. the
+        // influencer drop-check, scheduled the same 15:00 UTC minute as this route) landed its
+        // saveRun between this route's initial getRuns() and the patchTrades call. Without a refetch,
+        // the stale in-memory todayRun (still missing the sell) flows into verify/the reviewer below,
+        // producing a false "silently dropped position" concern for a position that is, in the store,
+        // already correctly reconciled. Re-derive orphaned against fresh data before flagging anything.
+        runs = await getRuns(30);
+        todayRun = runs.find(r => r.date === today) ?? todayRun;
         if (msg && !msg.startsWith("error") && !msg.includes("no missing")) {
           autoFixed.push(`Inferred missing sells: ${msg}`);
-          runs = await getRuns(30);
-          todayRun = runs.find(r => r.date === today) ?? todayRun;
         } else {
-          issues.push(
-            `Positions disappeared without sell records: ${orphaned.map(p => p.symbol).join(", ")}. Auto-patch: ${msg || "failed"}.`,
+          const freshConfirmedSells = new Set(
+            (todayRun.trades ?? []).filter(t => t.side === "sell" && t.state !== "inferred").map(t => t.symbol)
           );
+          const freshSyms = new Set(todayRun.positions.map(p => p.symbol));
+          const stillOrphaned = orphaned.filter(
+            p => !freshSyms.has(p.symbol) && !freshConfirmedSells.has(p.symbol)
+          );
+          if (stillOrphaned.length > 0) {
+            issues.push(
+              `Positions disappeared without sell records: ${stillOrphaned.map(p => p.symbol).join(", ")}. Auto-patch: ${msg || "failed"}.`,
+            );
+          }
         }
       }
     }
