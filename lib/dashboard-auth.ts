@@ -190,3 +190,15 @@ export async function buildDashboardLoginUrl(host: string): Promise<string> {
   const token = await mintLoginToken();
   return token ? `${host}/?token=${token}` : `${host}/`;
 }
+
+/**
+ * Public dashboard URL for outbound email links — the KEYLESS `/public` view (account number
+ * redacted, no token in the URL). Preferred over the authenticated one-time-token link for emails:
+ * nothing sensitive to leak (safe if a notification email is screenshotted), no Redis token round-trip,
+ * and it always resolves (falls back to the prod alias if APP_URL is unset, so drop-check/earnings-exit
+ * — which pass a possibly-empty APP_URL — never emit a broken relative link).
+ */
+export function dashboardPublicUrl(host?: string | null): string {
+  const base = host && host.length > 0 ? host : "https://robinhood-agent.vercel.app";
+  return `${base}/public`;
+}

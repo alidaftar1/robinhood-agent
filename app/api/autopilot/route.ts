@@ -1,5 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
-import { buildDashboardLoginUrl } from "@/lib/dashboard-auth";
+import { dashboardPublicUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -454,7 +454,7 @@ export async function GET(request: Request) {
       <td style="padding:5px 10px">${value}</td>
     </tr>`;
 
-  const dashboardUrl = await buildDashboardLoginUrl(host);
+  const dashboardUrl = dashboardPublicUrl(host);
 
   const html = `
 <div style="font-family:monospace;max-width:600px;margin:0 auto;padding:24px;color:#111">

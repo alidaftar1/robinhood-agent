@@ -1,5 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
-import { buildDashboardLoginUrl } from "@/lib/dashboard-auth";
+import { dashboardPublicUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
@@ -380,7 +380,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       ...(spyPrice != null ? { spyPrice } : {}),
     });
 
-    const dashboardUrl = await buildDashboardLoginUrl(process.env.APP_URL ?? "");
+    const dashboardUrl = dashboardPublicUrl(process.env.APP_URL);
     await sendAlert(
       `${hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
       `Sold: ${soldList}.${sympathyNote}\n\nCheck the dashboard:\n${dashboardUrl}`,
