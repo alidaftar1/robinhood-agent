@@ -6,7 +6,7 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
-import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
@@ -1193,13 +1193,22 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // booking as a phantom loss. Stored at trade time in the clean context; the same helper
     // backfills history via /api/debug?recomputeSleeves.
     const prevInfluencerPositions = previousDayRun?.influencerPositions ?? [];
-    const { influencerDailyReturn, mainDailyReturn } = computeSleeveReturns(
+    // Use allTradesToday (incl. earlier same-day runs — e.g. a drop-check that stopped out an
+    // influencer name), NOT just this run's trades: else that sell's PROCEEDS aren't credited and the
+    // name's value books as a phantom loss (PYPL stopped −11% by the 7am drop-check → sleeve read
+    // −51.25% instead of −6.29% on 2026-08-28). The agentic return above already uses allTradesToday.
+    const rawSleeves = computeSleeveReturns(
       positions,
-      trades,
+      allTradesToday,
       influencerPositions,
       prevInfluencerPositions,
       previousDayRun?.positions ?? [],
     );
+    // Clamp an extreme single-day sleeve move at the LIVE write too (not just the recompute), so a
+    // residual artifact from any source is nulled here rather than stored raw + shown on the dashboard
+    // until a manual recompute. Matches backfillSleeveReturns' sanity clear.
+    const influencerDailyReturn = clampSleeveReturn(rawSleeves.influencerDailyReturn);
+    const mainDailyReturn = clampSleeveReturn(rawSleeves.mainDailyReturn);
 
     // Patch the run already saved at index 0 with return metrics.
     const finalRun = {

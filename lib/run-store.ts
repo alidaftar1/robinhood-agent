@@ -535,6 +535,16 @@ export function computeSleeveReturns(
 // return, so the dashboard's per-date compounding stays one-point-per-date. Each canonical run
 // is recomputed against the previous canonical run's snapshots (matching production's day-over-
 // day baseline). Returns a human-readable change log; writes the full list atomically.
+// A single-day sleeve move beyond this is almost certainly a residual data artifact, not a real
+// return (the sleeves are small/volatile but not THIS volatile — a phantom −51.25% appeared 2026-08-28
+// when an influencer name was stopped out intraday by the drop-check and its proceeds weren't credited
+// in the trade run's own trades). Drop to null rather than stamp a number that would distort the
+// compounded track record. Applied at BOTH the live write AND the recompute so a phantom never reaches
+// the dashboard raw. Tunable.
+export const SLEEVE_EXTREME_RETURN = 0.5;
+export const clampSleeveReturn = (x: number | null): number | null =>
+  x != null && Math.abs(x) > SLEEVE_EXTREME_RETURN ? null : x;
+
 export async function backfillSleeveReturns(): Promise<string[]> {
   const all = await getRuns(MAX_RUNS); // newest-first
   const changes: string[] = [];
@@ -548,11 +558,7 @@ export async function backfillSleeveReturns(): Promise<string[]> {
   const fmt = (x: number | null | undefined) => x == null ? "null" : (x * 100).toFixed(2) + "%";
   const approxEq = (a: number | null, b: number | null) =>
     (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 1e-9);
-  // A single-day sleeve move beyond this is almost certainly a residual data artifact, not a real
-  // return (the sleeves are small/volatile but not THIS volatile). Drop to null rather than stamp
-  // a number that would distort the compounded track record — mirrors the autopilot's return-sanity clear.
-  const EXTREME = 0.5;
-  const sane = (x: number | null): number | null => x != null && Math.abs(x) > EXTREME ? null : x;
+  const sane = clampSleeveReturn;
 
   const patched = all.map(run => {
     if (run.agenticDailyReturn == null) return run; // non-canonical (thin intraday) run — leave untouched

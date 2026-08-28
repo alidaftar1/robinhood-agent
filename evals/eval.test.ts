@@ -10,7 +10,7 @@ import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, probBeatsSpy, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
 import { formatMarketContext, type SectorData } from "@/lib/market-data";
-import { computeSleeveReturns, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
+import { computeSleeveReturns, clampSleeveReturn, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "@/lib/run-store";
 import { reconcileDashboard } from "@/lib/dashboard-reconcile";
 import { fitBuysToBudget, usableBuyBudget, positionCapQty, fitNotionalBuysToBudget, positionCapDollars, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, usableNotionalBudget, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
@@ -1082,6 +1082,27 @@ describe("sleeve returns: sold-out position is reconciled, not booked as a phant
     const r = computeSleeveReturns(todayPos, tr, todayInf, prevInf, prevPos);
     expect(Math.abs(r.influencerDailyReturn!)).toBeLessThan(1e-6);
     expect(Math.abs(r.mainDailyReturn!)).toBeLessThan(1e-6);
+  });
+
+  it("an influencer name STOPPED OUT (its sell in the trade set) credits proceeds — no phantom loss", () => {
+    // The 2026-08-28 PYPL case: sleeve was [PYPL~$100, IMAX~$100]; PYPL stopped −11% → sold. If its
+    // sell is in the trades passed in, the proceeds are credited and the sleeve reads a modest loss
+    // (~−5%), NOT the −51% phantom you get when the sell (from a same-day drop-check run) is missing.
+    const prevInf = [pos("PYPL", "1.62", "61.58"), pos("IMAX", "1.88", "51")];
+    const todayInf = [pos("IMAX", "1.88", "51")]; // PYPL gone, IMAX flat
+    const prevPos = [...prevInf, pos("MSFT", "1", "400")];
+    const todayPos = [...todayInf, pos("MSFT", "1", "400")];
+    const withSell = computeSleeveReturns(todayPos, [trade("sell", "PYPL", "1.62", "54.73", "influencer")], todayInf, prevInf, prevPos);
+    const withoutSell = computeSleeveReturns(todayPos, [], todayInf, prevInf, prevPos); // the bug: sell missing
+    expect(withSell.influencerDailyReturn! * 100).toBeGreaterThan(-15); // proceeds credited → modest loss
+    expect(withoutSell.influencerDailyReturn! * 100).toBeLessThan(-40);  // missing sell → phantom ~−50%
+  });
+
+  it("clampSleeveReturn nulls a beyond-±50% artifact but passes a normal move", () => {
+    expect(clampSleeveReturn(-0.5125)).toBeNull();   // the phantom −51.25%
+    expect(clampSleeveReturn(0.9)).toBeNull();
+    expect(clampSleeveReturn(-0.0629)).toBeCloseTo(-0.0629); // the real −6.29%
+    expect(clampSleeveReturn(null)).toBeNull();
   });
 });
 
