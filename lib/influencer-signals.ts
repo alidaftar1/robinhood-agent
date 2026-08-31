@@ -255,19 +255,24 @@ async function fetchTranscript(videoId: string, quota?: { exhausted: boolean }):
     try {
       const res = await fetch(url, { headers: { "x-api-key": key }, signal: AbortSignal.timeout(20000) });
       if (res.status === 429) {
-        // Two very different 429s. The free tier's 1-req/sec RATE limit is transient → back off and
-        // retry. The monthly PLAN QUOTA being exhausted is NOT retryable — every call this run will
-        // 429 identically. Match the EXACT error code ("limit-exceeded"), NOT a loose substring: a
-        // rate-limit code like "rate-limit-exceeded" *contains* that substring and would false-trip
-        // the breaker on an ordinary throttle → a self-inflicted, run-wide transcript outage.
-        let errorCode = "";
-        try { errorCode = (JSON.parse(await res.text()) as { error?: string }).error ?? ""; } catch { /* non-JSON body → treat as transient */ }
-        if (errorCode === "limit-exceeded") {
+        // Supadata returns 429 with the SAME error code ("limit-exceeded") for TWO different limits —
+        // ONLY the `details` string distinguishes them (verified 2026-08-31):
+        //   • RATE limit: details "Request rate limit on current plan was exceeded" — TRANSIENT (free
+        //     tier ~1 req/sec, and we fetch a batch concurrently) → back off + retry.
+        //   • monthly PLAN QUOTA: details "Plan usage limit was exceeded" — NOT retryable → trip breaker.
+        // The 2026-08-21 code matched on `error` alone, which is identical for both, so it false-tripped
+        // the breaker on ORDINARY rate-limiting: after the 08-29 quota reset the sleeve stayed dark with
+        // 96/100 credits UNUSED (the Supadata dashboard exposed it). Distinguish by `details`.
+        let details = "";
+        try { details = (JSON.parse(await res.text()) as { details?: string }).details ?? ""; } catch { /* non-JSON body → treat as transient */ }
+        if (/plan usage limit/i.test(details)) {
           if (quota) quota.exhausted = true;
-          console.warn("SUPADATA_QUOTA_EXHAUSTED — plan usage limit hit; skipping transcript fetches for the rest of this run");
+          console.warn("SUPADATA_QUOTA_EXHAUSTED — monthly plan usage limit hit; skipping transcript fetches for the rest of this run");
           return null;
         }
-        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+        // Rate limit (or an unknown 429): back off WITH JITTER so concurrent batch members don't retry
+        // in lockstep and re-collide on the same 1/sec window (which would defeat the retry entirely).
+        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1) + Math.floor(Math.random() * 800)));
         continue;
       }
       if (!res.ok) return null; // other transient error — don't cache, retry next run
