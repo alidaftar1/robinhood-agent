@@ -510,6 +510,14 @@ export async function GET(request: Request) {
       reentryNote += `\n\n⚠️ ROTATION-CHURN FLAG: re-bought recently-SOLD name(s): ${notes}. Confirm a SPECIFIC fresh reason the discretionary exit no longer applies (a real new catalyst — ★INS / ⚡↑ / ⚡NEWS↑), not just shortlist membership; otherwise this is churn — sold and re-bought at ~the same price for no strategic gain.`;
     }
 
+    // Sizing adjustments (buys shrunk/dropped by ANY guard below) — surfaced in the run + email so a
+    // trim/drop is never silent, AND so the skeptical reviewer's decided-vs-executed reconciliation
+    // finds a note for every buy that didn't execute. Declared BEFORE the first guard (the within-rails
+    // filter) so its drops are recorded too — 2026-08-31: an off-rails AMAT buy was dropped correctly
+    // but only console.error'd + alerted separately, leaving NO buySizingAdjustments note, so the
+    // reviewer flagged "decided buy absent, no explanation" (registry #19). Every drop belongs here.
+    let buySizingAdjustments: string[] = [];
+
     // ── V1 WITHIN-RAILS HARD FILTER ───────────────────────────────────────────
     // The main book may ONLY buy from the pre-screened quality-momentum shortlist. Soft prompt guidance
     // does not reliably bind (see the regime-overlay + SCHW incidents), so enforce it in code: drop any
@@ -529,18 +537,16 @@ export async function GET(request: Request) {
       });
       if (offList.length > 0) {
         console.error("V1_OFF_RAILS_BUYS_DROPPED", offList);
+        // Record in the run so decided-vs-executed reconciles (not just a separate alert email). A
+        // ◆HELD retained name (held, but squeezed off the buyable shortlist by the sector cap) is the
+        // common case — the model tried to ADD to it, which the rails correctly forbid.
+        buySizingAdjustments.push(...offList.map(s => `${s} buy DROPPED — off-rails (not on the quality-momentum shortlist or influencer signal set; e.g. a ◆HELD name not on the buyable list)`));
         await sendAlert(
           `⚠️ V1 off-rails buys dropped — ${today}`,
           `The model tried to buy names on neither the quality-momentum shortlist nor the influencer signal set: ${offList.join(", ")}. Dropped before execution (within-rails guard). Investigate if this recurs.`
         ).catch(() => {});
       }
     }
-
-    // Sizing adjustments (buys shrunk/dropped by any guard below) — surfaced in the run + email so a
-    // trim/drop is never silent. Declared before the sanitation filter so a dust/invalid drop is
-    // recorded too, not just console.warn'd (2026-08-06: a $11.36 LLY buy — the model's entire
-    // remaining budget, below the $50 min — vanished from executed trades with zero note anywhere).
-    let buySizingAdjustments: string[] = [];
 
     // ── Notional buy sanitation ───────────────────────────────────────────────
     // A buy MUST carry a positive numeric dollarAmount ≥ the $50 min. Enforce it deterministically:
