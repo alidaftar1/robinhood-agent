@@ -843,6 +843,12 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
         }
         if (missing.length > 0) {
           console.warn("SELL_STILL_MISSING_AFTER_RETRY", { missing: missing.map(s => s.symbol) });
+          // Persist the drop on the run itself — sendAlert is a side-channel email the stored
+          // run/dashboard/reviewer never see, so without this a decided-but-unconfirmed sell
+          // looked identical to a silently-bypassed guard (2026-08-31: same gap on the buy side).
+          buySizingAdjustments.push(...missing.map(s =>
+            `${s.symbol} sell DID NOT CONFIRM after retry — still held; broker never verified the order filled`
+          ));
           await sendAlert(
             `⚠️ Sell orders not confirmed — ${today}`,
             `These decided sells did NOT execute even after a retry: ${missing.map(s => s.symbol).join(", ")}.\nThey are still held. The next run will re-attempt, or place them manually in Robinhood.`,
@@ -936,6 +942,14 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
         }
         if (missing.length > 0) {
           console.warn("BUY_STILL_MISSING_AFTER_RETRY", { missing: missing.map(b => b.symbol) });
+          // Persist the drop on the run itself (2026-08-31: AMAT's decided $200 top-up passed every
+          // pre-flight sizing/cap guard with no adjustment note, then silently never confirmed —
+          // the only record of it was this sendAlert, a side-channel email the stored run, dashboard,
+          // and skeptical reviewer never see). Without this, a genuine execution failure is
+          // indistinguishable from a silently-bypassed guardrail.
+          buySizingAdjustments.push(...missing.map(b =>
+            `${b.symbol} buy DID NOT CONFIRM after retry — decided $${b.dollarAmount.toFixed(2)} but broker never verified a fill; remains unbought, next run re-evaluates`
+          ));
           await sendAlert(
             `⚠️ Buy orders not confirmed — ${today}`,
             `These decided buys did NOT execute even after a retry: ${missing.map(b => b.symbol).join(", ")}.\nLikely insufficient buying power (today's sells settle T+1) or a dropped order. Place manually if still wanted; the next run re-evaluates.`,
