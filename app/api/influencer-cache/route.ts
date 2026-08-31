@@ -31,6 +31,10 @@ export async function GET(request: Request) {
         .sort(([, a], [, b]) => b - a)
         .slice(0, 10)
         .map(([t, s]) => `${t}(${s})`),
+      topAvoids: Object.entries(cache.avoidCounts ?? {})
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 10)
+        .map(([t, s]) => `${t}(${s})`),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
