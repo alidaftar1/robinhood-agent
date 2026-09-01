@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseTradeDecision, extractTradeDecision } from "../lib/trade-decision";
+import { parseTradeDecision } from "../lib/trade-decision";
 
 const PAYLOAD = '{"thesis":"t","sells":[{"symbol":"LLY","exit":"all"}],"buys":[{"symbol":"TER","dollarAmount":100,"strategy":"main"}]}';
 
@@ -57,9 +57,34 @@ describe("parseTradeDecision", () => {
     if (r.status === "parsed") expect(r.decision.buys[0].symbol).toBe("TER");
   });
 
-  test("prose mentioning the marker is not a payload", () => {
-    // The user turn literally says "Output your thesis then the TRADE_DECISION line."
-    expect(parseTradeDecision("Output your thesis then the TRADE_DECISION line.").status).toBe("unparsed");
+  // A marker with no payload after it means the model emitted no decision — the same real-world
+  // event as no marker at all. Reporting it as "unparsed" would fire an alert asserting a parser
+  // bug on prose like "Output your thesis then the TRADE_DECISION line."
+  test("prose mentioning the marker reads as absent, not as a bug", () => {
+    expect(parseTradeDecision("Output your thesis then the TRADE_DECISION line.").status).toBe("absent");
+    expect(parseTradeDecision("I will stand pat; no TRADE_DECISION needed today.").status).toBe("absent");
+  });
+
+  // The review finding this module's rewrite was driven by: the analysis call is capped at
+  // max_tokens, so the FINAL payload can be truncated mid-JSON. Falling back to an earlier draft
+  // would hand the draft's orders to the executor — a wrong-trade bug, worse than the no-op.
+  test("a truncated FINAL payload never falls back to an earlier draft", () => {
+    const draft = '{"thesis":"draft","sells":[],"buys":[{"symbol":"DRAFT","dollarAmount":50}]}';
+    const r = parseTradeDecision(
+      `TRADE_DECISION:${draft}\n\nOn reflection:\n\nTRADE_DECISION:{"thesis":"final","sells":[{"symbol":"REAL"`,
+    );
+    expect(r.status).toBe("unparsed");
+    if (r.status === "unparsed") {
+      expect(r.reason).toContain("truncated");
+      expect(r.reason).toContain("2 payload sites");
+    }
+  });
+
+  test("the reported reason describes the FINAL payload, not an earlier one", () => {
+    const goodDraft = '{"thesis":"draft","sells":[],"buys":[]}';
+    const r = parseTradeDecision(`TRADE_DECISION:${goodDraft}\n\nActually:\n\nTRADE_DECISION:{"sells":[,]}`);
+    expect(r.status).toBe("unparsed");
+    if (r.status === "unparsed") expect(r.reason).toContain("payload sites");
   });
 
   test("no marker at all reads as absent, not as a bug", () => {
@@ -82,8 +107,4 @@ describe("parseTradeDecision", () => {
     if (r.status === "parsed") expect(r.decision.buys).toHaveLength(0);
   });
 
-  test("extractTradeDecision returns null for both failure modes", () => {
-    expect(extractTradeDecision("nothing here")).toBeNull();
-    expect(extractTradeDecision("TRADE_DECISION:{oops")).toBeNull();
-  });
 });

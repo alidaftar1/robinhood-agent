@@ -40,9 +40,13 @@ export interface TradeDecision {
 export type DecisionParseOutcome =
   /** A TRADE_DECISION payload was found and parsed. */
   | { status: "parsed"; decision: TradeDecision; raw: string }
-  /** No TRADE_DECISION marker anywhere — the model produced prose only. */
+  /**
+   * No decision payload was emitted. Covers both "the marker never appears" and "the prose mentions
+   * the marker but never follows it with a payload" — those are the same real-world event (the model
+   * produced no decision), and neither is evidence of a bug, so neither escalates.
+   */
   | { status: "absent" }
-  /** The marker IS present but no candidate parsed into a usable decision. This is the loud case. */
+  /** A payload WAS emitted and could not be read. This is the loud case — a bug or a truncation. */
   | { status: "unparsed"; reason: string };
 
 /**
@@ -72,15 +76,22 @@ function matchBraces(text: string, start: number): number {
   return -1;
 }
 
+/** A place in the text where a TRADE_DECISION marker is actually followed by a payload. */
+interface PayloadSite {
+  start: number;        // index of the opening `{`
+  json: string | null;  // the balanced span, or null when the braces never close (truncated output)
+}
+
 /**
- * Every `{...}` that follows a TRADE_DECISION marker, in the order they appear.
+ * Every point where a TRADE_DECISION marker is followed by an opening brace.
  *
  * Tolerated between the word and the `{`: markdown emphasis (`**`, `*`, `_`), a colon, backticks
  * and ```json fences, and any whitespace including newlines (so a pretty-printed payload works).
- * Anything else means this occurrence is prose ("output the TRADE_DECISION line"), not a payload.
+ * Anything else means this occurrence is prose ("output the TRADE_DECISION line"), not a payload —
+ * it yields no site, so prose mentioning the marker can never be mistaken for a broken decision.
  */
-function decisionCandidates(text: string): string[] {
-  const out: string[] = [];
+function payloadSites(text: string): PayloadSite[] {
+  const out: PayloadSite[] = [];
   const marker = /TRADE_DECISION/g;
   let m: RegExpExecArray | null;
   while ((m = marker.exec(text)) !== null) {
@@ -89,10 +100,9 @@ function decisionCandidates(text: string): string[] {
     const gap = rest.match(/^[\s:*_`]*(?:json[\s]*)?[\s`]*/);
     const offset = gap ? gap[0].length : 0;
     if (rest[offset] !== "{") continue;
-    const absoluteStart = m.index + m[0].length + offset;
-    const end = matchBraces(text, absoluteStart);
-    if (end === -1) continue;
-    out.push(text.slice(absoluteStart, end));
+    const start = m.index + m[0].length + offset;
+    const end = matchBraces(text, start);
+    out.push({ start, json: end === -1 ? null : text.slice(start, end) });
   }
   return out;
 }
@@ -112,35 +122,36 @@ function normalize(parsed: unknown): TradeDecision | null {
 /**
  * Extracts the model's decision from its analysis output.
  *
- * Takes the LAST parseable candidate: the model sometimes sketches a draft payload mid-reasoning
- * and then emits the final one, and the final word is the decision it stands behind.
+ * Reads ONLY THE LAST payload site. The model sometimes sketches a draft payload mid-reasoning and
+ * then emits the final one, so the last site is the decision it stands behind — and an earlier
+ * draft is emphatically NOT a fallback for it. An earlier version of this function walked the sites
+ * backwards and returned the first that parsed, which meant a FINAL payload truncated mid-JSON
+ * (the analysis call is capped at max_tokens) would silently hand the DRAFT's buys and sells to the
+ * executor as live orders — a wrong-trade bug strictly worse than the silent no-op this module was
+ * written to prevent. Refusing to read past the last site turns that case into a loud `unparsed`.
  */
 export function parseTradeDecision(analysisText: string): DecisionParseOutcome {
   if (!analysisText || !analysisText.includes("TRADE_DECISION")) return { status: "absent" };
 
-  const candidates = decisionCandidates(analysisText);
-  if (candidates.length === 0) {
+  const sites = payloadSites(analysisText);
+  // The marker appears only in prose (or not at all) — the model emitted no decision. Not a bug.
+  if (sites.length === 0) return { status: "absent" };
+
+  const last = sites[sites.length - 1];
+  const suffix = sites.length > 1 ? ` (last of ${sites.length} payload sites)` : "";
+  if (last.json === null) {
     return {
       status: "unparsed",
-      reason: "TRADE_DECISION marker present but no JSON object follows it",
+      reason: `final TRADE_DECISION payload never closes its braces — output likely truncated${suffix}`,
     };
   }
-
-  let lastError = "";
-  for (let i = candidates.length - 1; i >= 0; i--) {
-    try {
-      const decision = normalize(JSON.parse(candidates[i]));
-      if (decision) return { status: "parsed", decision, raw: candidates[i] };
-      lastError = "parsed JSON has neither a sells nor a buys array";
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : String(e);
+  try {
+    const decision = normalize(JSON.parse(last.json));
+    if (!decision) {
+      return { status: "unparsed", reason: `final TRADE_DECISION payload has neither a sells nor a buys array${suffix}` };
     }
+    return { status: "parsed", decision, raw: last.json };
+  } catch (e) {
+    return { status: "unparsed", reason: `${e instanceof Error ? e.message : String(e)}${suffix}` };
   }
-  return { status: "unparsed", reason: lastError || "no candidate parsed" };
-}
-
-/** Convenience for read-only consumers (reviewers, audits) that just want the decision or nothing. */
-export function extractTradeDecision(analysisText: string): TradeDecision | null {
-  const outcome = parseTradeDecision(analysisText);
-  return outcome.status === "parsed" ? outcome.decision : null;
 }

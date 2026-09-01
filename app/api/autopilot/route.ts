@@ -336,7 +336,7 @@ export async function GET(request: Request) {
       // The run's own summary contains a decision the executor could not read — meaning nothing it
       // decided was placed, for a formatting reason. Louder than any single dropped order.
       issues.push(
-        `Run emitted a TRADE_DECISION that could not be parsed (${parsedDecision.reason}) — NO orders were placed for it. This is a parser bug in lib/trade-decision.ts, not a stand-pat day.`,
+        `Run emitted a TRADE_DECISION that could not be read (${parsedDecision.reason}) — NO orders were placed for it. NOT a stand-pat day: either the model\u2019s output was truncated mid-payload or lib/trade-decision.ts met a shape it cannot parse.`,
       );
     } else if (parsedDecision.status === "parsed") {
       const decided = parsedDecision.decision;

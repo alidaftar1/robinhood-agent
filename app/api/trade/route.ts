@@ -11,7 +11,7 @@ import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, n
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
-import { parseTradeDecision, extractTradeDecision, type TradeDecision } from "@/lib/trade-decision";
+import { parseTradeDecision, type TradeDecision } from "@/lib/trade-decision";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
@@ -145,7 +145,14 @@ export async function GET(request: Request) {
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
 
-      const decision: TradeDecision = extractTradeDecision(analysisText) ?? { thesis: "", sells: [], buys: [] };
+      // Use the full outcome, not extractTradeDecision — a dry run whose payload is unreadable must
+      // not render as a tidy "no trades" preview, which is the same silent-cancel shape the executor
+      // path was just fixed to make loud. Surfaced as decisionParseError in the response below.
+      const dryParsed = parseTradeDecision(analysisText);
+      const decision: TradeDecision = dryParsed.status === "parsed"
+        ? dryParsed.decision
+        : { thesis: "", sells: [], buys: [] };
+      const decisionParseError = dryParsed.status === "unparsed" ? dryParsed.reason : null;
 
       // Apply the same influencer cap + downtrend guard the real run uses (display only)
       const isFullExit = (s: { exit?: string; fraction?: number; quantity?: number }) =>
@@ -171,6 +178,7 @@ export async function GET(request: Request) {
         topInfluencerTickers: Object.entries(influencerCache?.tickerCounts ?? {}).sort(([, a], [, b]) => b - a).slice(0, 8).map(([t, s]) => `${t}(${s})`),
         influencerSectionInjected: influencerSection.length > 0,
         decision: { thesis: decision.thesis, sells: decision.sells, buys: annotatedBuys },
+        ...(decisionParseError ? { decisionParseError } : {}),
         influencerCap: { keptInfluencer, allowedNew, influencerBuysRequested: influencerBuys.length, wouldTrim: Math.max(0, influencerBuys.length - allowedNew) },
         buySizing: { settledBuyingPower: buyingPower, adjustments: sizingAdjustments, sizedBuys: sizedBuys.map(b => ({ symbol: b.symbol, dollarAmount: b.dollarAmount })) },
         thesisPreview: analysisText.slice(0, 1200),
@@ -486,10 +494,10 @@ export async function GET(request: Request) {
       console.log("DECISION_PARSED", { sells: decision.sells.length, buys: decision.buys.length });
     } else if (parsed.status === "unparsed") {
       console.error("DECISION_UNPARSED", { reason: parsed.reason });
-      decisionParseNote = `NO ORDERS PLACED — the analysis emitted a TRADE_DECISION but it could not be parsed (${parsed.reason}). This is a parser bug, not a decision to stand pat.`;
+      decisionParseNote = `NO ORDERS PLACED — the analysis emitted a TRADE_DECISION but it could not be read (${parsed.reason}). NOT a decision to stand pat: either the model\u2019s output was truncated mid-payload or the parser met an unknown shape.`;
       await sendAlert(
         "Trade run placed NO orders — TRADE_DECISION could not be parsed",
-        `The model produced a TRADE_DECISION payload but it failed to parse (${parsed.reason}), so no sells or buys were executed. The run's own decision is in its summary. Check lib/trade-decision.ts against the raw analysis text.`,
+        `The model produced a TRADE_DECISION payload but it could not be read (${parsed.reason}), so no sells or buys were executed. The run's own decision is in its summary. If the reason says the braces never close, the analysis hit its max_tokens cap mid-payload; otherwise check lib/trade-decision.ts against the raw analysis text.`,
       );
     } else {
       console.warn("DECISION_MISSING — no TRADE_DECISION found in analysis output");
