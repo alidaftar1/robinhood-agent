@@ -825,7 +825,17 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
 
     if (sellsToExecute.length > 0) {
       const ok = await runSellSession(sellsToExecute, 120_000);
-      if (ok) {
+      // Always verify + retry, even when the session call itself errored/timed out (ok=false):
+      // 2026-09-01, both the sell AND buy sessions failed outright (SELLS_FAILED/BUYS_FAILED,
+      // console.warn only) and the old `if (ok)` gate skipped verification, recording, the
+      // DID-NOT-CONFIRM note, AND the alert entirely — 3 decided sells + 3 decided buys vanished
+      // with ZERO trace anywhere (trades:[], buySizingAdjustments: null), indistinguishable from a
+      // silently-bypassed guardrail. A session-level failure doesn't mean nothing reached the
+      // broker (sequential orders place one at a time; an abort/timeout can hit mid-sequence), so
+      // verify unconditionally — the existing retry-then-note-then-alert logic already handles
+      // "some/all still missing" correctly regardless of why they're missing.
+      if (!ok) console.warn("SELL_SESSION_FAILED — verifying anyway in case orders landed before the failure");
+      {
         let verified = await verifySells();
         let missing = sellsToExecute.filter(s => !verified.has(s.symbol));
         if (missing.length > 0) {
@@ -928,7 +938,12 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
 
     if (decision.buys.length > 0) {
       const ok = await runBuySession(decision.buys, 120_000);
-      if (ok) {
+      // Always verify + retry, even when the session call itself errored/timed out (ok=false) —
+      // see the matching comment on the sell session above (2026-09-01: both sessions failed
+      // outright the same run, and the old `if (ok)` gate skipped verification/recording/the
+      // DID-NOT-CONFIRM note/the alert entirely, so 3 decided buys vanished with zero trace).
+      if (!ok) console.warn("BUY_SESSION_FAILED — verifying anyway in case orders landed before the failure");
+      {
         let verified = await verifyBuys();
         let missing = decision.buys.filter(b => !verified.has(b.symbol));
         if (missing.length > 0) {
