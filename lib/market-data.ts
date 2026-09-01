@@ -1,7 +1,7 @@
 import { SP500_UNIVERSE } from "./strategy";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
 import { getAnalystRatings, type AnalystRating } from "./analyst";
-import { fetchUpcomingEarnings, formatPostEarnings } from "./earnings";
+import { fetchUpcomingEarnings, formatPostEarnings, formatEarningsRecord } from "./earnings";
 import { INFLUENCER_BUY_FLOOR } from "./influencer-signals";
 
 export type { InsiderBuy, AnalystRating };
@@ -360,6 +360,7 @@ export function formatV1Shortlist(
   news: Map<string, { direction: string; summary: string }> = new Map(),
   recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(),
   influencerX: Map<string, { net: number; avoid: number }> = new Map(),
+  beatHistory: Map<string, import("./earnings").EarningsBeatRecord> = new Map(),
 ): string {
   // Material corporate-event news (M&A/litigation/guidance/product/regulatory) — the event tail the
   // structured signals miss. Only material events are in the map (Haiku already filtered the noise).
@@ -412,10 +413,14 @@ export function formatV1Shortlist(
     // late/risky momentum entry, distinct from the ⚠EARN (upcoming) flag above.
     const re = recentEarnings.get(s.symbol);
     const reportedFlag = re ? formatPostEarnings(re, s.change1d, s.change5d) : "";
+    // Same reason as the influencer rows: the 📊REPORTED buy rule carves out "a serial beater with a
+    // strong 📈EARN-RECORD", so a just-reported CANDIDATE needs its record shown to make that
+    // reachable. Only on 📊REPORTED names — the record is noise on a name with no fresh print.
+    const beatFlag = re ? formatEarningsRecord(beatHistory.get(s.symbol)) : "";
     // ◆HELD marks a name you currently hold that is still eligible + positive-momentum. It is
     // RETAINED by the hysteresis band even if it slipped below the top buy names — do NOT rotate it.
     const heldFlag = held.has(s.symbol) ? " ◆HELD" : "";
-    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${heldFlag}${insFlag(s.symbol)}${analystFlag(s.symbol)}${newsFlag(s.symbol)}${reportedFlag}${inflFlag(s.symbol)}`;
+    return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${heldFlag}${insFlag(s.symbol)}${analystFlag(s.symbol)}${newsFlag(s.symbol)}${reportedFlag}${beatFlag}${inflFlag(s.symbol)}`;
   });
   return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ◆HELD = a current holding retained by the hysteresis band (still positive momentum — do NOT rotate it out just for ranking below newer names) · ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d · ⚡NEWS↑/↓ = a MATERIAL corporate event (M&A/litigation/guidance/product/regulatory) with the event quoted — a bullish event raises conviction, a bearish one is a real trim/avoid reason even on strong momentum; cite it in your thesis when it drives a decision · 🎬INFL = the influencer YouTubers' read (an independent, momentum-oriented crowd) on a name your screen likes; net = weighted-buy − avoid, "(N avoid)" shows dissent: ✓ (net ≥ the sleeve's buy bar) = they're RECOMMENDING it → a secondary CONFIRMING signal that STRENGTHENS the thesis (it's creator CONVICTION, not price-timing — still apply your own momentum/entry screen; a name the sleeve's own falling-knife rails reject can still show ✓); ⚠ (net < 0, avoids OUTWEIGH buys) = they're NET-BEARISH → an independent avoid signal → WARRANTS CAUTION (size down, prefer an equally-strong un-warned name, or your thesis must say why the caution is wrong); ~ (net-flat with dissent) = CONTESTED, creators split → weigh the avoid, don't read it as corroboration. None of these change eligibility or override the shortlist/caps]\n${rows.join("\n")}`;
 }

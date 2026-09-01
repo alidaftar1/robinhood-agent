@@ -379,28 +379,41 @@ export async function GET(request: Request) {
       marketData.stocks.filter(s => typeof s.change5d === "number").map(s => [s.symbol, s.change5d]),
     );
     for (const [sym, m] of influencerMomentum) if (!(sym in change5dOfHeld)) change5dOfHeld[sym] = m.change5d;
-    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings, influencerX);
-    // Build the influencer section HERE (once) — after recentEarnings/news, so candidates carry the
-    // SAME universal risk flags as the main book: 📊REPORTED, ⚠EARN/⚠⚠ IMMINENT (upcoming), ⚡NEWS.
-    influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings, perSymbolEarnings, today, newsSignals);
-    console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
-
-    // Earnings-BEAT track record for HELD names approaching earnings — the base rate that lets the
-    // hold-judgment tell a serial beater (ride through, PEAD favors it) from a coin flip (trim if
-    // oversized). Only held names into imminent earnings need it: PLTR was sold as "stale + earnings"
-    // while being a 4/4 serial beater (+15% avg surprise) — exactly the ride-through exception the
-    // rule couldn't see. Scoped to ≤15d-out held names (usually 0-2), so it's a couple of cheap
-    // Finnhub calls. Fail-safe: empty map → the position line simply omits the record.
+    // Earnings-BEAT track record — the base rate that separates a serial beater (ride through /
+    // PEAD-drift) from a coin flip. TWO populations need it, for the two rules that name it:
+    //   (a) HELD names approaching earnings — the hold-judgment's ride-through exception. PLTR was
+    //       sold as "stale + earnings" while a 4/4 beater (+15% avg), the exception the rule couldn't
+    //       see (registry 2026-08-04); ≤15d out (registry #18 widened this from ≤10 after ROST @ 12d).
+    //   (b) BUY candidates that JUST REPORTED (📊REPORTED, main shortlist or influencer sleeve) — the
+    //       post-earnings screen tells the model to skip a fresh gap "unless it's a serial beater with
+    //       a strong 📈EARN-RECORD", but the record was only ever fetched for (a), so on a CANDIDATE
+    //       the carve-out was unreachable and the screen only ever pointed one way. 2026-09-01: CRM
+    //       carried the run's highest influencer net score (5) and was skipped as a "+27% one-time
+    //       earnings gap" with its beat record never fetched, shown, or considered.
+    // Both sets are small (held ≈ 0-2; just-reported candidates are a handful of the ~12 shortlist +
+    // ~12 sleeve names, and only inside recentEarnings' 7-day lookback), batched 10-wide in
+    // fetchEarningsBeatHistory. Fail-safe: empty map → rows simply omit the record.
     const heldIntoEarnings = [...heldMainSymbols, ...influencerHeld].filter(sym => {
       const d = earningsDatesMap[sym];
       if (!d) return false;
       const days = Math.round((new Date(d + "T00:00:00Z").getTime() - new Date(today + "T00:00:00Z").getTime()) / 86400000);
       return days >= 0 && days <= 15; // registry #18: surface the beat-record for held names ≤15d from earnings (ROST @ 12d was missed by the earlier ≤10)
-
     });
-    const beatHistory = heldIntoEarnings.length
-      ? await fetchEarningsBeatHistory(heldIntoEarnings).catch(() => new Map<string, EarningsBeatRecord>())
+    // Buyable candidates only — a name the rails won't let us buy doesn't need the record. v1Retained
+    // (◆HELD, render-only) is excluded here since anything held is already covered by (a).
+    const reportedCandidates = [...v1Buy.map(s => s.symbol), ...influencerCandidateSet]
+      .filter(sym => recentEarnings.has(sym));
+    const beatSymbols = [...new Set([...heldIntoEarnings, ...reportedCandidates])];
+    const beatHistory = beatSymbols.length
+      ? await fetchEarningsBeatHistory(beatSymbols).catch(() => new Map<string, EarningsBeatRecord>())
       : new Map<string, EarningsBeatRecord>();
+    console.log("EARN_RECORD_SCOPE", { held: heldIntoEarnings, reportedCandidates, fetched: beatSymbols.length });
+
+    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings, influencerX, beatHistory);
+    // Build the influencer section HERE (once) — after recentEarnings/news, so candidates carry the
+    // SAME universal risk flags as the main book: 📊REPORTED, ⚠EARN/⚠⚠ IMMINENT (upcoming), ⚡NEWS.
+    influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings, perSymbolEarnings, today, newsSignals, beatHistory);
+    console.log("V1_SHORTLIST", { buy: v1Buy.length, retained: v1Retained.map(s => s.symbol), held: [...heldMainSymbols], qualityAvailable: !!quality, universe: marketData.stocks.length, symbols: v1Buy.map(s => s.symbol) });
 
     // ── V1 DEGENERATE-DATA GUARD ──────────────────────────────────────────────
     // If the universe fetch came back badly partial (Yahoo throttling on the heavier 2y fetch) or the

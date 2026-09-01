@@ -1,4 +1,4 @@
-import { formatPostEarnings } from "./earnings";
+import { formatPostEarnings, formatEarningsRecord } from "./earnings";
 
 export const SP500_UNIVERSE = [
   // Technology (XLK)
@@ -291,8 +291,7 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
         // upcoming-earnings hold-judgment, not only imminent ones. (beatHistory is only populated for
         // ≤15d held names by the route, so the window check here just double-guards a far-off leak.)
         const beat = (dte != null && dte >= 0 && dte <= 15) ? beatHistory.get(p.symbol) : undefined;
-        const avgPct = beat ? Math.round(beat.avgSurprisePct) : 0; // round first so the sign reflects the shown number (no "-0%")
-        const beatTag = beat ? `  📈EARN-RECORD beat ${beat.beats}/${beat.total}, avg ${avgPct >= 0 ? "+" : ""}${avgPct}% surprise` : "";
+        const beatTag = formatEarningsRecord(beat);
         // Material news on a HOLDING (main or influencer) — a bearish event is a real trim/exit reason.
         const n = news.get(p.symbol);
         const newsTag = n ? `  ⚡NEWS${n.direction === "+" ? "↑" : n.direction === "-" ? "↓" : ""} "${n.summary}"` : "";

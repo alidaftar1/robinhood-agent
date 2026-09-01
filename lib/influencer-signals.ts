@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { SP500_UNIVERSE } from "./strategy";
-import { formatPostEarnings } from "./earnings";
+import { formatPostEarnings, formatEarningsRecord } from "./earnings";
 
 // ─── Channel registry ──────────────────────────────────────────────────────────
 // Independent finance YouTubers who make specific stock pick recommendations.
@@ -538,7 +538,7 @@ export function isInfluencerRecovering(m: MomentumSignal | undefined): boolean {
  *  @param priceMap optional live prices for influencer tickers (fetched in trade route)
  *  @param momentum optional 5-day % change per ticker (downtrend screen)
  */
-export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>, recentEarnings?: Map<string, import("./earnings").RecentEarnings>, upcomingEarnings?: Map<string, string>, today?: string, news?: Map<string, { direction: string; summary: string }>): string {
+export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>, recentEarnings?: Map<string, import("./earnings").RecentEarnings>, upcomingEarnings?: Map<string, string>, today?: string, news?: Map<string, { direction: string; summary: string }>, beatHistory?: Map<string, import("./earnings").EarningsBeatRecord>): string {
   if (!cache || cache.signals.length === 0) return "";
 
   // Rank BUY-mentioned tickers by NET score (buy consensus − avoid dissent), highest first.
@@ -570,6 +570,11 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     // post-earnings entry — a fresh pop is a late/risky momentum chase, not durable trend.
     const re = recentEarnings?.get(ticker);
     const earnStr = re ? formatPostEarnings(re, mom?.change1d, mom?.change5d) : "";
+    // The POST-EARNINGS SCREEN below tells the model to skip a fresh gap "unless it's a serial
+    // beater" — so the beat record has to be ON the row, not just on held positions. Without it the
+    // carve-out was unreachable and the screen ran one-sided (2026-09-01: CRM, the run's highest net
+    // score at 5, was skipped as a +25% post-earnings gap with its record never consulted).
+    const beatStr = recentEarnings?.has(ticker) ? formatEarningsRecord(beatHistory?.get(ticker)) : "";
     // Upcoming earnings — the "never buy into imminent earnings" rule applies to the sleeve too, so
     // render ⚠EARN / ⚠⚠ IMMINENT on candidates (data already fetched for this set). Same as the shortlist.
     const ud = upcomingEarnings?.get(ticker);
@@ -585,7 +590,7 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     // Show the net score; when other creators warned against it, spell out the buy−avoid split.
     const avoid = avoidOf[ticker] ?? 0;
     const scoreStr = avoid > 0 ? `net=${score} (${cache.tickerCounts[ticker]} buy − ${avoid} avoid)` : `net=${score}`;
-    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(30)} ${scoreStr}${upEarnStr}${earnStr}${newsStr}  channels: ${channels}`;
+    return `${flag} ${ticker.padEnd(6)}${priceStr.padEnd(9)}${momStr.padEnd(30)} ${scoreStr}${upEarnStr}${earnStr}${beatStr}${newsStr}  channels: ${channels}`;
   }).filter(Boolean).join("\n");
 
   if (!rows) return "";
@@ -605,7 +610,7 @@ FILL THE SLEEVE ONLY ON A QUALIFYING SIGNAL — an empty sleeve is a valid, corr
 • HARD LIMIT: at most 2 influencer positions held at once (system rejects extras).
 • Same per-position cap as the main strategy, min $50. Size each buy as a DOLLAR AMOUNT ("dollarAmount") — the broker fills fractional shares; do not compute a share count.
 • Prefer the highest NET score; a net-6 pick is a strong, broadly-covered, uncontested signal — do not ignore it. Between two similar nets, prefer the one with NO avoid split (cleaner consensus).
-• POST-EARNINGS SCREEN: a pick marked 📊REPORTED just had earnings — read the REACTION (up, DOWN, or flat), not just the net score. A big UP move = a one-time earnings GAP you'd be chasing LATE (local high, gaps give back), NOT durable trend — high-risk, prefer to skip unless it's a serial beater whose beat can keep drifting up. A big DOWN move = the print DISAPPOINTED; creators may be hyping a fallen name — respect the ⛔DOWNTREND screen, do not catch the knife. Either way a fresh post-earnings reaction is a CONSIDERED decision: say in your thesis how the outcome informs the buy. The sleeve catches durable momentum, not one-day earnings spikes or falling knives.
+• POST-EARNINGS SCREEN: a pick marked 📊REPORTED just had earnings — read the REACTION (up, DOWN, or flat), not just the net score. A big UP move = a one-time earnings GAP you'd be chasing LATE (local high, gaps give back), NOT durable trend — high-risk, prefer to skip UNLESS the row carries a strong 📈EARN-RECORD (beat most of its last quarters, solidly positive avg surprise) — a serial beater's beat can PEAD-drift further, which is a real reason to buy the pop; if you skip a high-net pick on this screen, say what its 📈EARN-RECORD was (or that it had none). A big DOWN move = the print DISAPPOINTED; creators may be hyping a fallen name — respect the ⛔DOWNTREND screen, do not catch the knife. Either way a fresh post-earnings reaction is a CONSIDERED decision: say in your thesis how the outcome informs the buy. The sleeve catches durable momentum, not one-day earnings spikes or falling knives.
 • NEWS + EARNINGS (same universal risk flags as the main book, now shown on candidates): a bearish ⚡NEWS↓ (a material event — lawsuit / cut guidance / deal collapse / regulatory) is a real reason to AVOID a pick even on strong consensus — name the event. And NEVER buy a candidate marked ⚠⚠ IMMINENT (≤3 days to earnings) — the same hard no-buy rule as the main book; ⚠EARN (≤30d) means size down / prefer a name without it.
 • DOWNTREND SCREEN: do NOT buy a pick marked ⛔DOWNTREND (down >${Math.abs(MOMENTUM_FLOOR_PCT)}% over 5d, OR >${Math.abs(DIST_FROM_HIGH_FLOOR)}% below its recent high). The row shows "5d:" (5-day change) and "hi:" (distance from recent high). These signals measure popularity, not price — a falling stock can be the most-talked-about one. The system rejects these buys anyway. A pick marked ↑RECOVERING dipped but has reclaimed its 5-day average (trend turned up) — it is allowed. Prefer a rising or ↑RECOVERING pick; never a ⛔DOWNTREND one.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".

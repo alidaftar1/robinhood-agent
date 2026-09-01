@@ -133,6 +133,19 @@ export function formatPostEarnings(r: RecentEarnings, change1d?: number | null, 
  *  when deciding whether to ride a HELD name through its earnings (PEAD favors serial beaters). */
 export interface EarningsBeatRecord { beats: number; total: number; avgSurprisePct: number }
 
+/**
+ * The 📈EARN-RECORD tag, rendered identically wherever a name carries a beat record — held position
+ * lines, the main shortlist, and the influencer candidate rows. One formatter because the prompt
+ * teaches ONE reading of the tag ("beat ≥3/4, avg ≥ +5% = serial beater"); if the three call sites
+ * drifted apart, that rule would mean different things in different tables.
+ */
+export function formatEarningsRecord(beat: EarningsBeatRecord | undefined): string {
+  if (!beat) return "";
+  // Round first so the sign reflects the number actually shown (no "-0%").
+  const avgPct = Math.round(beat.avgSurprisePct);
+  return `  📈EARN-RECORD beat ${beat.beats}/${beat.total}, avg ${avgPct >= 0 ? "+" : ""}${avgPct}% surprise`;
+}
+
 // Earnings-surprise history (Finnhub) for a set of symbols — how many of the last ~8 quarters the
 // company BEAT estimates, and by how much on average. Feeds the earnings hold-judgment so a serial
 // beater (e.g. PLTR: 4/4, +15% avg) reads as a ride-through candidate, not a coin flip. Fail-safe.
