@@ -670,30 +670,56 @@ describe("benchmark-awareness: beta math", () => {
   // Beta now uses ~1yr of returns (was a noisy 22-day window), so the math tests need a realistic
   // window length (≥60 returns). Build a repeating SPY return pattern, then derive the stock.
   const PAT = [0.01, -0.005, 0.02, -0.01, 0.008, -0.003, 0.015, -0.007];
+  const DAY = 86400;
+  // Bars are DATED now — beta pairs the two series by day, not by array position.
+  const dated = (closes: number[], ts?: number[]) => ({ closes, ts: ts ?? closes.map((_, i) => i * DAY) });
   const buildSpy = (n: number) => { const c = [100]; for (let i = 0; i < n; i++) c.push(c[c.length - 1] * (1 + PAT[i % PAT.length])); return c; };
-  const spy = buildSpy(80); // 81 closes → 80 returns
+  const spy = dated(buildSpy(80)); // 81 closes → 80 returns
   const derive = (mult: number) => { const c = [100]; for (let i = 0; i < 80; i++) c.push(c[c.length - 1] * (1 + mult * PAT[i % PAT.length])); return c; };
 
   it("computeStockBeta ≈ 2 when the stock moves 2× SPY each day", () => {
-    const beta = computeStockBeta(derive(2), spy);
+    const beta = computeStockBeta(dated(derive(2)), spy);
     expect(beta).toBeGreaterThan(1.9);
     expect(beta).toBeLessThan(2.1);
   });
 
   it("computeStockBeta returns null (unknown) with insufficient history (< ~3mo)", () => {
-    expect(computeStockBeta([100, 101], [100, 101])).toBeNull();
-    expect(computeStockBeta(buildSpy(30), buildSpy(30))).toBeNull(); // ~30 returns still too few
+    expect(computeStockBeta(dated([100, 101]), dated([100, 101]))).toBeNull();
+    expect(computeStockBeta(dated(buildSpy(30)), dated(buildSpy(30)))).toBeNull(); // ~30 returns still too few
   });
 
-  it("computeStockBeta aligns to the shorter series' tail (a name with less history still resolves)", () => {
-    const shorter = derive(2).slice(-71); // 70 returns, ends today like SPY
+  it("computeStockBeta aligns to the shared dates (a name with less history still resolves)", () => {
+    const closes = derive(2).slice(-71); // 70 returns
+    const shorter = dated(closes, closes.map((_, i) => (81 - closes.length + i) * DAY)); // same last day as SPY
     const beta = computeStockBeta(shorter, spy);
     expect(beta).not.toBeNull();
     expect(beta!).toBeGreaterThan(1.9);
   });
 
+  // The 2026-09-01 bug: the trade cron runs pre-market, so Yahoo gives SPY a partial bar for
+  // today while a less-liquid name has none. Positional tail-alignment paired every stock day
+  // against the NEXT SPY day and collapsed β toward zero across the whole book.
+  it("computeStockBeta is unaffected when SPY has an extra trailing bar the stock lacks", () => {
+    const spyExtra = buildSpy(81); // one more bar than the stock — the pre-market partial
+    const beta = computeStockBeta(dated(derive(2)), dated(spyExtra));
+    expect(beta).toBeGreaterThan(1.9); // NOT the ~0 the positional alignment produced
+    expect(beta).toBeLessThan(2.1);
+  });
+
+  it("computeStockBeta skips a day the stock is missing mid-history rather than shifting it", () => {
+    const closes = derive(2);
+    const ts = closes.map((_, i) => i * DAY);
+    const gapAt = 40;
+    const beta = computeStockBeta(
+      dated(closes.filter((_, i) => i !== gapAt), ts.filter((_, i) => i !== gapAt)),
+      spy,
+    );
+    expect(beta).toBeGreaterThan(1.9);
+    expect(beta).toBeLessThan(2.1);
+  });
+
   it("computeStockBeta preserves a real negative (inverse) beta", () => {
-    const beta = computeStockBeta(derive(-1), spy); // moves opposite SPY
+    const beta = computeStockBeta(dated(derive(-1)), spy); // moves opposite SPY
     expect(beta).not.toBeNull();
     expect(beta!).toBeLessThan(0); // inverse correlation → negative β, must NOT be nulled
   });

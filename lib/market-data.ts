@@ -222,13 +222,54 @@ function dailyReturns(closes: number[]): number[] {
 // over a few weeks; over a year they're a sensible −0.6/−0.1). Aligns the two series to the shorter
 // one so a name with less history than SPY still resolves; null under ~3 months (too few points for
 // a meaningful estimate — the book-β math treats null as "unknown", not a fake 1.0).
-export function computeStockBeta(stockCloses: number[], spyCloses: number[]): number | null {
-  const sAll = dailyReturns(stockCloses);
-  const mAll = dailyReturns(spyCloses);
-  const n = Math.min(sAll.length, mAll.length);
+/** A price history with one timestamp per close, so two series can be paired by DATE. */
+export interface DatedCloses {
+  ts: number[];      // Yahoo bar timestamps (epoch seconds), parallel to `closes`
+  closes: number[];  // may contain nulls upstream; those bars are dropped when pairing
+}
+
+/** UTC calendar day of a bar timestamp — the key two series are paired on. */
+function barDay(tsSeconds: number): number {
+  return Math.floor(tsSeconds / 86400);
+}
+
+/**
+ * Beta of a stock vs SPY, over the days BOTH series actually have.
+ *
+ * WHY PAIRED BY DATE (2026-09-01 incident): this used to align positionally —
+ * `n = min(len)` then `slice(-n)` on each — which silently assumes both series END on the same
+ * date. They often don't. The trade cron fires 7:30am ET, in pre-market, and Yahoo includes a
+ * partial current-day bar only for symbols that have already printed a quote. On 09-01 SPY had
+ * today's bar and six of eight held names did not, so `slice(-n)` paired each stock's day T
+ * against SPY's day T+1 for the ENTIRE two-year history. Beta is ~the lag-1 cross-correlation of
+ * daily returns under that shift — near zero, usually slightly negative — and the book β printed
+ * 0.24 instead of ~1.2, with APA at -0.14 (actually 0.84), AMAT at -0.20 (actually 1.93), while GOOGL and TER
+ * (liquid enough to have printed a pre-market bar, so still aligned) read correctly. Nothing about
+ * the output looked broken enough to fail a range check; only the reviewer's "these positions
+ * didn't change, why did β move" caught it.
+ *
+ * Pairing on the bar DATE makes an unequal tail a non-event: the unmatched bar simply isn't in the
+ * intersection. It also fixes a quieter version of the same bug — a stock with a missing day
+ * mid-history used to shift every earlier return by one against SPY.
+ */
+export function computeStockBeta(stock: DatedCloses, spy: DatedCloses): number | null {
+  const byDay = (d: DatedCloses) => {
+    const map = new Map<number, number>();
+    for (let i = 0; i < d.ts.length; i++) {
+      const c = d.closes[i];
+      if (c != null && isFinite(c) && c > 0) map.set(barDay(d.ts[i]), c);
+    }
+    return map;
+  };
+  const sMap = byDay(stock);
+  const mMap = byDay(spy);
+  const days = [...sMap.keys()].filter(d => mMap.has(d)).sort((a, b) => a - b);
+  // Returns are taken over CONSECUTIVE SHARED days, so both sides span the same interval even
+  // where one of them had a gap.
+  const s = dailyReturns(days.map(d => sMap.get(d)!));
+  const m = dailyReturns(days.map(d => mMap.get(d)!));
+  const n = Math.min(s.length, m.length);
   if (n < 60) return null; // ~3 months minimum
-  const s = sAll.slice(-n);
-  const m = mAll.slice(-n);
   const meanS = s.reduce((a, b) => a + b, 0) / n;
   const meanM = m.reduce((a, b) => a + b, 0) / n;
   let cov = 0, varM = 0;
@@ -379,7 +420,7 @@ export function formatV1Shortlist(
   return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ◆HELD = a current holding retained by the hysteresis band (still positive momentum — do NOT rotate it out just for ranking below newer names) · ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d · ⚡NEWS↑/↓ = a MATERIAL corporate event (M&A/litigation/guidance/product/regulatory) with the event quoted — a bullish event raises conviction, a bearish one is a real trim/avoid reason even on strong momentum; cite it in your thesis when it drives a decision · 🎬INFL = the influencer YouTubers' read (an independent, momentum-oriented crowd) on a name your screen likes; net = weighted-buy − avoid, "(N avoid)" shows dissent: ✓ (net ≥ the sleeve's buy bar) = they're RECOMMENDING it → a secondary CONFIRMING signal that STRENGTHENS the thesis (it's creator CONVICTION, not price-timing — still apply your own momentum/entry screen; a name the sleeve's own falling-knife rails reject can still show ✓); ⚠ (net < 0, avoids OUTWEIGH buys) = they're NET-BEARISH → an independent avoid signal → WARRANTS CAUTION (size down, prefer an equally-strong un-warned name, or your thesis must say why the caution is wrong); ~ (net-flat with dissent) = CONTESTED, creators split → weigh the avoid, don't read it as corroboration. None of these change eligibility or override the shortlist/caps]\n${rows.join("\n")}`;
 }
 
-async function fetchQuote(symbol: string): Promise<(StockData & { _closes: number[] }) | null> {
+async function fetchQuote(symbol: string): Promise<(StockData & { _series: DatedCloses }) | null> {
   try {
     // 2y so we have ≥253 trading days for 12-1 momentum (needs the close ~252td before the ~21td-ago
     // anchor). 30d/vol/beta below anchor off the tail, so the wider window doesn't distort them.
@@ -400,6 +441,7 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _closes: numbe
             fiftyTwoWeekHigh?: number;
             earningsTimestamp?: number;
           };
+          timestamp?: number[];
           indicators?: { quote?: Array<{ close?: number[] }> };
         }>;
       };
@@ -410,6 +452,9 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _closes: numbe
 
     const meta = result.meta ?? {};
     const closes = result.indicators?.quote?.[0]?.close ?? [];
+    const timestamps = result.timestamp ?? [];
+    // validCloses (nulls squeezed out) drives the WITHIN-symbol metrics below, where compressing a
+    // missing bar is harmless. Cross-symbol comparison (beta) must NOT use it — see computeStockBeta.
     const validCloses = closes.filter((c): c is number => c != null);
 
     const price = meta.regularMarketPrice ?? 0;
@@ -462,7 +507,7 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _closes: numbe
       sharpe30d: momentumScore(change30d, 21, vol),
       mom12_1,
       beta: null,         // set below in getPriceData once SPY closes are known
-      _closes: validCloses, // retained only to compute beta vs SPY; stripped before return
+      _series: { ts: timestamps, closes }, // dated series, retained only for beta vs SPY; stripped before return
       earningsDate,
       relStrength1d: 0,   // set below after SPY fetch
       relStrength5d: 0,   // set below after SPY fetch
@@ -495,15 +540,15 @@ async function getPriceData(): Promise<{
   const spyChange5d = spy?.change5d ?? 0;
   const spyChange14d = spy?.change14d ?? 0;
   const spyChange30d = spy?.change30d ?? 0;
-  const spyCloses = spy?._closes ?? [];
+  const spySeries: DatedCloses = spy?._series ?? { ts: [], closes: [] };
 
   const stocks = stockResults
-    .filter((r): r is PromiseFulfilledResult<StockData & { _closes: number[] }> => r.status === "fulfilled" && r.value !== null)
+    .filter((r): r is PromiseFulfilledResult<StockData & { _series: DatedCloses }> => r.status === "fulfilled" && r.value !== null)
     .map((r) => {
-      const { _closes, ...s } = r.value!;
+      const { _series, ...s } = r.value!;
       return {
         ...s,
-        beta: computeStockBeta(_closes, spyCloses), // full ~1y window (short 22d windows gave noisy/wrong betas)
+        beta: computeStockBeta(_series, spySeries), // full ~2y window (short 22d windows gave noisy/wrong betas)
         relStrength1d: s.change1d - spyChange1d,
         relStrength5d: s.change5d - spyChange5d,
         relStrength14d: s.change14d - spyChange14d,
@@ -532,8 +577,10 @@ async function getPriceData(): Promise<{
   // (risk-off) its ~100-day moving average? Feeds the sympathy judgment — on a risk-off
   // day a holding's drop is more likely broad-market sympathy (lean hold); on a risk-on
   // day a name cratering while the market's healthy is more likely name-specific (act).
-  const spyMA100 = spyCloses.length >= 20
-    ? spyCloses.slice(-100).reduce((a, c) => a + c, 0) / Math.min(100, spyCloses.length)
+  // Within-SPY metric — no cross-series pairing, so the null-squeezed closes are fine here.
+  const spyValidCloses = spySeries.closes.filter((c): c is number => c != null);
+  const spyMA100 = spyValidCloses.length >= 20
+    ? spyValidCloses.slice(-100).reduce((a, c) => a + c, 0) / Math.min(100, spyValidCloses.length)
     : null;
   const regime = spy && spyMA100 != null
     ? { riskOn: spy.price > spyMA100, spy: spy.price, ma: spyMA100 }
