@@ -402,7 +402,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
     : null;
   const t1Settling = current ? computeT1Settling(current) : null;
   const concentration = mainRun ? computeConcentration(mainRun) : null;
-  // Worst Drop + Sharpe = the CURRENT (V1 quality-momentum) main book only, since the strategy
+  // Worst Drop From Peak (max drawdown) + Sharpe = the CURRENT (V1 quality-momentum) main book only, since the strategy
   // switch (V1_TRACK_START) — full history is dragged by the retired pre-V1 strategy (it flips the
   // Sharpe negative). Small sample (~2 weeks), labeled as such. SPY drawdown over the same window.
   const v1MainRuns = runsChronological.filter(r => r.date >= V1_TRACK_START && typeof r.mainDailyReturn === "number");
@@ -531,7 +531,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             </div>
           )}
           <div style={s.perfStat}>
-            <Tip style={s.perfLabel} label="Worst Drop" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. 'Still early' means a short window that hasn't lived through a real market pullback yet, so it likely understates the true worst drop; it clears after ~6 months (~${SMALL_SAMPLE_DAYS} trading days). Lower is better.`} />
+            <Tip style={s.perfLabel} label="Worst Drop From Peak" def={`Max drawdown of the current (V1 quality-momentum) strategy since the 07-09 switch — the biggest peak-to-trough fall. Full history is skipped because the retired pre-V1 strategy distorts it. 'Still early' means a short window that hasn't lived through a real market pullback yet, so it likely understates the true worst drop; it clears after ~6 months (~${SMALL_SAMPLE_DAYS} trading days). Lower is better.`} />
             <span style={{ ...s.perfValue, color: mainDrawdown != null && spyDrawdown != null && mainDrawdown > spyDrawdown ? "#e8943a" : "#e5e5e5" }}>
               {mainDrawdown != null ? `−${mainDrawdown.toFixed(2)}%` : "—"}
             </span>
@@ -597,7 +597,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
           )}
           {influencerDrawdown != null && (
             <div style={s.perfStat}>
-              <Tip style={s.perfLabel} label="Worst Drop" def="The biggest fall from a high point to a low point the YouTube-picks slice suffered along the way. Bigger = wilder ride. (Technically, max drawdown.) 'Still early' means a short track record that may not have seen its worst yet — it clears after ~6 months of data." />
+              <Tip style={s.perfLabel} label="Worst Drop From Peak" def="The biggest fall from a high point to a low point the YouTube-picks slice suffered along the way. Bigger = wilder ride. (Technically, max drawdown.) 'Still early' means a short track record that may not have seen its worst yet — it clears after ~6 months of data." />
               <span style={{ ...s.perfValue, color: "#e8943a" }}>
                 −{influencerDrawdown.toFixed(2)}%
               </span>
