@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { parseTradeDecision } from "@/lib/trade-decision";
 import { dashboardPublicUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
@@ -326,25 +327,33 @@ export async function GET(request: Request) {
   // the BAX case on the SELL side, the GPN case on the BUY side. Flag only; the next
   // run re-attempts (sells auto-retry in the pipeline; buys retry + shrink-to-fit).
   if (todayRun?.summary) {
-    const m = todayRun.summary.match(/TRADE_DECISION:(\{.*\})/);
-    if (m) {
-      try {
-        const decided = JSON.parse(m[1]) as { sells?: Array<{ symbol: string }>; buys?: Array<{ symbol: string }> };
-        const heldSyms = new Set(todayRun.positions.map((p) => p.symbol));
-        const boughtSyms = new Set((todayRun.trades ?? []).filter((t) => t.side === "buy").map((t) => t.symbol));
-        const notSold = (decided.sells ?? []).map((s) => String(s.symbol)).filter((sym) => heldSyms.has(sym));
-        if (notSold.length > 0) {
-          issues.push(
-            `Decided to sell ${notSold.join(", ")} but still held — sell order(s) dropped. Next run should re-attempt; place manually if it persists.`,
-          );
-        }
-        const notBought = (decided.buys ?? []).map((b) => String(b.symbol)).filter((sym) => !boughtSyms.has(sym));
-        if (notBought.length > 0) {
-          issues.push(
-            `Decided to buy ${notBought.join(", ")} but no confirmed buy — likely insufficient buying power (sells settle T+1) or a dropped order. Buy-sizing + retry should limit this; flag if it persists.`,
-          );
-        }
-      } catch { /* unparseable decision line — skip */ }
+    // Shared tolerant extraction (lib/trade-decision.ts). This check is the deterministic half of
+    // the decided-vs-executed safety net; on 2026-09-01 its own strict regex was defeated by a
+    // markdown-bolded marker at the same moment the executor's was, so the run that placed zero of
+    // its three decided sells raised nothing here. Never re-inline a regex for this.
+    const parsedDecision = parseTradeDecision(todayRun.summary);
+    if (parsedDecision.status === "unparsed") {
+      // The run's own summary contains a decision the executor could not read — meaning nothing it
+      // decided was placed, for a formatting reason. Louder than any single dropped order.
+      issues.push(
+        `Run emitted a TRADE_DECISION that could not be parsed (${parsedDecision.reason}) — NO orders were placed for it. This is a parser bug in lib/trade-decision.ts, not a stand-pat day.`,
+      );
+    } else if (parsedDecision.status === "parsed") {
+      const decided = parsedDecision.decision;
+      const heldSyms = new Set(todayRun.positions.map((p) => p.symbol));
+      const boughtSyms = new Set((todayRun.trades ?? []).filter((t) => t.side === "buy").map((t) => t.symbol));
+      const notSold = decided.sells.map((s) => String(s.symbol)).filter((sym) => heldSyms.has(sym));
+      if (notSold.length > 0) {
+        issues.push(
+          `Decided to sell ${notSold.join(", ")} but still held — sell order(s) dropped. Next run should re-attempt; place manually if it persists.`,
+        );
+      }
+      const notBought = decided.buys.map((b) => String(b.symbol)).filter((sym) => !boughtSyms.has(sym));
+      if (notBought.length > 0) {
+        issues.push(
+          `Decided to buy ${notBought.join(", ")} but no confirmed buy — likely insufficient buying power (sells settle T+1) or a dropped order. Buy-sizing + retry should limit this; flag if it persists.`,
+        );
+      }
     }
   }
 

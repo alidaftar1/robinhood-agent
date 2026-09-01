@@ -11,6 +11,7 @@ import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, n
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
+import { parseTradeDecision, extractTradeDecision, type TradeDecision } from "@/lib/trade-decision";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
@@ -144,10 +145,7 @@ export async function GET(request: Request) {
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
 
-      type DryDecision = { thesis: string; sells: Array<{ symbol: string; exit?: string; fraction?: number; quantity?: number; strategy?: string }>; buys: Array<{ symbol: string; dollarAmount: number; strategy?: string }> };
-      let decision: DryDecision = { thesis: "", sells: [], buys: [] };
-      const m = analysisText.match(/^TRADE_DECISION:(.+)$/m);
-      if (m) { try { decision = JSON.parse(m[1]); } catch { /* keep empty */ } }
+      const decision: TradeDecision = extractTradeDecision(analysisText) ?? { thesis: "", sells: [], buys: [] };
 
       // Apply the same influencer cap + downtrend guard the real run uses (display only)
       const isFullExit = (s: { exit?: string; fraction?: number; quantity?: number }) =>
@@ -463,16 +461,23 @@ export async function GET(request: Request) {
     // Buys are NOTIONAL (dollarAmount). Sells express INTENT (exit:"all" for a full exit, fraction
     // for a trim) resolved to a concrete share qty from the LIVE held position below — the model
     // never types a fractional share count. `quantity` kept optional as a legacy fallback.
-    type TradeDecision = { thesis: string; sells: Array<{ symbol: string; exit?: string; fraction?: number; quantity?: number; strategy?: string }>; buys: Array<{ symbol: string; dollarAmount: number; strategy?: string }> };
     let decision: TradeDecision = { thesis: "", sells: [], buys: [] };
-    const decisionMatch = analysisText.match(/^TRADE_DECISION:(.+)$/m);
-    if (decisionMatch) {
-      try {
-        decision = JSON.parse(decisionMatch[1]);
-        console.log("DECISION_PARSED", { sells: decision.sells.length, buys: decision.buys.length });
-      } catch (e) {
-        console.warn("DECISION_PARSE_FAILED", e instanceof Error ? e.message : String(e));
-      }
+    // Extraction is deliberately tolerant of markdown around the marker (lib/trade-decision.ts) —
+    // on 2026-09-01 a bolded `**TRADE_DECISION:**{...}` silently cancelled a whole run under the old
+    // strict regex. `unparsed` (marker present, payload unreadable) is a CODE bug, not a quiet
+    // no-trade day, so it alerts and leaves a run-visible note rather than logging into the void.
+    let decisionParseNote = "";
+    const parsed = parseTradeDecision(analysisText);
+    if (parsed.status === "parsed") {
+      decision = parsed.decision;
+      console.log("DECISION_PARSED", { sells: decision.sells.length, buys: decision.buys.length });
+    } else if (parsed.status === "unparsed") {
+      console.error("DECISION_UNPARSED", { reason: parsed.reason });
+      decisionParseNote = `NO ORDERS PLACED — the analysis emitted a TRADE_DECISION but it could not be parsed (${parsed.reason}). This is a parser bug, not a decision to stand pat.`;
+      await sendAlert(
+        "Trade run placed NO orders — TRADE_DECISION could not be parsed",
+        `The model produced a TRADE_DECISION payload but it failed to parse (${parsed.reason}), so no sells or buys were executed. The run's own decision is in its summary. Check lib/trade-decision.ts against the raw analysis text.`,
+      );
     } else {
       console.warn("DECISION_MISSING — no TRADE_DECISION found in analysis output");
     }
@@ -517,6 +522,7 @@ export async function GET(request: Request) {
     // but only console.error'd + alerted separately, leaving NO buySizingAdjustments note, so the
     // reviewer flagged "decided buy absent, no explanation" (registry #19). Every drop belongs here.
     let buySizingAdjustments: string[] = [];
+    if (decisionParseNote) buySizingAdjustments.push(decisionParseNote);
 
     // ── V1 WITHIN-RAILS HARD FILTER ───────────────────────────────────────────
     // The main book may ONLY buy from the pre-screened quality-momentum shortlist. Soft prompt guidance
