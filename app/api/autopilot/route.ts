@@ -134,7 +134,14 @@ export async function GET(request: Request) {
   let runs = await getRuns(30);
   let todayRun = runs.find((r) => r.date === today) ?? null;
 
+  // CONCRETE anomalies — a specific thing demonstrably went wrong (cron missing, verify
+  // discrepancy, decided-vs-executed gap, extreme/impossible derived number). These gate the
+  // paid cloud fixer.
   const issues: string[] = [];
+  // SOFT heuristics — "this looks like it might warrant a glance." They belong in the email
+  // (unchanged) but must NOT spin up a Claude Code session: they fire on perfectly normal
+  // behaviour, so they held the cost gate permanently open (see cloudWorthDispatching below).
+  const softIssues: string[] = [];
   const autoFixed: string[] = [];
   let selfHealed = false;
 
@@ -303,8 +310,11 @@ export async function GET(request: Request) {
 
   // ─── Validation phase (post-repair) ──────────────────────────────────────────
 
+  // SOFT: standing pat with cash on hand is an explicitly VALID outcome (the prompt tells the
+  // model buys=[] is correct on a day with no qualifying signal), so this fires on ordinary days.
+  // Worth surfacing in the email, never worth a paid agentic run on its own.
   if (trades.length === 0 && buyingPower && parseFloat(buyingPower) > 50) {
-    issues.push(
+    softIssues.push(
       `No trades executed but buying power is $${parseFloat(buyingPower).toFixed(2)} — possible analysis issue.`,
     );
   }
@@ -447,7 +457,9 @@ export async function GET(request: Request) {
 
   // ─── Email ────────────────────────────────────────────────────────────────────
 
-  const needsAttention = issues.length > 0 || seriousConcerns.length > 0 || seriousReconcile.length > 0;
+  // Email status — deliberately BROAD and unchanged: anything worth your glance flips the banner.
+  const allIssues = [...issues, ...softIssues];
+  const needsAttention = allIssues.length > 0 || seriousConcerns.length > 0 || seriousReconcile.length > 0;
   const statusLabel = needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";
   const statusColor = needsAttention ? "#f59e0b" : "#10b981";
 
@@ -489,10 +501,10 @@ export async function GET(request: Request) {
   </div>`
     : ""}
 
-  ${issues.length > 0
+  ${allIssues.length > 0
     ? `<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;margin-bottom:16px;border-radius:4px">
     <strong>⚠️ Needs attention:</strong>
-    <ul style="margin:8px 0 0;padding-left:20px">${issues.map((i) => `<li>${i}</li>`).join("")}</ul>
+    <ul style="margin:8px 0 0;padding-left:20px">${allIssues.map((i) => `<li>${i}</li>`).join("")}</ul>
   </div>`
     : ""}
 
@@ -596,15 +608,32 @@ export async function GET(request: Request) {
   // (vercel.json sets ?cloudDispatch=1) and ONLY when a fresh email just went out.
   // The once-per-day email dedup makes this fire at most once/day, and the cloud
   // agent's own bare-path reads of this endpoint never re-trigger it (no loop).
-  // Cost gate: the cloud agent is a full (Sonnet) Claude Code run, ~5x the cost of the whole
-  // in-app pipeline. On a clean HEALTHY day the deterministic checks + skeptical reviewer +
-  // verify + reconcile have already done the work and there is nothing for it to fix, so skip
-  // it. Only spin it up when something actionable surfaced — a needs-attention flag (issues /
-  // high|medium reviewer or reconcile concern), a live-data discrepancy, or a self-healed
-  // morning. This cuts the biggest line on the Anthropic bill (~1-in-5 days fire) while keeping
-  // the self-heal safety net for exactly the days that need it.
+  // Cost gate: the cloud agent is a full (Sonnet) Claude Code run — by far the largest line on
+  // the Anthropic bill, and API-billed separately from the Max subscription.
+  //
+  // 2026-09-02 RECALIBRATION. This gate was written to fire "~1-in-5 days". It actually fired on
+  // 30 of ~30 trading days (Jul 16 – Sep 1), i.e. every weekday, because it keyed off
+  // `needsAttention` — which is deliberately broad for the EMAIL and was held permanently true by
+  // two things that occur on ordinary days:
+  //   1. `seriousConcerns` = every reviewer concern above "low". The skeptical reviewer is an LLM
+  //      asked to be skeptical; it reliably produces a medium every single run. Medium is "worth
+  //      your glance", not "a machine should go rewrite code about it."
+  //   2. The "no trades executed but buying power > $50" heuristic, which fires whenever the agent
+  //      correctly stands pat — an explicitly valid outcome. Now in `softIssues` (email only).
+  // Combined with run length growing 2.4-5min (July) to 19-45min (late Aug), that is the bill.
+  //
+  // The gate now requires something CONCRETE: a deterministic issue (cron missing, verify
+  // discrepancy, decided-vs-executed gap, impossible derived number), a HIGH-severity judgment
+  // from the reviewer or reconciler, live data that doesn't match, or a self-healed morning.
+  // Medium/low concerns still reach you in the email and are still recorded — they just no longer
+  // spend money by themselves. If a medium turns out to matter, it recurs, and a recurring one is
+  // exactly what gets promoted to high (or handled by you) rather than silently re-worked daily.
+  const highConcerns = reviewConcerns.filter((c) => c.severity === "high");
+  const highReconcile = reconcileFindings.filter((f) => f.severity === "high");
   const cloudWorthDispatching =
-    needsAttention ||
+    issues.length > 0 ||
+    highConcerns.length > 0 ||
+    highReconcile.length > 0 ||
     (verifyResult != null && verifyResult.status !== "ok") ||
     selfHealed;
   const cloudDispatch = new URL(request.url).searchParams.get("cloudDispatch") === "1";
