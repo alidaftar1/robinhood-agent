@@ -602,7 +602,10 @@ export async function GET(request: Request) {
   if (emailSent && !force) await markAutopilotSent(today);
   // Persist the reviewer output as the cloud fixer's work list (it reads this endpoint AFTER the
   // email sent → the skip path returns these). Store regardless of email success so it's never lost.
-  await storeAutopilotConcerns(today, { date: today, status: statusLabel, reviewConcerns, issues, autoFixed, verifyStatus: verifyResult?.status ?? "skipped" });
+  // allIssues, not `issues` — the cloud fixer's work list keeps the SAME contents it always had.
+  // Only the dispatch DECISION is narrowed (see cloudWorthDispatching); on the days the agent does
+  // run, withholding the soft heuristic would just deprive it of context it used to have.
+  await storeAutopilotConcerns(today, { date: today, status: statusLabel, reviewConcerns, issues: allIssues, autoFixed, verifyStatus: verifyResult?.status ?? "skipped" });
 
   // Trigger the cloud code-fixer immediately, but ONLY on the scheduled cron run
   // (vercel.json sets ?cloudDispatch=1) and ONLY when a fresh email just went out.
@@ -673,7 +676,7 @@ export async function GET(request: Request) {
     buys: buys.length,
     sells: sells.length,
     totalValue,
-    issues,
+    issues: allIssues, // unchanged response surface — see storeAutopilotConcerns above
     reviewConcerns,
     verifyStatus: verifyResult?.status ?? "skipped",
     emailSent,
