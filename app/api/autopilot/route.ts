@@ -352,16 +352,22 @@ export async function GET(request: Request) {
       const decided = parsedDecision.decision;
       const heldSyms = new Set(todayRun.positions.map((p) => p.symbol));
       const boughtSyms = new Set((todayRun.trades ?? []).filter((t) => t.side === "buy").map((t) => t.symbol));
-      const notSold = decided.sells.map((s) => String(s.symbol)).filter((sym) => heldSyms.has(sym));
+      // A drop already explained by a buySizingAdjustments note (cap guard, budget-fit, dust
+      // filter, downtrend/net-floor rejection, off-rails, DID-NOT-CONFIRM, ...) is a guardrail
+      // working as designed, not a silent failure — don't re-raise it as an "issue" (registry
+      // #9/#24: "check buySizingAdjustments first; only escalate if truly unexplained").
+      const notes = todayRun.buySizingAdjustments ?? [];
+      const isExplained = (sym: string) => notes.some((n) => new RegExp(`\\b${sym}\\b`).test(n));
+      const notSold = decided.sells.map((s) => String(s.symbol)).filter((sym) => heldSyms.has(sym) && !isExplained(sym));
       if (notSold.length > 0) {
         issues.push(
-          `Decided to sell ${notSold.join(", ")} but still held — sell order(s) dropped. Next run should re-attempt; place manually if it persists.`,
+          `Decided to sell ${notSold.join(", ")} but still held — sell order(s) dropped with no buySizingAdjustments note explaining why. Next run should re-attempt; place manually if it persists.`,
         );
       }
-      const notBought = decided.buys.map((b) => String(b.symbol)).filter((sym) => !boughtSyms.has(sym));
+      const notBought = decided.buys.map((b) => String(b.symbol)).filter((sym) => !boughtSyms.has(sym) && !isExplained(sym));
       if (notBought.length > 0) {
         issues.push(
-          `Decided to buy ${notBought.join(", ")} but no confirmed buy — likely insufficient buying power (sells settle T+1) or a dropped order. Buy-sizing + retry should limit this; flag if it persists.`,
+          `Decided to buy ${notBought.join(", ")} but no confirmed buy, with no buySizingAdjustments note explaining why — likely insufficient buying power (sells settle T+1) or a dropped order. Buy-sizing + retry should limit this; flag if it persists.`,
         );
       }
     }
