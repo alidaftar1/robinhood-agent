@@ -11,6 +11,11 @@ import { scoreShadowObservations } from "@/lib/shadow-scoring";
 // wrong when the name bounced (a whipsaw: stopped out just before the recovery). Note this reads the
 // OPPOSITE way to the mean-reversion capture's scoring, which is why direction is explicit.
 // Pass ?scored=0 to skip it (the capture itself is unchanged).
+// Scoring fans out one quote per distinct symbol plus a SPY fetch; without an explicit duration the
+// platform default (10-15s) can 504 with NO body, which the try/catch below cannot rescue — the
+// capture view would become unreadable, not merely unscored. Matches the sibling ledger routes.
+export const maxDuration = 60;
+
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;

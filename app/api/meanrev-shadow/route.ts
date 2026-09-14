@@ -10,6 +10,11 @@ import { scoreShadowObservations } from "@/lib/shadow-scoring";
 // forward return is computed on read from its stored capture price and benchmarked against SPY over
 // its own window. Mean-reversion is an ENTRY signal, so it was right when the name subsequently
 // ROSE relative to the market. Pass ?scored=0 to skip it (the capture itself is unchanged).
+// Scoring fans out one quote per distinct symbol plus a SPY fetch; without an explicit duration the
+// platform default (10-15s) can 504 with NO body, which the try/catch below cannot rescue — the
+// capture view would become unreadable, not merely unscored. Matches the sibling ledger routes.
+export const maxDuration = 60;
+
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;
