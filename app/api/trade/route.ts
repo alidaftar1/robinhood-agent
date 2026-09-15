@@ -545,6 +545,9 @@ export async function GET(request: Request) {
     // reviewer flagged "decided buy absent, no explanation" (registry #19). Every drop belongs here.
     let buySizingAdjustments: string[] = [];
     if (decisionParseNote) buySizingAdjustments.push(decisionParseNote);
+    // Influencer-sleeve guard drops (position cap, downtrend screen). Collected separately because
+    // those guards run before buySizingAdjustments' own guards, then merged in below.
+    const influencerGuardNotes: string[] = [];
 
     // ── V1 WITHIN-RAILS HARD FILTER ───────────────────────────────────────────
     // The main book may ONLY buy from the pre-screened quality-momentum shortlist. Soft prompt guidance
@@ -630,7 +633,10 @@ export async function GET(request: Request) {
       // arrive as `heldQty` and at index 0 make `quantity >= 0` always true, turning a numeric-
       // quantity trim into a "full exit", freeing an influencer slot and admitting a 3rd position
       // past MAX_INFLUENCER_POSITIONS (security-audit finding [3]).
-      const soldSet = new Set(decision.sells.filter(s => isFullExit(s)).map(s => s.symbol));
+      const heldInflQtyExec = new Map((previousRun?.influencerPositions ?? []).map(p => [p.symbol, parseFloat(p.quantity) || 0]));
+      const soldSet = new Set(
+        decision.sells.filter(s => isFullExit(s, heldInflQtyExec.get(String(s.symbol)))).map(s => s.symbol),
+      );
       const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !soldSet.has(p.symbol)).length;
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
         b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
@@ -644,6 +650,11 @@ export async function GET(request: Request) {
         return false;
       });
       if (trimmed.length > 0) {
+        // Recorded, not just logged: every other guard writes a note, and the autopilot's
+        // decided-vs-executed check treats an absent buy WITHOUT one as an unexplained anomaly —
+        // which raises an issue and dispatches the paid cloud agent at a guard doing its job.
+        influencerGuardNotes.push(...trimmed.map(sym =>
+          `${sym} buy DROPPED — influencer sleeve already at its ${MAX_INFLUENCER_POSITIONS}-position cap (${keptInfluencer} kept, ${allowedNew} new slot(s) available)`));
         console.log("INFLUENCER_CAP_TRIMMED", { keptInfluencer, allowedNew, trimmed });
       }
     }
@@ -661,6 +672,12 @@ export async function GET(request: Request) {
         const mom = influencerMomentum.get(b.symbol);
         if (isInfluencerDowntrend(mom)) {
           rejected.push(`${b.symbol} (5d ${mom!.change5d.toFixed(0)}%, ${mom!.distFromHigh.toFixed(0)}% off high)`);
+          // Note carries the FULL momentum reading, not just the verdict, so the screen's value can
+          // eventually be measured: it records what was rejected, at what price, on what date. Until
+          // now a downtrend rejection was console.log-only, leaving no record of what the screen
+          // blocked and therefore no way to ask whether those names actually went on to fall.
+          influencerGuardNotes.push(
+            `${b.symbol} buy REJECTED — ⛔DOWNTREND screen (5d ${mom!.change5d.toFixed(1)}%, ${mom!.distFromHigh.toFixed(1)}% off recent high, $${(priceMap.get(b.symbol) ?? 0).toFixed(2)})`);
           return false;
         }
         return true;
@@ -693,6 +710,7 @@ export async function GET(request: Request) {
       if (rejected.length > 0) {
         console.log("INFLUENCER_NET_FLOOR_REJECTED", { rejected });
         buySizingAdjustments.push(...rejected.map(r => `Influencer buy REJECTED — ${r}`));
+        buySizingAdjustments.push(...influencerGuardNotes);
       }
     }
 
@@ -1051,14 +1069,12 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       // existing row rather than appended, so a top-up doesn't leave two rows for one symbol and
       // make `find(p => p.symbol === X)` consumers see only part of the holding.
       const qtyDelta = new Map<string, number>();
-      const boughtQty = new Map<string, number>();
       const boughtCost = new Map<string, number>(); // Σ(qty × price) over PRICED buys only
       const pricedQty = new Map<string, number>();  // qty backing boughtCost (excludes pending)
       for (const t of trades) {
         const q = parseFloat(t.quantity) || 0;
         qtyDelta.set(t.symbol, (qtyDelta.get(t.symbol) ?? 0) + (t.side === "sell" ? -q : q));
         if (t.side === "buy") {
-          boughtQty.set(t.symbol, (boughtQty.get(t.symbol) ?? 0) + q);
           // verifyBuys deliberately includes PENDING orders, which carry no fill price. Folding a
           // 0 into the weighted average would drag a real basis toward zero (1 @ $100 + a pending
           // 1 @ unknown => $50), corrupting the very number /api/verify diffs against Robinhood.
@@ -1104,7 +1120,11 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
         price: String(priceMap.get(p.symbol) ?? parseFloat(p.avgCost)),
       }));
       const startingCash = agenticBalance.buyingPower;
-      const buyCost = trades.filter(t => t.side === "buy").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+      // `|| 0` on BOTH factors: verifyBuys deliberately includes PENDING orders, which carry no
+      // fill price, and a single NaN here propagates through cashAfter to serialize the whole run's
+      // portfolioAfter.cash as null.
+      const buyCost = trades.filter(t => t.side === "buy")
+        .reduce((s, t) => s + (parseFloat(t.quantity) || 0) * (parseFloat(t.avgPrice) || 0), 0);
       cashAfter = Math.max(0, startingCash - buyCost);
     }
 
@@ -1120,7 +1140,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // sell proceeds only if the live balance is unavailable.
     const sellProceeds = trades
       .filter(t => t.side === "sell")
-      .reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
+      .reduce((s, t) => s + (parseFloat(t.quantity) || 0) * (parseFloat(t.avgPrice) || 0), 0);
     const unsettledAfter = (liveBalanceAfter?.unsettled ?? 0) > 0
       ? liveBalanceAfter!.unsettled
       : (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0);

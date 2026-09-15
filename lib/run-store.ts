@@ -370,23 +370,36 @@ function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
     const prevQty = baselineOf(p.symbol);
     if (prevQty == null) return p;                            // no baseline → trust the snapshot
     const bought = flow.bought.get(p.symbol) ?? 0;
+    // Known only if the previous snapshot actually lists the symbol, or today bought it (zero by
+    // fact). With flow.prev null we only got past the null-check above via the bought-today branch.
+    const baselineKnown = flow.prev == null || flow.prev.has(p.symbol) || bought > 0;
     // A day cannot sell more than it could possibly have held. When recorded sells exceed
     // prevHeld + boughtToday the TRADE RECORD is corrupt — most often the same real fill written
     // twice by two same-date runs at different price estimates, which tradeKey cannot collapse
     // (that is why findReRecordedSells exists, and it does not catch every shape). Reconciling
     // against an impossible total is what deletes a still-held lot, so the broker's snapshot wins.
     //
-    // EXCEPT when the symbol is simply MISSING from the previous snapshot and wasn't bought today.
-    // Then prevQty is 0 by absence rather than by fact, so "sold > 0 + 0" is trivially true and the
-    // guard would spare every such position — including one that really was fully sold, stranding
-    // it as phantom equity in tomorrow's baseline (the original reason this function exists). With
-    // no usable baseline, fall back to the pre-2026-09-15 heuristic for that symbol alone.
-    // When flow.prev is null we only got past the null-check above via the bought-today carve-out,
-    // so the baseline IS known (zero by fact). Otherwise it is known only if the previous snapshot
-    // actually lists the symbol, or today bought it.
-    const baselineKnown = flow.prev == null || flow.prev.has(p.symbol) || bought > 0;
-    const snapshotQtyRaw = parseFloat(p.quantity) || 0;
-    if (!baselineKnown) return sold >= snapshotQtyRaw ? null : p;
+    // When the symbol is MISSING from the previous snapshot and wasn't bought today, prevQty is 0
+    // by ABSENCE, not by fact — there is no baseline to reconcile against. Do nothing: the broker's
+    // snapshot is the only information available and reconciliation may only ever act on evidence.
+    //
+    // An earlier attempt fell back to `sold >= snapshotQty` here. That is EXACTLY the pre-2026-09-15
+    // comparison this function exists to remove: the snapshot is post-trade, so it holds the
+    // REMAINDER, and any trim of >=50% satisfied it and deleted the lot — reintroducing the original
+    // bug on this path (caught in review, 4th pass).
+    //
+    // ACCEPTED RESIDUAL: a position that was genuinely FULLY sold can linger for a day when the
+    // previous snapshot is missing the symbol. That is the lesser error. Wrongly DELETING a real
+    // holding erases it from stored history, resets the 15-day STALE clock and silently changes
+    // trading decisions; wrongly KEEPING one distorts a single day's return, which the existing
+    // >30%-return and /api/verify checks are positioned to catch. Never delete on incomplete
+    // information.
+    if (!baselineKnown) return p;
+    // A day cannot sell more than it could possibly have held. Exceeding prevHeld + boughtToday
+    // means the TRADE RECORD is corrupt — usually the same fill written twice by two same-date runs
+    // at different price estimates, which tradeKey cannot collapse and findReRecordedSells does not
+    // catch in every shape. Reconciling against an impossible total deletes still-held lots, so the
+    // snapshot wins. Must stay AFTER the unknown-baseline check but BEFORE any subtraction.
     if (sold > prevQty + bought + QTY_EPSILON) return p;
     const snapshotQty = parseFloat(p.quantity) || 0;
     const expected = Math.max(0, prevQty + bought - sold);
@@ -571,8 +584,9 @@ export function computeDailyReturn(
   // Include ALL placed trades — Claude emits state "submitted", not "filled",
   // so filtering by state would zero out tradeNetCash and overstate P&L on trade days.
   const tradeNetCash = todayTrades.reduce((s, t) => {
-    const qty = parseFloat(t.quantity);
-    const price = parseFloat(t.avgPrice);
+    // Guarded: a pending fill has no price, and one NaN here makes agenticDailyReturn NaN.
+    const qty = parseFloat(t.quantity) || 0;
+    const price = parseFloat(t.avgPrice) || 0;
     return s + (t.side === "buy" ? qty * price : -(qty * price));
   }, 0);
 

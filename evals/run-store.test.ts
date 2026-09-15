@@ -363,3 +363,35 @@ describe("mergeRunsByDate: reconciliation cannot delete a still-held lot", () =>
     expect(parseFloat((m.positions ?? []).find(x => x.symbol === "Z")!.quantity)).toBeCloseTo(0.5, 6);
   });
 });
+
+// ── Both HIGHs from the 4th review pass, reproduced then fixed ────────────────────────────────
+describe("mergeRunsByDate: never delete a lot on incomplete or corrupt evidence", () => {
+  it("a >=50% trim of a symbol MISSING from the previous snapshot is NOT deleted", () => {
+    // The unknown-baseline fallback briefly compared sells against the post-trade REMAINDER — the
+    // exact pre-2026-09-15 comparison this function exists to remove. A 10->5 trim whose prior lot
+    // the previous snapshot missed was erased outright.
+    const prev = run({ date: "2026-09-14", timestamp: "2026-09-14T14:30:00.000Z",
+      positions: [pos("Z", "1.000000")] }); // note: no "A"
+    const today = run({ date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("A", "5.000000"), pos("Z", "1.000000")],
+      trades: [trade("A", "sell", "5.000000", "10")] });
+    const m = mergeRunsByDate([today, prev]).find(r => r.date === "2026-09-15")!;
+    const syms = (m.positions ?? []).map(p => p.symbol).sort();
+    expect(syms).toEqual(["A", "Z"]);
+    expect(parseFloat((m.positions ?? []).find(p => p.symbol === "A")!.quantity)).toBeCloseTo(5, 6);
+  });
+
+  it("over-recorded sells that findReRecordedSells cannot collapse do not delete a held lot", () => {
+    // Two sells of DIFFERENT quantities at the same price are not twins by that detector's rule,
+    // so the corrupt-record guard is the only thing standing between them and a deletion. It must
+    // run AFTER the unknown-baseline check, not be short-circuited by it.
+    const prev = run({ date: "2026-09-14", timestamp: "2026-09-14T14:30:00.000Z",
+      positions: [pos("A", "8.000000"), pos("Z", "1.000000")] });
+    const today = run({ date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("A", "8.000000"), pos("Z", "1.000000")],
+      trades: [trade("A", "sell", "4.000000", "10"), trade("A", "sell", "5.000000", "10")] });
+    const m = mergeRunsByDate([today, prev]).find(r => r.date === "2026-09-15")!;
+    expect((m.positions ?? []).some(p => p.symbol === "A")).toBe(true);
+    expect(parseFloat((m.positions ?? []).find(p => p.symbol === "A")!.quantity)).toBeCloseTo(8, 6);
+  });
+});
