@@ -362,56 +362,49 @@ function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
   const baselineOf = (symbol: string): number | null =>
     flow.prev ? (flow.prev.get(symbol) ?? 0) : null; // absence handled by `baselineKnown` below
 
+  /**
+   * Bring one position into line with the day's trades, but ONLY on evidence.
+   *
+   *     expected = prevHeld + boughtToday - soldToday
+   *
+   * Equal to the snapshot -> it was taken after the trades and is ground truth; leave it.
+   * Otherwise the snapshot is stale -> correct it down to `expected`, dropping at zero.
+   *
+   * Three refusals, each from a bug this function has actually shipped:
+   *  - Never RAISE a quantity. `expected` derives from the previous snapshot, which can itself be
+   *    overstated, and inventing equity feeds the next day's return baseline.
+   *  - Never act on an impossible sale (sold > prevHeld + bought). That means the trade record is
+   *    corrupt — usually one fill written twice by two same-date runs at different price estimates,
+   *    which tradeKey cannot collapse and findReRecordedSells does not catch in every shape.
+   *  - Never act without a baseline. A previous snapshot that EXISTS but omits the symbol is
+   *    evidence it was not held; a NULL snapshot is merely absence of evidence, and treating the
+   *    two alike erased 10 of 12 held TSLA shares.
+   */
   const adjust = (p: PositionSnapshot): PositionSnapshot | null => {
     const sold = flow.sold.get(p.symbol) ?? 0;
-    if (sold <= 0) return p;                                  // untouched by today's sells
-    const prevQty = baselineOf(p.symbol);
-    if (prevQty == null) return p;                            // no baseline → trust the snapshot
-    const bought = flow.bought.get(p.symbol) ?? 0;
-    // Known ONLY from a real previous snapshot. An earlier version also treated "bought today" as
-    // proof the baseline was zero — it is not. Buying a symbol today says nothing about what was
-    // held before; it only means the caller's window has no prior snapshot (the oldest date, or a
-    // previous date whose only run was a thin positions-less intraday run). Reproduced damage:
-    // prev thin -> prev=null, today [TSLA 12] with buy 5 / sell 3 gave expected = 0+5-3 = 2 and
-    // erased 10 of 12 held shares, while the corrupt-record guard passed (3 <= 0+5).
-    // A previous snapshot that EXISTS but omits the symbol is evidence it was not held (prev = 0,
-    // a fact) — that is the routine buy-and-stop-out-same-day case (TER 07-27, SMCI 06-24). A NULL
-    // snapshot is absence of evidence: no prior date in the window, or a previous date whose only
-    // run was a thin positions-less intraday run. Those are not the same, and conflating them is
-    // what erased 10 of 12 held TSLA shares (expected = 0 + bought - sold) in review.
-    const baselineKnown = flow.prev != null;
-    // When the symbol is MISSING from the previous snapshot and wasn't bought today, prevQty is 0
-    // by ABSENCE, not by fact — there is no baseline to reconcile against. Do nothing: the broker's
-    // snapshot is the only information available and reconciliation may only ever act on evidence.
-    //
-    // An earlier attempt fell back to `sold >= snapshotQty` here. That is EXACTLY the pre-2026-09-15
-    // comparison this function exists to remove: the snapshot is post-trade, so it holds the
-    // REMAINDER, and any trim of >=50% satisfied it and deleted the lot — reintroducing the original
-    // bug on this path (caught in review, 4th pass).
-    //
-    // ACCEPTED RESIDUAL: a position that was genuinely FULLY sold can linger for a day when the
-    // previous snapshot is missing the symbol. That is the lesser error. Wrongly DELETING a real
-    // holding erases it from stored history, resets the 15-day STALE clock and silently changes
-    // trading decisions; wrongly KEEPING one distorts a single day's return, which the existing
-    // >30%-return and /api/verify checks are positioned to catch. Never delete on incomplete
-    // information.
-    if (!baselineKnown) return p;
-    // A day cannot sell more than it could possibly have held. Exceeding prevHeld + boughtToday
-    // means the TRADE RECORD is corrupt — usually the same fill written twice by two same-date runs
-    // at different price estimates, which tradeKey cannot collapse and findReRecordedSells does not
-    // catch in every shape. Reconciling against an impossible total deletes still-held lots, so the
-    // snapshot wins. Must stay AFTER the unknown-baseline check but BEFORE any subtraction.
-    if (sold > prevQty + bought + QTY_EPSILON) return p;
+    if (sold <= 0) return p;                        // untouched by today's sells
     const snapshotQty = parseFloat(p.quantity) || 0;
-    const expected = Math.max(0, prevQty + bought - sold);
+    const bought = flow.bought.get(p.symbol) ?? 0;
+    const prevQty = baselineOf(p.symbol);
+
+    // Settle on the quantity this day should have ended at, or bail out.
+    let expected: number;
+    if (prevQty == null) {
+      // No previous snapshot at all: the oldest date in the caller's window, or a previous date
+      // whose only run was a thin positions-less intraday one. Reconcile ONLY where today's buys
+      // fully account for what the snapshot shows — the same-day buy-and-stop-out shape (registry
+      // #72: SMCI bought 4, stop-sold 4, still snapshotted as 4). Anything larger may be a real
+      // holding this window cannot see, and deleting it is the TSLA erasure.
+      if (!(snapshotQty <= bought + QTY_EPSILON)) return p;
+      expected = Math.max(0, bought - sold);
+    } else {
+      if (sold > prevQty + bought + QTY_EPSILON) return p;   // impossible sale → record is corrupt
+      expected = Math.max(0, prevQty + bought - sold);
+    }
+
     if (Math.abs(snapshotQty - expected) <= QTY_EPSILON) return p; // already reflects the trades
-    // NEVER raise a quantity above what the broker reported. `expected` is derived from the
-    // PREVIOUS day's snapshot, which can itself be stale/overstated; trusting it upward would
-    // invent equity that then becomes the next day's return baseline. Reconciliation only ever
-    // reduces toward the arithmetic expectation, or drops at zero.
-    if (expected >= snapshotQty) return p;
-    if (expected <= QTY_EPSILON) return null;                      // reconciles to a closed position
-    return { ...p, quantity: expected.toFixed(6) };                // stale snapshot → correct it
+    if (expected >= snapshotQty) return p;                         // never raise
+    return expected <= QTY_EPSILON ? null : { ...p, quantity: expected.toFixed(6) };
   };
 
   const mapPositions = (list: PositionSnapshot[] | undefined) => {
@@ -591,21 +584,30 @@ export function computeDailyReturn(
   // forever. NaN at least failed loudly. Fall back to the position's own snapshot price; if even
   // that is unavailable the day is UNPRICEABLE and returns null, which the existing
   // /api/debug?patchDate path is built to repair.
-  const priceBySymbol = new Map(todayPositions.map(p => [p.symbol, priceOf(p)]));
-  let unpriceable = false;
+  // Index BOTH days. The most common unpriced trade is a SELL that closed the position, which by
+  // definition is absent from today's snapshot — so a today-only map made every stop-out day
+  // unpriceable. Yesterday's snapshot still prices it, and is already a parameter.
+  const priceBySymbol = new Map<string, number>();
+  for (const p of yesterdayPositions) priceBySymbol.set(p.symbol, priceOf(p));
+  for (const p of todayPositions) priceBySymbol.set(p.symbol, priceOf(p)); // today wins where both exist
+  const unpriced: string[] = [];
   const tradeNetCash = todayTrades.reduce((s, t) => {
     const qty = parseFloat(t.quantity) || 0;
     let price = parseFloat(t.avgPrice);
     if (!(price > 0)) {
       price = priceBySymbol.get(t.symbol) ?? 0;
-      if (!(price > 0)) { unpriceable = true; return s; }
+      if (!(price > 0)) { unpriced.push(`${t.side} ${t.symbol}`); return s; }
     }
     return s + (t.side === "buy" ? qty * price : -(qty * price));
   }, 0);
-  if (unpriceable) {
-    // The signature already returns null for an uncomputable day, and every caller handles it
-    // (the run simply stores no return, which /api/debug?patchDate repairs once prices resolve).
-    console.warn("DAILY_RETURN_UNPRICEABLE — a trade has no usable price and no position price to fall back on");
+  if (unpriced.length > 0) {
+    // NOT silently null. /api/debug?patchDate recomputes from these SAME stored trades and never
+    // re-derives avgPrice, so it can never repair this — the autopilot would call it every run and
+    // fail forever while nothing raised an issue (the |return| > 30% alarm only fires on a NON-null
+    // return). Meanwhile the dashboard compounds SPY continuously but skips the agent's null day,
+    // silently biasing the headline AI-vs-SPY comparison by a full day's move. A permanent hole in
+    // the track record has to be loud — this is the 07-27 harm recorded in the registry.
+    console.error("DAILY_RETURN_UNPRICEABLE", { unpriced });
     return null;
   }
 

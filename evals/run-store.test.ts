@@ -403,7 +403,19 @@ describe("mergeRunsByDate: never delete a lot on incomplete or corrupt evidence"
 });
 
 describe("mergeRunsByDate: absence of evidence is not evidence of absence", () => {
-  it("with NO previous snapshot at all, nothing is reconciled", () => {
+  it("with NO previous snapshot, a same-day round trip IS still reconciled", () => {
+    // Registry #72: bought 4 and stop-sold 4, still snapshotted as 4. Today's buys fully account
+    // for the quantity shown, so it cannot be a pre-existing lot.
+    const today = run({
+      date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("SMCI", "4.000000"), pos("DAL", "4.000000")],
+      trades: [trade("SMCI", "buy", "4", "50"), trade("SMCI", "sell", "4", "47")],
+    });
+    const m = mergeRunsByDate([today]).find(r => r.date === "2026-09-15")!;
+    expect((m.positions ?? []).map(p => p.symbol)).toEqual(["DAL"]);
+  });
+
+  it("with NO previous snapshot, a holding larger than today's buys is left alone", () => {
     // A thin positions-less intraday run as the previous day yields prev = null. Treating that as
     // "held nothing yesterday" computed expected = 0 + bought - sold and erased 10 of 12 held
     // shares. The documented residual: a fully-sold position may linger for ONE day, cleared by the

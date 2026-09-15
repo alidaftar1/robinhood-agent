@@ -1155,7 +1155,10 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // sell proceeds only if the live balance is unavailable.
     const sellProceeds = trades
       .filter(t => t.side === "sell")
-      .reduce((s, t) => s + (parseFloat(t.quantity) || 0) * (parseFloat(t.avgPrice) || 0), 0);
+      // Symmetric with buyCost above: Robinhood's unsettled_funds returns 0, so this IS the live
+      // path. A sell stored at avgPrice "0" would understate unsettledAfter and totalValue by the
+      // full proceeds, which becomes tomorrow's baseline and reads as a phantom deposit.
+      .reduce((s, t) => s + (parseFloat(t.quantity) || 0) * (parseFloat(t.avgPrice) || priceMap.get(t.symbol) || 0), 0);
     const unsettledAfter = (liveBalanceAfter?.unsettled ?? 0) > 0
       ? liveBalanceAfter!.unsettled
       : (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0);
@@ -1299,6 +1302,24 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
           allTradesToday
         )
       : null;
+
+    // A null return WITH trades on the books means computeDailyReturn found a trade it could not
+    // price from either day's snapshot. That is a PERMANENT hole: /api/debug?patchDate recomputes
+    // from the same stored trades and never re-derives avgPrice, so it can never repair it, and the
+    // |return| > 30% alarm only fires on a non-null return. Meanwhile the dashboard keeps
+    // compounding SPY across the gap, biasing the headline AI-vs-SPY figure by a full day's move.
+    // Make it loud at the moment it happens, while the prices are still recoverable.
+    if (agenticResult === null && allTradesToday.length > 0 && portfolioAfter && previousDayRun?.portfolioAfter) {
+      const unpricedTrades = allTradesToday
+        .filter(t => !(parseFloat(t.avgPrice) > 0))
+        .map(t => `${t.side} ${t.symbol} x${t.quantity}`);
+      buySizingAdjustments.push(
+        `DAILY RETURN NOT COMPUTED — ${unpricedTrades.join(", ") || "a trade"} has no usable price in either day's snapshot; today's return is a permanent gap unless the fill price is supplied.`);
+      await sendAlert(
+        "Daily return could not be computed — permanent track-record gap",
+        `computeDailyReturn returned null with ${allTradesToday.length} trade(s) recorded. Unpriced: ${unpricedTrades.join(", ") || "unknown"}. patchDate CANNOT repair this (it recomputes from the same trades), so the fill price must be corrected in the stored run.`,
+      ).catch(() => {});
+    }
 
     // Derive influencer sub-portfolio: positions that had a buy trade tagged "influencer"
     const influencerBoughtSymbols = new Set(
