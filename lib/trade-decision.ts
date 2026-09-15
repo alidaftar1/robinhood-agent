@@ -155,3 +155,20 @@ export function parseTradeDecision(analysisText: string): DecisionParseOutcome {
     return { status: "unparsed", reason: `${e instanceof Error ? e.message : String(e)}${suffix}` };
   }
 }
+
+/**
+ * Does this sell close the WHOLE position, or only trim it?
+ *
+ * A trim leaves the symbol held, so "decided to sell X but X is still held" is the EXPECTED outcome
+ * for one and an anomaly only for the other. The autopilot's decided-vs-executed check flagged every
+ * trim as a dropped order until 2026-09-15 (TRGP, trimmed 50% under the concentration guard).
+ *
+ * Defined once and exported so the executor, the dry-run preview, and the autopilot check share a
+ * single notion of "full exit" — two copies of one rule drifting apart is exactly how the
+ * TRADE_DECISION parser and its own safety net went blind on the same day.
+ */
+export function isFullExit(sell: TradeDecisionSell): boolean {
+  if (sell.exit === "all") return true;
+  // No qualifier at all means a full exit; any fraction/quantity means a partial.
+  return sell.exit == null && sell.fraction == null && sell.quantity == null;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseTradeDecision } from "../lib/trade-decision";
+import { parseTradeDecision, isFullExit } from "../lib/trade-decision";
 
 const PAYLOAD = '{"thesis":"t","sells":[{"symbol":"LLY","exit":"all"}],"buys":[{"symbol":"TER","dollarAmount":100,"strategy":"main"}]}';
 
@@ -107,4 +107,29 @@ describe("parseTradeDecision", () => {
     if (r.status === "parsed") expect(r.decision.buys).toHaveLength(0);
   });
 
+});
+
+// A trim leaves the symbol held; a full exit does not. The autopilot's decided-vs-executed check
+// flagged every trim as a dropped order until this distinction existed (TRGP, 2026-09-15).
+describe("isFullExit", () => {
+  test.each([
+    ['{"symbol":"X","exit":"all"}', true],
+    ['{"symbol":"X"}', true],
+    ['{"symbol":"X","fraction":0.5}', false],
+    ['{"symbol":"X","fraction":1}', false],
+    ['{"symbol":"X","quantity":2}', false],
+    ['{"symbol":"X","exit":"half"}', false],
+  ])("%s -> %s", (json, expected) => {
+    expect(isFullExit(JSON.parse(json))).toBe(expected);
+  });
+
+  test("the real 2026-09-15 decision: ILMN is a full exit, TRGP is a trim", () => {
+    const r = parseTradeDecision(
+      'TRADE_DECISION:{"thesis":"t","sells":[{"symbol":"ILMN","exit":"all"},{"symbol":"TRGP","fraction":0.5}],"buys":[]}',
+    );
+    expect(r.status).toBe("parsed");
+    if (r.status === "parsed") {
+      expect(r.decision.sells.filter(isFullExit).map(s => s.symbol)).toEqual(["ILMN"]);
+    }
+  });
 });

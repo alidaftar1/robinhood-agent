@@ -1,5 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
-import { parseTradeDecision } from "@/lib/trade-decision";
+import { parseTradeDecision, isFullExit } from "@/lib/trade-decision";
 import { dashboardPublicUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
@@ -352,13 +352,28 @@ export async function GET(request: Request) {
       const decided = parsedDecision.decision;
       const heldSyms = new Set(todayRun.positions.map((p) => p.symbol));
       const boughtSyms = new Set((todayRun.trades ?? []).filter((t) => t.side === "buy").map((t) => t.symbol));
-      const notSold = decided.sells.map((s) => String(s.symbol)).filter((sym) => heldSyms.has(sym));
+      // Only a FULL exit should have emptied the position. A trim deliberately leaves the symbol
+      // held, so filtering on "still held" alone flagged every concentration trim as a dropped
+      // order (TRGP, 2026-09-15) — and, since this list gates the paid cloud dispatch, paid for a
+      // Claude Code run to investigate a non-event.
+      const notSold = decided.sells
+        .filter(isFullExit)
+        .map((s) => String(s.symbol))
+        .filter((sym) => heldSyms.has(sym));
       if (notSold.length > 0) {
         issues.push(
           `Decided to sell ${notSold.join(", ")} but still held — sell order(s) dropped. Next run should re-attempt; place manually if it persists.`,
         );
       }
-      const notBought = decided.buys.map((b) => String(b.symbol)).filter((sym) => !boughtSyms.has(sym));
+      // A buy that a guard dropped ON PURPOSE already explains itself in buySizingAdjustments
+      // (off-rails, cap, budget, dust, cooldown, did-not-confirm). Re-reporting it as an unexplained
+      // anomaly is the noise registry entries #19/#25 exist to prevent — and it dispatches the paid
+      // cloud agent at a guard doing its job. Only an absent buy with NO note is a real anomaly.
+      const explained = (sym: string) =>
+        (todayRun.buySizingAdjustments ?? []).some((note) => note.startsWith(`${sym} `) || note.includes(`${sym} buy`));
+      const notBought = decided.buys
+        .map((b) => String(b.symbol))
+        .filter((sym) => !boughtSyms.has(sym) && !explained(sym));
       if (notBought.length > 0) {
         issues.push(
           `Decided to buy ${notBought.join(", ")} but no confirmed buy — likely insufficient buying power (sells settle T+1) or a dropped order. Buy-sizing + retry should limit this; flag if it persists.`,
