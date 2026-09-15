@@ -130,7 +130,10 @@ describe("isFullExit", () => {
     );
     expect(r.status).toBe("parsed");
     if (r.status === "parsed") {
-      expect(r.decision.sells.filter(isFullExit).map(s => s.symbol)).toEqual(["ILMN"]);
+        // NOT `.filter(isFullExit)` — Array.filter passes the INDEX as the 2nd arg, which lands in
+      // `heldQty` and silently changes the result. That exact slip shipped in app/api/trade and was
+      // caught only in review; asserting the safe form here keeps the pattern visible.
+      expect(r.decision.sells.filter(s => isFullExit(s)).map(s => s.symbol)).toEqual(["ILMN"]);
     }
   });
 });
@@ -153,5 +156,16 @@ describe("isFullExit mirrors the executor", () => {
       expect({ intent, isFullExit: isFullExit(intent as any, parseFloat(held)) })
         .toEqual({ intent, isFullExit: closes });
     }
+  });
+});
+
+describe("isFullExit is index-safe", () => {
+  test("a bare .filter(isFullExit) reference would misclassify — the guarded form does not", () => {
+    const sells = [{ symbol: "A", quantity: 3 }, { symbol: "B", quantity: 3 }] as any[];
+    // Array.filter passes (value, index, array): at index 0 `quantity >= 0` is always true.
+    const unsafe = sells.filter(isFullExit as any).map(s => s.symbol);
+    const safe = sells.filter(s => isFullExit(s)).map(s => s.symbol);
+    expect(unsafe).toContain("A");   // the footgun: a trim classified as a full exit
+    expect(safe).toEqual([]);        // both are trims without a heldQty context
   });
 });

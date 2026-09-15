@@ -360,7 +360,7 @@ function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
    * window — baseline unknown, so the snapshot stands).
    */
   const baselineOf = (symbol: string): number | null => {
-    if (flow.prev) return flow.prev.get(symbol) ?? 0;
+    if (flow.prev) return flow.prev.get(symbol) ?? 0; // absence handled by `baselineKnown` below
     return (flow.bought.get(symbol) ?? 0) > 0 ? 0 : null;
   };
 
@@ -370,11 +370,23 @@ function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
     const prevQty = baselineOf(p.symbol);
     if (prevQty == null) return p;                            // no baseline → trust the snapshot
     const bought = flow.bought.get(p.symbol) ?? 0;
-    // A day cannot sell more than it could possibly have held. When the recorded sells exceed
+    // A day cannot sell more than it could possibly have held. When recorded sells exceed
     // prevHeld + boughtToday the TRADE RECORD is corrupt — most often the same real fill written
     // twice by two same-date runs at different price estimates, which tradeKey cannot collapse
     // (that is why findReRecordedSells exists, and it does not catch every shape). Reconciling
     // against an impossible total is what deletes a still-held lot, so the broker's snapshot wins.
+    //
+    // EXCEPT when the symbol is simply MISSING from the previous snapshot and wasn't bought today.
+    // Then prevQty is 0 by absence rather than by fact, so "sold > 0 + 0" is trivially true and the
+    // guard would spare every such position — including one that really was fully sold, stranding
+    // it as phantom equity in tomorrow's baseline (the original reason this function exists). With
+    // no usable baseline, fall back to the pre-2026-09-15 heuristic for that symbol alone.
+    // When flow.prev is null we only got past the null-check above via the bought-today carve-out,
+    // so the baseline IS known (zero by fact). Otherwise it is known only if the previous snapshot
+    // actually lists the symbol, or today bought it.
+    const baselineKnown = flow.prev == null || flow.prev.has(p.symbol) || bought > 0;
+    const snapshotQtyRaw = parseFloat(p.quantity) || 0;
+    if (!baselineKnown) return sold >= snapshotQtyRaw ? null : p;
     if (sold > prevQty + bought + QTY_EPSILON) return p;
     const snapshotQty = parseFloat(p.quantity) || 0;
     const expected = Math.max(0, prevQty + bought - sold);

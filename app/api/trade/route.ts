@@ -155,7 +155,10 @@ export async function GET(request: Request) {
       const decisionParseError = dryParsed.status === "unparsed" ? dryParsed.reason : null;
 
       // Apply the same influencer cap + downtrend guard the real run uses (display only)
-      const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !decision.sells.some(s => s.symbol === p.symbol && isFullExit(s))).length;
+      const heldInflQty = new Map((previousRun?.influencerPositions ?? []).map(p => [p.symbol, parseFloat(p.quantity) || 0]));
+      const keptInfluencer = (previousRun?.influencerPositions ?? [])
+        .filter(p => !decision.sells.some(s => s.symbol === p.symbol && isFullExit(s, heldInflQty.get(p.symbol))))
+        .length;
       const dryShortlistSet = new Set(dryBuy.map(s => s.symbol)); // buy-allowlist (retained ◆HELD names excluded)
       const dryInfluencerCandidates = new Set(influencerMomentum.keys());
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) => b.strategy === "influencer" || (dryInfluencerCandidates.has(b.symbol) && !dryShortlistSet.has(b.symbol));
@@ -623,7 +626,11 @@ export async function GET(request: Request) {
     {
       // A slot only frees up on a FULL exit — a partial trim (fraction/legacy-qty) still HOLDS the
       // position, so counting it as sold would wrongly raise allowedNew and admit a 3rd influencer name.
-      const soldSet = new Set(decision.sells.filter(isFullExit).map(s => s.symbol));
+      // NOT `.filter(isFullExit)` — Array.filter passes (value, INDEX, array), so the index would
+      // arrive as `heldQty` and at index 0 make `quantity >= 0` always true, turning a numeric-
+      // quantity trim into a "full exit", freeing an influencer slot and admitting a 3rd position
+      // past MAX_INFLUENCER_POSITIONS (security-audit finding [3]).
+      const soldSet = new Set(decision.sells.filter(s => isFullExit(s)).map(s => s.symbol));
       const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !soldSet.has(p.symbol)).length;
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
         b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
@@ -1045,13 +1052,21 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       // make `find(p => p.symbol === X)` consumers see only part of the holding.
       const qtyDelta = new Map<string, number>();
       const boughtQty = new Map<string, number>();
-      const boughtCost = new Map<string, number>(); // Σ(qty × price), for the weighted average
+      const boughtCost = new Map<string, number>(); // Σ(qty × price) over PRICED buys only
+      const pricedQty = new Map<string, number>();  // qty backing boughtCost (excludes pending)
       for (const t of trades) {
         const q = parseFloat(t.quantity) || 0;
         qtyDelta.set(t.symbol, (qtyDelta.get(t.symbol) ?? 0) + (t.side === "sell" ? -q : q));
         if (t.side === "buy") {
           boughtQty.set(t.symbol, (boughtQty.get(t.symbol) ?? 0) + q);
-          boughtCost.set(t.symbol, (boughtCost.get(t.symbol) ?? 0) + q * (parseFloat(t.avgPrice) || 0));
+          // verifyBuys deliberately includes PENDING orders, which carry no fill price. Folding a
+          // 0 into the weighted average would drag a real basis toward zero (1 @ $100 + a pending
+          // 1 @ unknown => $50), corrupting the very number /api/verify diffs against Robinhood.
+          const px = parseFloat(t.avgPrice) || 0;
+          if (px > 0) {
+            pricedQty.set(t.symbol, (pricedQty.get(t.symbol) ?? 0) + q);
+            boughtCost.set(t.symbol, (boughtCost.get(t.symbol) ?? 0) + q * px);
+          }
         }
       }
       const startingPositions = portfolioCtx?.positions ?? [];
@@ -1059,22 +1074,24 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       for (const p of startingPositions) {
         const startQty = parseFloat(p.quantity) || 0;
         const remaining = startQty + (qtyDelta.get(p.symbol) ?? 0);
-        const addedQty = boughtQty.get(p.symbol) ?? 0;
         qtyDelta.delete(p.symbol); // consumed — anything left is a brand-new position
         if (remaining <= 1e-6) continue; // fully exited
         // A top-up moves the cost basis. Keeping the old avgCost while the quantity grows stores a
         // basis that /api/verify then compares against live Robinhood's own avgCost, and that the
         // P&L/ledger code reads — e.g. 1 @ $100 topped up with 1 @ $150 must store 2 @ $125, not $100.
         const startCost = parseFloat(p.avgCost) || 0;
-        const avgCost = addedQty > 0 && startQty + addedQty > 0
-          ? ((startQty * startCost + (boughtCost.get(p.symbol) ?? 0)) / (startQty + addedQty)).toFixed(6)
+        const priced = pricedQty.get(p.symbol) ?? 0;
+        // Only priced buys move the basis; an unpriced (pending) top-up leaves it as-is, which is
+        // roughly right and never actively wrong.
+        const avgCost = priced > 0 && startQty + priced > 0
+          ? ((startQty * startCost + (boughtCost.get(p.symbol) ?? 0)) / (startQty + priced)).toFixed(6)
           : p.avgCost;
         merged.push({ symbol: p.symbol, quantity: remaining.toFixed(6), avgCost });
       }
       for (const [symbol, delta] of qtyDelta) {
         if (delta <= 1e-6) continue; // a sell of something not in startingPositions — nothing to add
-        const q = boughtQty.get(symbol) ?? delta;
-        merged.push({ symbol, quantity: delta.toFixed(6), avgCost: q > 0 ? ((boughtCost.get(symbol) ?? 0) / q).toFixed(6) : "0" });
+        const priced = pricedQty.get(symbol) ?? 0;
+        merged.push({ symbol, quantity: delta.toFixed(6), avgCost: priced > 0 ? ((boughtCost.get(symbol) ?? 0) / priced).toFixed(6) : "0" });
       }
       // Same guard as the live path: resolve a real market price for any held symbol missing
       // from the priceMap rather than silently stamping avgCost as the snapshot price.

@@ -356,7 +356,18 @@ export async function GET(request: Request) {
       // held, so filtering on "still held" alone flagged every concentration trim as a dropped
       // order (TRGP, 2026-09-15) — and, since this list gates the paid cloud dispatch, paid for a
       // Claude Code run to investigate a non-event.
-      const heldQtyOf = new Map(todayRun.positions.map((p) => [p.symbol, parseFloat(p.quantity) || 0]));
+      // PRE-trade quantity: the executor clamps a numeric `quantity` against what was held BEFORE
+      // the sale. Reading the post-trade snapshot instead made any numeric sell of >=50% look like
+      // a full exit (10 held, sell 6, snapshot 4 -> "6 >= 4" -> full exit -> "still held!"), which
+      // false-alarms a correctly executed trim and dispatches the paid cloud agent for it.
+      const soldTodayQty = new Map<string, number>();
+      for (const t of todayRun.trades ?? []) {
+        if (t.side !== "sell") continue;
+        soldTodayQty.set(t.symbol, (soldTodayQty.get(t.symbol) ?? 0) + (parseFloat(t.quantity) || 0));
+      }
+      const heldQtyOf = new Map(
+        todayRun.positions.map((p) => [p.symbol, (parseFloat(p.quantity) || 0) + (soldTodayQty.get(p.symbol) ?? 0)]),
+      );
       const notSold = decided.sells
         .filter((s) => isFullExit(s, heldQtyOf.get(String(s.symbol))))
         .map((s) => String(s.symbol))
@@ -376,10 +387,20 @@ export async function GET(request: Request) {
       // failure — the AMAT 2026-08-31 case — would be suppressed by the very note added to make it
       // visible. The symbol is matched with a boundary so a note about AAPL cannot explain away a
       // dropped buy of ticker L.
-      const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED|off-rails)\b/i;
-      const explained = (sym: string) =>
-        (todayRun.buySizingAdjustments ?? []).some((note) =>
-          GUARD_DROP.test(note) && new RegExp(`(^|[^A-Z0-9])${sym}([^A-Z0-9]|$)`).test(note));
+      // Case-SENSITIVE on purpose: the guards emit uppercase verbs ("<SYM> buy DROPPED —",
+      // "Influencer buy REJECTED —", "<SYM> re-buy BLOCKED —"), while lib/buy-sizing.ts also emits
+      // lowercase prose that merely SPECULATES ("...may be rejected or crowd out later buys") for a
+      // buy that was NOT dropped. Matching that case-insensitively would explain away a genuine
+      // execution failure.
+      const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED)\b|off-rails/;
+      const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const explained = (sym: string) => {
+        // `symbol` comes straight from model output and is never validated, so an unescaped `(` or
+        // `[` would throw SyntaxError here — uncaught, that 500s the whole autopilot GET and kills
+        // the morning report. `BRK.B` would also compile to a wildcard matching `BRK-B`.
+        const symRe = new RegExp(`(^|[^A-Z0-9.])${escapeRe(sym)}([^A-Z0-9.]|$)`);
+        return (todayRun.buySizingAdjustments ?? []).some((note) => GUARD_DROP.test(note) && symRe.test(note));
+      };
       const notBought = decided.buys
         .map((b) => String(b.symbol))
         .filter((sym) => !boughtSyms.has(sym) && !explained(sym));
