@@ -1041,9 +1041,21 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       console.log("POST_TRADE_LIVE_SNAPSHOT_OK", { positions: positions.length, cash: cashAfter });
     } else {
       console.warn("POST_TRADE_LIVE_SNAPSHOT_MISSING — falling back to reconstructed snapshot");
-      const soldSymbols = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
+      // A TRIM sells only a fraction of the held qty and still leaves a position open — only a
+      // FULL exit (sold qty ~= held qty) should drop the symbol. Summing sold qty per symbol and
+      // subtracting (rather than dropping on ANY sell) keeps a trimmed remainder in the snapshot.
+      const soldQtyBySymbol = new Map<string, number>();
+      for (const t of trades) {
+        if (t.side !== "sell") continue;
+        soldQtyBySymbol.set(t.symbol, (soldQtyBySymbol.get(t.symbol) ?? 0) + (parseFloat(t.quantity) || 0));
+      }
       const startingPositions = portfolioCtx?.positions ?? [];
-      const keptPositions = startingPositions.filter(p => !soldSymbols.has(p.symbol));
+      const keptPositions = startingPositions.flatMap(p => {
+        const sold = soldQtyBySymbol.get(p.symbol) ?? 0;
+        if (sold <= 0) return [p];
+        const remaining = parseFloat(p.quantity) - sold;
+        return remaining > 1e-6 ? [{ ...p, quantity: String(remaining) }] : [];
+      });
       const boughtPositions = trades.filter(t => t.side === "buy").map(t => ({
         symbol: t.symbol, quantity: t.quantity, avgCost: t.avgPrice,
       }));
