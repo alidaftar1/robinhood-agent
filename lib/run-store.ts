@@ -385,22 +385,18 @@ function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
     if (sold <= 0) return p;                        // untouched by today's sells
     const snapshotQty = parseFloat(p.quantity) || 0;
     const bought = flow.bought.get(p.symbol) ?? 0;
-    const prevQty = baselineOf(p.symbol);
 
-    // Settle on the quantity this day should have ended at, or bail out.
-    let expected: number;
-    if (prevQty == null) {
-      // No previous snapshot at all: the oldest date in the caller's window, or a previous date
-      // whose only run was a thin positions-less intraday one. Reconcile ONLY where today's buys
-      // fully account for what the snapshot shows — the same-day buy-and-stop-out shape (registry
-      // #72: SMCI bought 4, stop-sold 4, still snapshotted as 4). Anything larger may be a real
-      // holding this window cannot see, and deleting it is the TSLA erasure.
-      if (!(snapshotQty <= bought + QTY_EPSILON)) return p;
-      expected = Math.max(0, bought - sold);
-    } else {
-      if (sold > prevQty + bought + QTY_EPSILON) return p;   // impossible sale → record is corrupt
-      expected = Math.max(0, prevQty + bought - sold);
-    }
+    // No previous snapshot, no reconciliation. A carve-out for the same-day buy-and-stop-out shape
+    // was tried and removed: it tested `snapshotQty <= bought`, but the snapshot is POST-SELL, so a
+    // hidden prior holding H makes it H + bought - sold and the test passes whenever H <= sold —
+    // then `expected = bought - sold` erased H. An evidence-only form (`snapshotQty + sold <=
+    // bought`) cannot distinguish registry #72's STALE snapshot (4 held / 4 bought / 4 sold) from a
+    // genuine H = 4, so the carve-out was deciding an ambiguous case by DELETING. This file's rule
+    // is the opposite, and the one-day residual is the price of honouring it.
+    const prevQty = baselineOf(p.symbol);
+    if (prevQty == null) return p;
+    if (sold > prevQty + bought + QTY_EPSILON) return p;   // impossible sale → the record is corrupt
+    const expected = Math.max(0, prevQty + bought - sold);
 
     if (Math.abs(snapshotQty - expected) <= QTY_EPSILON) return p; // already reflects the trades
     if (expected >= snapshotQty) return p;                         // never raise
@@ -584,9 +580,13 @@ export function computeDailyReturn(
   // forever. NaN at least failed loudly. Fall back to the position's own snapshot price; if even
   // that is unavailable the day is UNPRICEABLE and returns null, which the existing
   // /api/debug?patchDate path is built to repair.
-  // Index BOTH days. The most common unpriced trade is a SELL that closed the position, which by
-  // definition is absent from today's snapshot — so a today-only map made every stop-out day
-  // unpriceable. Yesterday's snapshot still prices it, and is already a parameter.
+  // BUYS ONLY may fall back to a snapshot price. For a SELL that closed a position the substitution
+  // is not just imprecise, it is structurally wrong: that name's contribution to pnl is
+  // qty·(fillPrice − yesterdayPrice), so substituting yesterday's price makes it exactly ZERO —
+  // booking neither gain nor loss. Sells here are overwhelmingly stop-outs and drop-check exits,
+  // i.e. declines, so the substitution would systematically delete losses and bias the stored
+  // return upward, silently and with no alert (the result is no longer null). An unpriced sell has
+  // no honest proxy, so the day is reported as uncomputable instead.
   const priceBySymbol = new Map<string, number>();
   for (const p of yesterdayPositions) priceBySymbol.set(p.symbol, priceOf(p));
   for (const p of todayPositions) priceBySymbol.set(p.symbol, priceOf(p)); // today wins where both exist
@@ -595,8 +595,9 @@ export function computeDailyReturn(
     const qty = parseFloat(t.quantity) || 0;
     let price = parseFloat(t.avgPrice);
     if (!(price > 0)) {
-      price = priceBySymbol.get(t.symbol) ?? 0;
+      price = t.side === "buy" ? (priceBySymbol.get(t.symbol) ?? 0) : 0;
       if (!(price > 0)) { unpriced.push(`${t.side} ${t.symbol}`); return s; }
+      console.warn("TRADE_PRICE_SUBSTITUTED", { symbol: t.symbol, side: t.side, price });
     }
     return s + (t.side === "buy" ? qty * price : -(qty * price));
   }, 0);

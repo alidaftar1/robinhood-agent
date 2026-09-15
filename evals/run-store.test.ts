@@ -403,16 +403,44 @@ describe("mergeRunsByDate: never delete a lot on incomplete or corrupt evidence"
 });
 
 describe("mergeRunsByDate: absence of evidence is not evidence of absence", () => {
-  it("with NO previous snapshot, a same-day round trip IS still reconciled", () => {
-    // Registry #72: bought 4 and stop-sold 4, still snapshotted as 4. Today's buys fully account
-    // for the quantity shown, so it cannot be a pre-existing lot.
+  it("with NO previous snapshot, even a same-day round trip is left alone", () => {
+    // A carve-out for this shape was tried and removed. `snapshotQty <= bought` tests a POST-SELL
+    // snapshot, so a hidden prior holding H passes whenever H <= sold and is then erased; and the
+    // evidence-only form cannot tell a STALE 4 from a genuine 4. Deciding that ambiguity by
+    // deletion is exactly what this function must not do. The cost is a one-day stale holding,
+    // cleared by the next broker snapshot — strictly better than erasing a real position.
     const today = run({
       date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
       positions: [pos("SMCI", "4.000000"), pos("DAL", "4.000000")],
       trades: [trade("SMCI", "buy", "4", "50"), trade("SMCI", "sell", "4", "47")],
     });
     const m = mergeRunsByDate([today]).find(r => r.date === "2026-09-15")!;
+    expect((m.positions ?? []).map(p => p.symbol).sort()).toEqual(["DAL", "SMCI"]);
+  });
+
+  it("but WITH a previous snapshot that omits it, the same round trip IS reconciled", () => {
+    // Production always has a previous date (getRuns(60/90)), which is where registry #72 is
+    // actually protected — an existing snapshot omitting SMCI is evidence it was bought today.
+    const prev = run({ date: "2026-09-14", timestamp: "2026-09-14T14:30:00.000Z", positions: [pos("DAL", "4.000000")] });
+    const today = run({
+      date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("SMCI", "4.000000"), pos("DAL", "4.000000")],
+      trades: [trade("SMCI", "buy", "4", "50"), trade("SMCI", "sell", "4", "47")],
+    });
+    const m = mergeRunsByDate([today, prev]).find(r => r.date === "2026-09-15")!;
     expect((m.positions ?? []).map(p => p.symbol)).toEqual(["DAL"]);
+  });
+
+  it("a hidden prior holding is never erased when sold >= that holding", () => {
+    // The reproduced HIGH: prev thin -> null, 10 unseen shares, buy 5, sell 12, snapshot 3.
+    const thinPrev = run({ date: "2026-09-14", timestamp: "2026-09-14T19:00:00.000Z", positions: [] });
+    const today = run({
+      date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("X", "3.000000")],
+      trades: [trade("X", "buy", "5", "10"), trade("X", "sell", "12", "10")],
+    });
+    const m = mergeRunsByDate([today, thinPrev]).find(r => r.date === "2026-09-15")!;
+    expect(parseFloat((m.positions ?? []).find(p => p.symbol === "X")!.quantity)).toBeCloseTo(3, 6);
   });
 
   it("with NO previous snapshot, a holding larger than today's buys is left alone", () => {

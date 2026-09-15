@@ -110,7 +110,10 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
   // of today's trades + reconciled positions) so a thin intraday stop-loss run doesn't make
   // the morning rebalance's fills look "uncaptured". Compare cash/unsettled against the
   // latest run by timestamp — the current snapshot the dashboard shows for Cash Clearing.
-  const runs = await getRuns(5);
+  // 10, not 5: mergeRunsByDate can only reconcile a date against the PREVIOUS date's snapshot, and
+  // on a busy day all 5 most-recent runs can be from today — making today the oldest date in the
+  // window, leaving no baseline and no reconciliation.
+  const runs = await getRuns(10);
   const merged = mergeRunsByDate(runs);
   const storedRun = merged.find(r => r.date === today) ?? merged[0] ?? null;
   const cashRun = [...runs].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).find(r => r.portfolioAfter) ?? storedRun;
