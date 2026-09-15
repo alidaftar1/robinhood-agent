@@ -6,7 +6,7 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, type PortfolioContext } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
-import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
@@ -1309,18 +1309,30 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // |return| > 30% alarm only fires on a non-null return. Meanwhile the dashboard keeps
     // compounding SPY across the gap, biasing the headline AI-vs-SPY figure by a full day's move.
     // Make it loud at the moment it happens, while the prices are still recoverable.
-    const unpricedTrades = allTradesToday
-      .filter(t => !(parseFloat(t.avgPrice) > 0))
+    // The SAME predicate computeDailyReturn uses, so the alert names the trades that actually
+    // blocked it — a looser filter also lists buys and partial sells it priced successfully.
+    const unpricedTrades = findUnpriceableTrades(positions, allTradesToday)
       .map(t => `${t.side} ${t.symbol} x${t.quantity}`);
-    // Gated on an actually-unpriced trade: computeDailyReturn ALSO returns null when yesterdayValue
-    // <= 0 (a fresh or zeroed account), and blaming prices there points the operator at a problem
-    // that doesn't exist.
     if (agenticResult === null && unpricedTrades.length > 0 && portfolioAfter && previousDayRun?.portfolioAfter) {
       buySizingAdjustments.push(
         `DAILY RETURN NOT COMPUTED — ${unpricedTrades.join(", ")} has no usable price in either day's snapshot; today's return is a permanent gap unless the fill price is supplied.`);
       await sendAlert(
         "Daily return could not be computed — permanent track-record gap",
         `computeDailyReturn returned null with ${allTradesToday.length} trade(s) recorded. Unpriced: ${unpricedTrades.join(", ")}. patchDate CANNOT repair this (it recomputes from the same trades), so the fill price must be corrected in the stored run.`,
+      ).catch(() => {});
+    } else if (agenticResult === null && allTradesToday.length > 0 && portfolioAfter && previousDayRun?.portfolioAfter) {
+      // The other null path: computeDailyReturn bails when yesterdayValue <= 0. Reachable — a
+      // drop-check that liquidated everything with a failed balance fetch stores totalValue "0.00".
+      // Gating the price alert on unpriced trades removed this case's ONLY signal, leaving the same
+      // silent permanent gap under a different cause.
+      const why = !(parseFloat(previousDayRun.portfolioAfter.totalValue) > 0)
+        ? `the previous run's portfolioAfter.totalValue is ${previousDayRun.portfolioAfter.totalValue}`
+        : "an unknown condition";
+      buySizingAdjustments.push(
+        `DAILY RETURN NOT COMPUTED — ${why}, so there is no baseline to measure today against. Today's return is a permanent gap unless the prior run's total value is corrected.`);
+      await sendAlert(
+        "Daily return could not be computed — no usable baseline",
+        `computeDailyReturn returned null with ${allTradesToday.length} trade(s) recorded, and no trade was unpriceable — ${why}. Fix the prior run's stored total value; patchDate cannot derive it.`,
       ).catch(() => {});
     }
 

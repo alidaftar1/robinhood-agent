@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { mergeRunsByDate, type TradeRun, type TradeSnapshot } from "@/lib/run-store";
+import { mergeRunsByDate, findUnpriceableTrades, type TradeRun, type TradeSnapshot } from "@/lib/run-store";
 
 function trade(symbol: string, side: string, qty = "1", price = "10"): TradeSnapshot {
   return { symbol, side, quantity: qty, avgPrice: price, state: "filled" };
@@ -466,5 +466,30 @@ describe("mergeRunsByDate: absence of evidence is not evidence of absence", () =
       trades: [trade("NEW", "buy", "1", "100"), trade("NEW", "sell", "1", "101")] });
     const m = mergeRunsByDate([today, prev]).find(r => r.date === "2026-09-15")!;
     expect((m.positions ?? []).map(p => p.symbol)).toEqual(["APA"]);
+  });
+});
+
+// The distinction that decides whether a missing fill price is recoverable (8th review pass).
+describe("findUnpriceableTrades", () => {
+  const held = [pos("KEPT", "5")];
+  it("a PARTIAL sell is priceable — the position is still in today's snapshot", () => {
+    // Contribution works out to fullQty*(todayP - yestP): correct mark-to-market, not zero.
+    const t = [{ symbol: "KEPT", side: "sell", quantity: "5", avgPrice: "0", state: "filled" } as TradeSnapshot];
+    expect(findUnpriceableTrades(held, t)).toEqual([]);
+  });
+
+  it("a sell that CLOSED the position is not priceable", () => {
+    // Only yesterday's price is available, and qty*(fill - yesterday) collapses to exactly zero —
+    // booking neither gain nor loss, which would erase stop-out losses from the record.
+    const t = [{ symbol: "GONE", side: "sell", quantity: "5", avgPrice: "0", state: "filled" } as TradeSnapshot];
+    expect(findUnpriceableTrades(held, t).map(x => x.symbol)).toEqual(["GONE"]);
+  });
+
+  it("a buy of a still-held name is priceable; a priced trade is never listed", () => {
+    const t = [
+      { symbol: "KEPT", side: "buy", quantity: "1", avgPrice: "0", state: "filled" } as TradeSnapshot,
+      { symbol: "GONE", side: "sell", quantity: "1", avgPrice: "47.50", state: "filled" } as TradeSnapshot,
+    ];
+    expect(findUnpriceableTrades(held, t)).toEqual([]);
   });
 });

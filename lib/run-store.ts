@@ -352,15 +352,19 @@ function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
 
   /**
    * What the symbol was held at before today, or null when that genuinely can't be known.
-   * On the OLDEST date in the caller's window there is no previous run to read — but a symbol
-   * BOUGHT today needs no history: it cannot have been held before the lot that today's buy
-   * established, so zero is a fact rather than a guess. That distinction is what keeps the 06-24
-   * SMCI case working (bought 4 and stop-sold 4 the same day, with no prior date in the window)
-   * without resurrecting the TRGP deletion (trimmed, never bought that day, lot predates the
-   * window — baseline unknown, so the snapshot stands).
+   *
+   * A previous snapshot that EXISTS but omits the symbol returns 0 — that is evidence it was not
+   * held, and it is what makes the routine buy-and-stop-out-same-day case reconcile. A NULL
+   * previous snapshot (the oldest date in the caller's window, or a previous date whose only run
+   * carried no positions) returns null: absence of evidence, never treated as zero.
+   *
+   * There is deliberately NO carve-out for "bought today". Two attempts at one were reverted
+   * because both deleted real holdings: "bought today implies zero before" is simply false, and
+   * the post-sell form of the test (`snapshotQty <= bought`) passes whenever a hidden prior
+   * holding is smaller than the amount sold. See the refusals on reconcilePositions below.
    */
   const baselineOf = (symbol: string): number | null =>
-    flow.prev ? (flow.prev.get(symbol) ?? 0) : null; // absence handled by `baselineKnown` below
+    flow.prev ? (flow.prev.get(symbol) ?? 0) : null;
 
   /**
    * Bring one position into line with the day's trades, but ONLY on evidence.
@@ -550,6 +554,22 @@ export async function dedupeRuns(): Promise<number> {
 // Computes transfer-adjusted daily return for one account.
 // Falls back to simple total-value change when position prices are unavailable
 // (e.g. non-S&P holdings like SERV that aren't in the price map).
+/**
+ * Trades that make a day's return uncomputable: no recorded fill price AND no position left today
+ * to price them from. A buy or a PARTIAL sell still has a position in today's snapshot, so it can
+ * be marked to market; a sell that fully closed a position cannot (see computeDailyReturn).
+ *
+ * Exported so the trade route reports exactly the trades that actually blocked the calculation,
+ * rather than re-deriving a looser rule and naming ones that were priced fine.
+ */
+export function findUnpriceableTrades(
+  todayPositions: PositionSnapshot[],
+  trades: TradeSnapshot[],
+): TradeSnapshot[] {
+  const stillHeld = new Set(todayPositions.map(p => p.symbol));
+  return trades.filter(t => !(parseFloat(t.avgPrice) > 0) && !stillHeld.has(t.symbol));
+}
+
 export function computeDailyReturn(
   todayValue: number,
   yesterdayValue: number,
@@ -580,22 +600,27 @@ export function computeDailyReturn(
   // forever. NaN at least failed loudly. Fall back to the position's own snapshot price; if even
   // that is unavailable the day is UNPRICEABLE and returns null, which the existing
   // /api/debug?patchDate path is built to repair.
-  // BUYS ONLY may fall back to a snapshot price. For a SELL that closed a position the substitution
-  // is not just imprecise, it is structurally wrong: that name's contribution to pnl is
-  // qty·(fillPrice − yesterdayPrice), so substituting yesterday's price makes it exactly ZERO —
-  // booking neither gain nor loss. Sells here are overwhelmingly stop-outs and drop-check exits,
-  // i.e. declines, so the substitution would systematically delete losses and bias the stored
-  // return upward, silently and with no alert (the result is no longer null). An unpriced sell has
-  // no honest proxy, so the day is reported as uncomputable instead.
+  // A snapshot price may stand in for a missing fill price EXCEPT on a sell that CLOSED the
+  // position. The distinction is arithmetic, not a heuristic:
+  //   - Position still held today (a buy, or a partial sell): the symbol is in todayPositions, so
+  //     the substitute is TODAY's mark and the day's contribution works out to
+  //     fullQty·(todayPrice − yesterdayPrice) — the correct mark-to-market.
+  //   - Position fully closed: the symbol is absent from todayPositions, so the only substitute is
+  //     YESTERDAY's price, and the contribution qty·(fill − yesterday) collapses to exactly ZERO —
+  //     booking neither gain nor loss. Sells here are overwhelmingly stop-outs and drop-check
+  //     exits, i.e. declines, so that would systematically erase losses and bias the stored return
+  //     upward, silently, with no alert possible because the result is no longer null.
+  // Only the closed case has no honest proxy, and only it makes the day uncomputable.
   const priceBySymbol = new Map<string, number>();
   for (const p of yesterdayPositions) priceBySymbol.set(p.symbol, priceOf(p));
   for (const p of todayPositions) priceBySymbol.set(p.symbol, priceOf(p)); // today wins where both exist
+  const stillHeldToday = new Set(todayPositions.map(p => p.symbol));
   const unpriced: string[] = [];
   const tradeNetCash = todayTrades.reduce((s, t) => {
     const qty = parseFloat(t.quantity) || 0;
     let price = parseFloat(t.avgPrice);
     if (!(price > 0)) {
-      price = t.side === "buy" ? (priceBySymbol.get(t.symbol) ?? 0) : 0;
+      price = stillHeldToday.has(t.symbol) ? (priceBySymbol.get(t.symbol) ?? 0) : 0;
       if (!(price > 0)) { unpriced.push(`${t.side} ${t.symbol}`); return s; }
       console.warn("TRADE_PRICE_SUBSTITUTED", { symbol: t.symbol, side: t.side, price });
     }
