@@ -116,9 +116,10 @@ describe("isFullExit", () => {
     ['{"symbol":"X","exit":"all"}', true],
     ['{"symbol":"X"}', true],
     ['{"symbol":"X","fraction":0.5}', false],
-    ['{"symbol":"X","fraction":1}', false],
-    ['{"symbol":"X","quantity":2}', false],
-    ['{"symbol":"X","exit":"half"}', false],
+    ['{"symbol":"X","fraction":1}', true],   // executor REFUSES an invalid fraction -> nothing placed
+    ['{"symbol":"X","fraction":0}', true],   // same
+    ['{"symbol":"X","exit":"half"}', true],  // executor falls through to a FULL exit
+    ['{"symbol":"X","quantity":2}', false],  // a trim without heldQty context
   ])("%s -> %s", (json, expected) => {
     expect(isFullExit(JSON.parse(json))).toBe(expected);
   });
@@ -130,6 +131,27 @@ describe("isFullExit", () => {
     expect(r.status).toBe("parsed");
     if (r.status === "parsed") {
       expect(r.decision.sells.filter(isFullExit).map(s => s.symbol)).toEqual(["ILMN"]);
+    }
+  });
+});
+
+// isFullExit must mirror resolveSellQuantity exactly — a divergence silences the decided-vs-executed
+// check for sells that either liquidate everything or place nothing at all.
+describe("isFullExit mirrors the executor", () => {
+  test("agrees with resolveSellQuantity on every intent shape", async () => {
+    const { resolveSellQuantity } = await import("../lib/buy-sizing");
+    const held = "2.000000";
+    for (const intent of [
+      { exit: "all" }, {}, { exit: "half" },
+      { fraction: 0.5 }, { fraction: 1 }, { fraction: 0 }, { fraction: -1 },
+      { quantity: 1 }, { quantity: 5 },
+    ]) {
+      const qty = resolveSellQuantity(intent as any, held);
+      // Position is closed when the executor sells the whole lot, OR places nothing at all
+      // (an unplaced order leaves it held, which the autopilot must still flag).
+      const closes = qty === null || parseFloat(qty) >= parseFloat(held);
+      expect({ intent, isFullExit: isFullExit(intent as any, parseFloat(held)) })
+        .toEqual({ intent, isFullExit: closes });
     }
   });
 });

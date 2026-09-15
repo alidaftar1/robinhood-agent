@@ -322,3 +322,44 @@ describe("mergeRunsByDate: stale snapshot vs a later sell", () => {
     expect(q(twice)).toEqual(q(once));
   });
 });
+
+// ── Findings the pre-deploy review REPRODUCED against earlier versions of this fix ────────────
+describe("mergeRunsByDate: reconciliation cannot delete a still-held lot", () => {
+  it("a re-recorded twin at a DIFFERENT price does not double-count the sale", () => {
+    // tradeKey includes avgPrice, so a twin (the same fill recorded by two runs at different price
+    // estimates — see findReRecordedSells / TER 07-27) is not collapsed by key. Deriving the day's
+    // sold quantity from raw runs counted it twice and deleted the remaining lot.
+    const prev = run({ date: "2026-09-14", timestamp: "2026-09-14T14:30:00.000Z",
+      positions: [pos("X", "2.000000")] });
+    const morning = run({ date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("X", "0.500000")], trades: [trade("X", "sell", "1.500000", "50.00")] });
+    const twin = run({ date: "2026-09-15", timestamp: "2026-09-15T19:00:00.000Z",
+      positions: [], trades: [trade("X", "sell", "1.500000", "50.90")] });
+    const m = mergeRunsByDate([twin, morning, prev]).find(r => r.date === "2026-09-15")!;
+    const p = (m.positions ?? []).find(x => x.symbol === "X");
+    expect(p).toBeDefined();
+    expect(parseFloat(p!.quantity)).toBeCloseTo(0.5, 6);
+  });
+
+  it("an EMPTY previous-day snapshot is unknown, not a baseline of zero", () => {
+    // A thin intraday stop/drop-check run legitimately carries no positions. Reading that as
+    // "held nothing yesterday" made expected = 0 - sold and deleted a trimmed position.
+    const thinPrev = run({ date: "2026-09-14", timestamp: "2026-09-14T19:00:00.000Z", positions: [] });
+    const trimDay = run({ date: "2026-09-15", timestamp: "2026-09-15T14:30:29.000Z",
+      positions: [pos("TRGP", "0.376076")], trades: [trade("TRGP", "sell", "0.376076", "286.25")] });
+    const m = mergeRunsByDate([trimDay, thinPrev]).find(r => r.date === "2026-09-15")!;
+    expect((m.positions ?? []).some(x => x.symbol === "TRGP")).toBe(true);
+  });
+
+  it("reconciliation never RAISES a quantity above the broker's snapshot", () => {
+    // `expected` derives from the previous snapshot, which can itself be overstated. Trusting it
+    // upward invents equity that becomes the next day's return baseline.
+    const stalePrev = run({ date: "2026-09-14", timestamp: "2026-09-14T14:30:00.000Z",
+      positions: [pos("Z", "2.000000")] });
+    const today = run({ date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("Z", "0.500000")], trades: [trade("Z", "sell", "0.500000", "10")] });
+    const m = mergeRunsByDate([today, stalePrev]).find(r => r.date === "2026-09-15")!;
+    // expected would be 2.0 - 0.5 = 1.5; the snapshot says 0.5 and must win.
+    expect(parseFloat((m.positions ?? []).find(x => x.symbol === "Z")!.quantity)).toBeCloseTo(0.5, 6);
+  });
+});

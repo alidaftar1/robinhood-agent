@@ -356,8 +356,9 @@ export async function GET(request: Request) {
       // held, so filtering on "still held" alone flagged every concentration trim as a dropped
       // order (TRGP, 2026-09-15) — and, since this list gates the paid cloud dispatch, paid for a
       // Claude Code run to investigate a non-event.
+      const heldQtyOf = new Map(todayRun.positions.map((p) => [p.symbol, parseFloat(p.quantity) || 0]));
       const notSold = decided.sells
-        .filter(isFullExit)
+        .filter((s) => isFullExit(s, heldQtyOf.get(String(s.symbol))))
         .map((s) => String(s.symbol))
         .filter((sym) => heldSyms.has(sym));
       if (notSold.length > 0) {
@@ -369,8 +370,16 @@ export async function GET(request: Request) {
       // (off-rails, cap, budget, dust, cooldown, did-not-confirm). Re-reporting it as an unexplained
       // anomaly is the noise registry entries #19/#25 exist to prevent — and it dispatches the paid
       // cloud agent at a guard doing its job. Only an absent buy with NO note is a real anomaly.
+      // Match only notes recording a DELIBERATE guard drop. Matching "any note mentioning the
+      // symbol" silently swallowed the opposite case: "<SYM> buy DID NOT CONFIRM after retry" and
+      // "<SYM> $200→$150 (shrunk to fit budget)" both mention the symbol, so a genuine execution
+      // failure — the AMAT 2026-08-31 case — would be suppressed by the very note added to make it
+      // visible. The symbol is matched with a boundary so a note about AAPL cannot explain away a
+      // dropped buy of ticker L.
+      const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED|off-rails)\b/i;
       const explained = (sym: string) =>
-        (todayRun.buySizingAdjustments ?? []).some((note) => note.startsWith(`${sym} `) || note.includes(`${sym} buy`));
+        (todayRun.buySizingAdjustments ?? []).some((note) =>
+          GUARD_DROP.test(note) && new RegExp(`(^|[^A-Z0-9])${sym}([^A-Z0-9]|$)`).test(note));
       const notBought = decided.buys
         .map((b) => String(b.symbol))
         .filter((sym) => !boughtSyms.has(sym) && !explained(sym));

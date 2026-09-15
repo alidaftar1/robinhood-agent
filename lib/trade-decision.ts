@@ -157,18 +157,33 @@ export function parseTradeDecision(analysisText: string): DecisionParseOutcome {
 }
 
 /**
- * Does this sell close the WHOLE position, or only trim it?
+ * Should this sell leave NO position behind?
  *
- * A trim leaves the symbol held, so "decided to sell X but X is still held" is the EXPECTED outcome
- * for one and an anomaly only for the other. The autopilot's decided-vs-executed check flagged every
- * trim as a dropped order until 2026-09-15 (TRGP, trimmed 50% under the concentration guard).
+ * Mirrors resolveSellQuantity (lib/buy-sizing.ts) exactly — the executor's rules are the ground
+ * truth, and a second, subtly different notion of "full exit" is worse than none:
+ *   - exit:"all"                  -> full exit (takes precedence over any stray fraction)
+ *   - a VALID fraction (0<F<1)    -> trim; the symbol is expected to remain held
+ *   - an INVALID fraction         -> the executor refuses and places NOTHING, so the position
+ *                                    remains when the model asked for a sale. Reported as
+ *                                    close-expected so the decided-vs-executed check still fires —
+ *                                    a silently unplaced order is precisely what it exists to catch.
+ *   - a positive quantity         -> partial, UNLESS it meets or exceeds `heldQty` (the executor
+ *                                    clamps, so an over-large quantity closes the position). Pass
+ *                                    `heldQty` whenever it is known.
+ *   - nothing specified           -> full exit (the executor's safe default)
  *
- * Defined once and exported so the executor, the dry-run preview, and the autopilot check share a
- * single notion of "full exit" — two copies of one rule drifting apart is exactly how the
- * TRADE_DECISION parser and its own safety net went blind on the same day.
+ * Exported so the executor, the dry-run preview and the autopilot check share ONE definition.
+ * A `fraction: 1` or `exit: "half"` classified as a trim would silence the check for a sell that
+ * either liquidates everything or places nothing at all.
  */
-export function isFullExit(sell: TradeDecisionSell): boolean {
+export function isFullExit(sell: TradeDecisionSell, heldQty?: number): boolean {
   if (sell.exit === "all") return true;
-  // No qualifier at all means a full exit; any fraction/quantity means a partial.
-  return sell.exit == null && sell.fraction == null && sell.quantity == null;
+  if (sell.fraction != null) return !(sell.fraction > 0 && sell.fraction < 1);
+  if (sell.quantity != null && sell.quantity > 0) {
+    // The executor CLAMPS a numeric quantity to the held amount, so an over-large one is a full
+    // exit. Without `heldQty` that can't be known, so it is treated as a trim (the conservative
+    // read: it avoids claiming a position should be gone when it may legitimately remain).
+    return heldQty != null && sell.quantity >= heldQty;
+  }
+  return true;
 }
