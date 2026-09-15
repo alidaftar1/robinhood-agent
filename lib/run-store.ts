@@ -359,10 +359,8 @@ function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
    * without resurrecting the TRGP deletion (trimmed, never bought that day, lot predates the
    * window — baseline unknown, so the snapshot stands).
    */
-  const baselineOf = (symbol: string): number | null => {
-    if (flow.prev) return flow.prev.get(symbol) ?? 0; // absence handled by `baselineKnown` below
-    return (flow.bought.get(symbol) ?? 0) > 0 ? 0 : null;
-  };
+  const baselineOf = (symbol: string): number | null =>
+    flow.prev ? (flow.prev.get(symbol) ?? 0) : null; // absence handled by `baselineKnown` below
 
   const adjust = (p: PositionSnapshot): PositionSnapshot | null => {
     const sold = flow.sold.get(p.symbol) ?? 0;
@@ -370,15 +368,18 @@ function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
     const prevQty = baselineOf(p.symbol);
     if (prevQty == null) return p;                            // no baseline → trust the snapshot
     const bought = flow.bought.get(p.symbol) ?? 0;
-    // Known only if the previous snapshot actually lists the symbol, or today bought it (zero by
-    // fact). With flow.prev null we only got past the null-check above via the bought-today branch.
-    const baselineKnown = flow.prev == null || flow.prev.has(p.symbol) || bought > 0;
-    // A day cannot sell more than it could possibly have held. When recorded sells exceed
-    // prevHeld + boughtToday the TRADE RECORD is corrupt — most often the same real fill written
-    // twice by two same-date runs at different price estimates, which tradeKey cannot collapse
-    // (that is why findReRecordedSells exists, and it does not catch every shape). Reconciling
-    // against an impossible total is what deletes a still-held lot, so the broker's snapshot wins.
-    //
+    // Known ONLY from a real previous snapshot. An earlier version also treated "bought today" as
+    // proof the baseline was zero — it is not. Buying a symbol today says nothing about what was
+    // held before; it only means the caller's window has no prior snapshot (the oldest date, or a
+    // previous date whose only run was a thin positions-less intraday run). Reproduced damage:
+    // prev thin -> prev=null, today [TSLA 12] with buy 5 / sell 3 gave expected = 0+5-3 = 2 and
+    // erased 10 of 12 held shares, while the corrupt-record guard passed (3 <= 0+5).
+    // A previous snapshot that EXISTS but omits the symbol is evidence it was not held (prev = 0,
+    // a fact) — that is the routine buy-and-stop-out-same-day case (TER 07-27, SMCI 06-24). A NULL
+    // snapshot is absence of evidence: no prior date in the window, or a previous date whose only
+    // run was a thin positions-less intraday run. Those are not the same, and conflating them is
+    // what erased 10 of 12 held TSLA shares (expected = 0 + bought - sold) in review.
+    const baselineKnown = flow.prev != null;
     // When the symbol is MISSING from the previous snapshot and wasn't bought today, prevQty is 0
     // by ABSENCE, not by fact — there is no baseline to reconcile against. Do nothing: the broker's
     // snapshot is the only information available and reconciliation may only ever act on evidence.
@@ -583,12 +584,30 @@ export function computeDailyReturn(
 
   // Include ALL placed trades — Claude emits state "submitted", not "filled",
   // so filtering by state would zero out tradeNetCash and overstate P&L on trade days.
+  // A trade with no usable price must NOT silently contribute 0. `|| 0` was tried and is worse than
+  // the NaN it replaced: the position a $200 pending buy created still counts in posValToday, so
+  // dropping its cost from tradeNetCash inflates pnl by the full notional — ~+10% on a $2k book,
+  // comfortably under the autopilot's |return| > 30% alarm and compounded into the dashboard index
+  // forever. NaN at least failed loudly. Fall back to the position's own snapshot price; if even
+  // that is unavailable the day is UNPRICEABLE and returns null, which the existing
+  // /api/debug?patchDate path is built to repair.
+  const priceBySymbol = new Map(todayPositions.map(p => [p.symbol, priceOf(p)]));
+  let unpriceable = false;
   const tradeNetCash = todayTrades.reduce((s, t) => {
-    // Guarded: a pending fill has no price, and one NaN here makes agenticDailyReturn NaN.
     const qty = parseFloat(t.quantity) || 0;
-    const price = parseFloat(t.avgPrice) || 0;
+    let price = parseFloat(t.avgPrice);
+    if (!(price > 0)) {
+      price = priceBySymbol.get(t.symbol) ?? 0;
+      if (!(price > 0)) { unpriceable = true; return s; }
+    }
     return s + (t.side === "buy" ? qty * price : -(qty * price));
   }, 0);
+  if (unpriceable) {
+    // The signature already returns null for an uncomputable day, and every caller handles it
+    // (the run simply stores no return, which /api/debug?patchDate repairs once prices resolve).
+    console.warn("DAILY_RETURN_UNPRICEABLE — a trade has no usable price and no position price to fall back on");
+    return null;
+  }
 
   const pnl = (posValToday - posValYesterday) - tradeNetCash;
   const impliedTransfer = todayValue - yesterdayValue - pnl;

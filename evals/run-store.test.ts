@@ -79,14 +79,20 @@ describe("mergeRunsByDate", () => {
       agenticDailyReturn: null,
       trades: [trade("SMCI", "sell", "4")],
     });
-    const merged = mergeRunsByDate([stopLoss, main]);
+    // A previous day is supplied because production always has one (getRuns(60/90)). A snapshot
+    // that EXISTS and omits SMCI is the evidence it was bought fresh today; with NO previous
+    // snapshot at all, reconciliation deliberately does nothing (see the dedicated test below).
+    const prevDay = run({
+      date: "2026-06-23", timestamp: "2026-06-23T14:30:00.000Z", positions: [pos("DAL")],
+    });
+    const merged = mergeRunsByDate([stopLoss, main, prevDay]).filter((r) => r.date === "2026-06-24");
     expect(merged.length).toBe(1);
     expect(merged[0].positions.map((p) => p.symbol).sort()).toEqual(["DAL"]);
     // the influencer sub-portfolio is reconciled too
     expect((merged[0].influencerPositions ?? []).map((p) => p.symbol).sort()).toEqual(["MSFT"]);
     // even after the thin run is gone, a re-merge of the canonical record alone
     // (which now carries the unioned SMCI sell) stays reconciled — idempotent.
-    const remerged = mergeRunsByDate(merged);
+    const remerged = mergeRunsByDate([...merged, prevDay]).filter((r) => r.date === "2026-06-24");
     expect(remerged[0].positions.map((p) => p.symbol)).toEqual(["DAL"]);
   });
 
@@ -393,5 +399,32 @@ describe("mergeRunsByDate: never delete a lot on incomplete or corrupt evidence"
     const m = mergeRunsByDate([today, prev]).find(r => r.date === "2026-09-15")!;
     expect((m.positions ?? []).some(p => p.symbol === "A")).toBe(true);
     expect(parseFloat((m.positions ?? []).find(p => p.symbol === "A")!.quantity)).toBeCloseTo(8, 6);
+  });
+});
+
+describe("mergeRunsByDate: absence of evidence is not evidence of absence", () => {
+  it("with NO previous snapshot at all, nothing is reconciled", () => {
+    // A thin positions-less intraday run as the previous day yields prev = null. Treating that as
+    // "held nothing yesterday" computed expected = 0 + bought - sold and erased 10 of 12 held
+    // shares. The documented residual: a fully-sold position may linger for ONE day, cleared by the
+    // next broker snapshot, which is strictly better than deleting a real holding.
+    const thinPrev = run({ date: "2026-09-14", timestamp: "2026-09-14T19:00:00.000Z", positions: [] });
+    const today = run({
+      date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("TSLA", "12.000000")],
+      trades: [trade("TSLA", "buy", "5.000000", "300"), trade("TSLA", "sell", "3.000000", "310")],
+    });
+    const m = mergeRunsByDate([today, thinPrev]).find(r => r.date === "2026-09-15")!;
+    expect(parseFloat((m.positions ?? []).find(p => p.symbol === "TSLA")!.quantity)).toBeCloseTo(12, 6);
+  });
+
+  it("a previous snapshot that OMITS the symbol is evidence it was bought fresh today", () => {
+    const prev = run({ date: "2026-09-14", timestamp: "2026-09-14T14:30:00.000Z",
+      positions: [pos("APA", "17")] }); // no NEW
+    const today = run({ date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+      positions: [pos("APA", "17"), pos("NEW", "1")], // stale: still lists the round-tripped name
+      trades: [trade("NEW", "buy", "1", "100"), trade("NEW", "sell", "1", "101")] });
+    const m = mergeRunsByDate([today, prev]).find(r => r.date === "2026-09-15")!;
+    expect((m.positions ?? []).map(p => p.symbol)).toEqual(["APA"]);
   });
 });

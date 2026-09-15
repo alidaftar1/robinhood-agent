@@ -710,7 +710,6 @@ export async function GET(request: Request) {
       if (rejected.length > 0) {
         console.log("INFLUENCER_NET_FLOOR_REJECTED", { rejected });
         buySizingAdjustments.push(...rejected.map(r => `Influencer buy REJECTED — ${r}`));
-        buySizingAdjustments.push(...influencerGuardNotes);
       }
     }
 
@@ -746,6 +745,15 @@ export async function GET(request: Request) {
       if (cooldownNotes.length > 0) {
         console.log("REBUY_COOLDOWN_BLOCKED", { blocked: cooldownNotes });
         buySizingAdjustments.push(...cooldownNotes);
+      }
+      // Flushed UNCONDITIONALLY. These were briefly pushed inside the net-score-floor guard's
+      // `if (rejected.length > 0)` block — but the downtrend guard runs FIRST and removes its
+      // rejects from decision.buys, so those symbols can never reach the net-floor guard and the
+      // two conditions are near-mutually-exclusive on a single-buy day. The notes were therefore
+      // discarded in exactly the common case, leaving the run with no record of the drop and
+      // dispatching the paid cloud agent at a guard doing its job.
+      if (influencerGuardNotes.length > 0) {
+        buySizingAdjustments.push(...influencerGuardNotes);
       }
     }
 
@@ -1123,8 +1131,15 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       // `|| 0` on BOTH factors: verifyBuys deliberately includes PENDING orders, which carry no
       // fill price, and a single NaN here propagates through cashAfter to serialize the whole run's
       // portfolioAfter.cash as null.
+      // Falling back to 0 here would be worse than a NaN: an unpriced (pending) buy still lands in
+      // `merged` and picks up a real market price for equityAfter, so charging $0 for it keeps cash
+      // that was actually spent and overstates totalValue by the full notional — which then becomes
+      // tomorrow's return baseline. Use the market price, same source equityAfter uses.
       const buyCost = trades.filter(t => t.side === "buy")
-        .reduce((s, t) => s + (parseFloat(t.quantity) || 0) * (parseFloat(t.avgPrice) || 0), 0);
+        .reduce((s, t) => {
+          const px = parseFloat(t.avgPrice) || priceMap.get(t.symbol) || 0;
+          return s + (parseFloat(t.quantity) || 0) * px;
+        }, 0);
       cashAfter = Math.max(0, startingCash - buyCost);
     }
 
