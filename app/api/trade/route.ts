@@ -1041,13 +1041,31 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       console.log("POST_TRADE_LIVE_SNAPSHOT_OK", { positions: positions.length, cash: cashAfter });
     } else {
       console.warn("POST_TRADE_LIVE_SNAPSHOT_MISSING — falling back to reconstructed snapshot");
-      const soldSymbols = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
+      // Reconstruct by QUANTITY, not by symbol. Dropping every symbol that appears in a sell
+      // deletes the remainder of a TRIM — the same damage the merge layer was fixed for on
+      // 2026-09-15, except here it corrupts what gets STORED, so no downstream fix can recover it
+      // (heldDaysOf reads 0 and the 15-day STALE clock silently resets). Buys are folded into an
+      // existing row rather than appended, so a top-up doesn't leave two rows for one symbol and
+      // make `find(p => p.symbol === X)` consumers see only part of the holding.
+      const qtyDelta = new Map<string, number>();
+      const costOf = new Map<string, string>();
+      for (const t of trades) {
+        const q = parseFloat(t.quantity) || 0;
+        qtyDelta.set(t.symbol, (qtyDelta.get(t.symbol) ?? 0) + (t.side === "sell" ? -q : q));
+        if (t.side === "buy") costOf.set(t.symbol, t.avgPrice);
+      }
       const startingPositions = portfolioCtx?.positions ?? [];
-      const keptPositions = startingPositions.filter(p => !soldSymbols.has(p.symbol));
-      const boughtPositions = trades.filter(t => t.side === "buy").map(t => ({
-        symbol: t.symbol, quantity: t.quantity, avgCost: t.avgPrice,
-      }));
-      const merged = [...keptPositions, ...boughtPositions];
+      const merged: Array<{ symbol: string; quantity: string; avgCost: string }> = [];
+      for (const p of startingPositions) {
+        const remaining = (parseFloat(p.quantity) || 0) + (qtyDelta.get(p.symbol) ?? 0);
+        qtyDelta.delete(p.symbol); // consumed — anything left is a brand-new position
+        if (remaining <= 1e-6) continue; // fully exited
+        merged.push({ symbol: p.symbol, quantity: remaining.toFixed(6), avgCost: p.avgCost });
+      }
+      for (const [symbol, delta] of qtyDelta) {
+        if (delta <= 1e-6) continue; // a sell of something not in startingPositions — nothing to add
+        merged.push({ symbol, quantity: delta.toFixed(6), avgCost: costOf.get(symbol) ?? "0" });
+      }
       // Same guard as the live path: resolve a real market price for any held symbol missing
       // from the priceMap rather than silently stamping avgCost as the snapshot price.
       const unresolved = await enrichPriceMap(merged.map(p => p.symbol), priceMap);

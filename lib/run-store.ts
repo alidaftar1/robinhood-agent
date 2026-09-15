@@ -308,40 +308,93 @@ function preferRun(a: TradeRun, b: TradeRun): TradeRun {
 // day, so an equal-or-greater-qty same-day sell unambiguously means the holding is
 // gone. (A genuine post-trade snapshot already excludes sold names, so the only
 // positions this touches are ones a later intraday exit left stranded.)
+/** How much of a symbol the day's trades moved, and what the day STARTED from. */
+interface DayFlow {
+  sold: Map<string, number>;
+  bought: Map<string, number>;
+  /** Previous date's holdings. Absent when the previous day isn't in the input window. */
+  prev: Map<string, number> | null;
+}
+
+/** Fractional shares mean exact equality is unsafe; this is well below any real trade size. */
+const QTY_EPSILON = 1e-4;
+
 /**
- * Drops positions that a LATER same-date run sold but an EARLIER positions snapshot still lists.
+ * Brings a day's positions snapshot into line with the day's trades — but ONLY when the snapshot
+ * demonstrably hasn't caught up with them.
  *
- * `postSnapshotSells` is the crux and must be supplied by the caller: only sells recorded by a run
- * NEWER than the one that supplied `positions` are eligible. A sell made by the snapshot's own run
- * is already reflected in it, because positions are fetched from the broker AFTER trades execute.
+ * The decision is made per symbol by ARITHMETIC, not by timestamps:
  *
- * 2026-09-15: this previously derived sells from `run.trades` and compared `sold >= p.quantity`.
- * Since the snapshot is post-trade, `p.quantity` is what REMAINS, so any trim of 50% or more made
- * `sold >= remaining` true and deleted the whole position. TRGP was trimmed exactly 50% and vanished
- * from the merged view: the dashboard showed a book ~$108 short, /api/verify raised a false
- * "unrecorded buy", and — the real damage — heldDaysOf (app/api/trade/route.ts) read 0 instead of
- * 14, resetting the 15-day STALE clock and quietly exempting any trimmed position from the
- * time-stop. Trims only became common with the concentration trim-on-drift guard (2026-08-27),
- * which is why this sat undetected.
+ *     expected = max(0, prevHeld + boughtToday - soldToday)
+ *
+ * If the snapshot already equals `expected`, it was taken after the trades and is ground truth —
+ * leave it alone. If it doesn't, the snapshot is stale (the classic case: the 7:30 run snapshots
+ * SMCI, a noon stop sells it, and the merge keeps 7:30's positions), so `expected` replaces it, and
+ * a position that reconciles to zero is dropped.
+ *
+ * HISTORY — two bugs this shape is chosen to avoid:
+ *  - Before 2026-09-15 this compared `sold >= snapshotQuantity`. Snapshots are post-trade, so that
+ *    quantity is the REMAINDER, and any trim of >=50% satisfied it and deleted the whole lot. TRGP
+ *    was trimmed exactly 50% and vanished: the dashboard ran ~$108 short and heldDaysOf read 0
+ *    against a true 14 days, silently resetting the 15-day STALE clock on any trimmed position.
+ *  - The first fix keyed off "was this sell recorded by a run newer than the snapshot?", which a
+ *    re-reported fill defeats — this repo already records the same fill twice from two runs
+ *    (findReRecordedSells, the TER 07-27 incident), and the later copy made the trim look
+ *    post-snapshot again. Quantities can't be fooled that way, and sells are deduped by trade key
+ *    below so a twin is never counted twice.
+ *
+ * With no previous-day baseline (it fell outside the caller's window) the snapshot is trusted
+ * unchanged: reconciling against an unknown baseline is exactly what caused the deletions above.
  */
-function reconcilePositions(run: TradeRun, postSnapshotSells?: Map<string, number>): TradeRun {
-  if (!postSnapshotSells || postSnapshotSells.size === 0) return run;
-  const keep = (p: PositionSnapshot) => {
-    const sold = postSnapshotSells.get(p.symbol) ?? 0;
-    return !(sold > 0 && sold >= (parseFloat(p.quantity) || 0));
+function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {
+  if (!flow || flow.sold.size === 0) return run;
+
+  /**
+   * What the symbol was held at before today, or null when that genuinely can't be known.
+   * On the OLDEST date in the caller's window there is no previous run to read — but a symbol
+   * BOUGHT today needs no history: it cannot have been held before the lot that today's buy
+   * established, so zero is a fact rather than a guess. That distinction is what keeps the 06-24
+   * SMCI case working (bought 4 and stop-sold 4 the same day, with no prior date in the window)
+   * without resurrecting the TRGP deletion (trimmed, never bought that day, lot predates the
+   * window — baseline unknown, so the snapshot stands).
+   */
+  const baselineOf = (symbol: string): number | null => {
+    if (flow.prev) return flow.prev.get(symbol) ?? 0;
+    return (flow.bought.get(symbol) ?? 0) > 0 ? 0 : null;
   };
-  const positions = (run.positions ?? []).filter(keep);
-  // Reconcile the influencer sub-portfolio too: a stale sold name there inflates the
-  // next day's influencer-cap count and gets carried forward as a phantom holding.
-  const influencerPositions = run.influencerPositions?.filter(keep);
-  const positionsChanged = positions.length !== (run.positions ?? []).length;
-  const influencerChanged =
-    influencerPositions != null && influencerPositions.length !== run.influencerPositions!.length;
-  if (!positionsChanged && !influencerChanged) return run;
+
+  const adjust = (p: PositionSnapshot): PositionSnapshot | null => {
+    const sold = flow.sold.get(p.symbol) ?? 0;
+    if (sold <= 0) return p;                                  // untouched by today's sells
+    const prevQty = baselineOf(p.symbol);
+    if (prevQty == null) return p;                            // no baseline → trust the snapshot
+    const snapshotQty = parseFloat(p.quantity) || 0;
+    const expected = Math.max(0, prevQty + (flow.bought.get(p.symbol) ?? 0) - sold);
+    if (Math.abs(snapshotQty - expected) <= QTY_EPSILON) return p; // already reflects the trades
+    if (expected <= QTY_EPSILON) return null;                      // reconciles to a closed position
+    return { ...p, quantity: expected.toFixed(6) };                // stale snapshot → correct it
+  };
+
+  const mapPositions = (list: PositionSnapshot[] | undefined) => {
+    if (!list) return undefined;
+    const out: PositionSnapshot[] = [];
+    let changed = false;
+    for (const p of list) {
+      const next = adjust(p);
+      if (next === null) { changed = true; continue; }
+      if (next !== p) changed = true;
+      out.push(next);
+    }
+    return changed ? out : list;
+  };
+
+  const positions = mapPositions(run.positions ?? []) ?? [];
+  const influencerPositions = mapPositions(run.influencerPositions);
+  if (positions === (run.positions ?? []) && influencerPositions === run.influencerPositions) return run;
   return {
     ...run,
     positions,
-    ...(influencerPositions != null ? { influencerPositions } : {}),
+    ...(influencerPositions !== undefined ? { influencerPositions } : {}),
   };
 }
 
@@ -366,15 +419,21 @@ export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
   // ORIGINAL run timestamps (not the merged base's, which carries preferRun's
   // chosen timestamp and could be earlier than a later run's snapshot).
   const posSourceByDate = new Map<string, TradeRun>();
-  // Each sell tagged with the timestamp of the run that RECORDED it. Captured before unionTrades
-  // merges same-date runs, because after the union a trade no longer knows which run it came from —
-  // and that provenance is exactly what decides whether the positions snapshot already reflects it.
-  const sellRecords: Array<{ date: string; timestamp: string; symbol: string; quantity: number; key: string }> = [];
+  // Trades collected from the RAW runs and deduped by trade key: the same real fill is sometimes
+  // recorded by two same-date runs (findReRecordedSells, TER 07-27), and counting a twin twice
+  // would inflate the day's sold quantity and reconcile a position that never moved.
+  const seenTradeKeys = new Set<string>();
+  const soldByDate = new Map<string, Map<string, number>>();
+  const boughtByDate = new Map<string, Map<string, number>>();
   for (const run of all) {
     for (const t of run.trades ?? []) {
-      if (t.side === "sell") {
-        sellRecords.push({ date: run.date, timestamp: run.timestamp, symbol: t.symbol, quantity: parseFloat(t.quantity) || 0, key: tradeKey(t) });
-      }
+      const dedupe = `${run.date}|${tradeKey(t)}`;
+      if (seenTradeKeys.has(dedupe)) continue;
+      seenTradeKeys.add(dedupe);
+      const target = t.side === "sell" ? soldByDate : boughtByDate;
+      const forDate = target.get(run.date) ?? new Map<string, number>();
+      forDate.set(t.symbol, (forDate.get(t.symbol) ?? 0) + (parseFloat(t.quantity) || 0));
+      target.set(run.date, forDate);
     }
     if ((run.positions?.length ?? 0) > 0) {
       const cur = posSourceByDate.get(run.date);
@@ -419,25 +478,29 @@ export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
       if (src.bookBeta !== undefined) base.bookBeta = src.bookBeta;
     }
   }
-  // Which sells POSTDATE the snapshot that supplied each date's positions? Only those can leave a
-  // stale holding behind. A sell from the snapshot's own run (or an earlier one) is already
-  // reflected in it — reconciling against those is what deleted trimmed positions.
-  const postSnapshotSells = new Map<string, Map<string, number>>();
-  for (const rec of sellRecords) {
-    if (dropKeys.has(`${rec.date}|${rec.key}`)) continue; // re-recorded twin, dropped above
-    const src = posSourceByDate.get(rec.date);
-    if (!src) continue;                        // no snapshot for this date → nothing to reconcile
-    if (rec.timestamp <= src.timestamp) continue; // snapshot already accounts for this sell
-    const forDate = postSnapshotSells.get(rec.date) ?? new Map<string, number>();
-    forDate.set(rec.symbol, (forDate.get(rec.symbol) ?? 0) + rec.quantity);
-    postSnapshotSells.set(rec.date, forDate);
+  // Previous-day holdings per date — the baseline the arithmetic in reconcilePositions needs.
+  // Taken from the stored snapshots BEFORE reconciliation (they are what the broker reported), and
+  // left null when the previous day isn't in this window, which makes reconciliation a no-op rather
+  // than a guess.
+  const datesAscending = [...byDate.keys()].sort();
+  const flowByDate = new Map<string, DayFlow>();
+  for (let i = 0; i < datesAscending.length; i++) {
+    const date = datesAscending[i];
+    const sold = soldByDate.get(date);
+    if (!sold || sold.size === 0) continue; // nothing sold that day → nothing to reconcile
+    const prevDate = i > 0 ? datesAscending[i - 1] : null;
+    const prevRun = prevDate ? byDate.get(prevDate) : null;
+    const prev = prevRun
+      ? new Map((prevRun.positions ?? []).map(p => [p.symbol, parseFloat(p.quantity) || 0]))
+      : null; // oldest date in the window — reconcilePositions falls back per symbol (see baselineOf)
+    flowByDate.set(date, { sold, bought: boughtByDate.get(date) ?? new Map(), prev });
   }
 
   return [...byDate.values()]
     .map(r => dropKeys.size === 0
       ? r
       : { ...r, trades: (r.trades ?? []).filter(t => !dropKeys.has(`${r.date}|${tradeKey(t)}`)) })
-    .map(r => reconcilePositions(r, postSnapshotSells.get(r.date)))
+    .map(r => reconcilePositions(r, flowByDate.get(r.date)))
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 }
 

@@ -234,83 +234,91 @@ describe("mergeRunsByDate", () => {
 });
 
 // ── Partial sells (trims): the 50% boundary that deleted TRGP on 2026-09-15 ──────────────────
-// Positions are snapshotted AFTER trades execute, so `quantity` is what REMAINS. Comparing the
-// sold amount against the remainder made any trim >=50% look like a full exit.
-describe("mergeRunsByDate: a trimmed position survives its own run's sell", () => {
-  const trimRun = (soldPct: number): TradeRun => {
-    const start = 1.0, sold = start * soldPct, remain = start - sold;
-    return {
-      date: "2026-09-15",
-      timestamp: "2026-09-15T14:30:29.000Z",
-      positions: [{ symbol: "TRGP", quantity: remain.toFixed(6), avgCost: "293.21", price: "286.25" }],
-      trades: [{ symbol: "TRGP", side: "sell", quantity: sold.toFixed(6), avgPrice: "286.25" } as TradeSnapshot],
-      portfolioAfter: { cash: "100", totalValue: "500" },
-    } as TradeRun;
-  };
-  const survives = (pct: number) =>
-    (mergeRunsByDate([trimRun(pct)])[0].positions ?? []).some(p => p.symbol === "TRGP");
+// Snapshots are taken AFTER trades execute, so `quantity` is the REMAINDER. Reconciliation is
+// decided by arithmetic against the previous day's holding, never by comparing sold-vs-remainder.
+describe("mergeRunsByDate: trims", () => {
+  const prevDay = (qty: string) => run({
+    date: "2026-09-14", timestamp: "2026-09-14T14:30:00.000Z",
+    positions: [{ symbol: "TRGP", quantity: qty, avgCost: "293.21", price: "292.00" }],
+  });
+  const trimDay = (remaining: string, sold: string) => run({
+    date: "2026-09-15", timestamp: "2026-09-15T14:30:29.000Z",
+    positions: [{ symbol: "TRGP", quantity: remaining, avgCost: "293.21", price: "286.25" }],
+    trades: [trade("TRGP", "sell", sold, "286.25")],
+  });
+  const mergedToday = (remaining: string, sold: string, start = "1.000000") =>
+    mergeRunsByDate([trimDay(remaining, sold), prevDay(start)]).find(r => r.date === "2026-09-15")!;
 
   for (const pct of [0.25, 0.40, 0.50, 0.51, 0.75, 0.90]) {
-    it(`a ${(pct * 100).toFixed(0)}% trim keeps the remaining lot`, () => {
-      expect(survives(pct)).toBe(true);
+    it(`a ${(pct * 100).toFixed(0)}% trim keeps the remaining lot at full quantity`, () => {
+      const sold = pct, remaining = 1 - pct;
+      const m = mergedToday(remaining.toFixed(6), sold.toFixed(6));
+      const p = (m.positions ?? []).find(x => x.symbol === "TRGP");
+      expect(p).toBeDefined();
+      expect(parseFloat(p!.quantity)).toBeCloseTo(remaining, 6);
     });
   }
 
-  it("the exact 50% case from the incident keeps its quantity intact", () => {
-    const merged = mergeRunsByDate([trimRun(0.5)])[0];
-    const trgp = (merged.positions ?? []).find(p => p.symbol === "TRGP");
-    expect(trgp).toBeDefined();
-    expect(parseFloat(trgp!.quantity)).toBeCloseTo(0.5, 6);
+  it("a re-reported trim (the same fill recorded twice) still does not delete the lot", () => {
+    // The exact regression a timestamp-based rule reintroduced: a later run carrying a copy of the
+    // morning fill made the trim look post-snapshot. Deduping by trade key defeats it.
+    const copy = run({
+      date: "2026-09-15", timestamp: "2026-09-15T19:00:00.000Z",
+      positions: [],
+      trades: [trade("TRGP", "sell", "0.500000", "286.25")],
+    });
+    const merged = mergeRunsByDate([copy, trimDay("0.500000", "0.500000"), prevDay("1.000000")])
+      .find(r => r.date === "2026-09-15")!;
+    const p = (merged.positions ?? []).find(x => x.symbol === "TRGP");
+    expect(p).toBeDefined();
+    expect(parseFloat(p!.quantity)).toBeCloseTo(0.5, 6);
   });
 
-  it("a FULL exit recorded by the same run still leaves no position", () => {
-    // Snapshot is post-trade, so a full exit simply isn't in `positions` — nothing to reconcile.
-    const run = { ...trimRun(1.0), positions: [] } as TradeRun;
-    expect((mergeRunsByDate([run])[0].positions ?? []).length).toBe(0);
+  it("with no previous-day baseline the snapshot is trusted, not guessed at", () => {
+    const merged = mergeRunsByDate([trimDay("0.500000", "0.500000")]).find(r => r.date === "2026-09-15")!;
+    expect(parseFloat((merged.positions ?? []).find(x => x.symbol === "TRGP")!.quantity)).toBeCloseTo(0.5, 6);
   });
 });
 
-// The case the reconciler exists for must keep working: an EARLIER snapshot + a LATER sell.
-describe("mergeRunsByDate: a later run's sell still clears a stale earlier snapshot", () => {
-  const morning: TradeRun = {
-    date: "2026-09-15",
-    timestamp: "2026-09-15T14:30:00.000Z",
-    positions: [
-      { symbol: "SMCI", quantity: "2.000000", avgCost: "50", price: "50" },
-      { symbol: "APA", quantity: "3.000000", avgCost: "30", price: "30" },
-    ],
-    trades: [],
-    portfolioAfter: { cash: "10", totalValue: "250" },
+// The case the reconciler exists for: an EARLIER snapshot that hasn't seen a LATER sell.
+describe("mergeRunsByDate: stale snapshot vs a later sell", () => {
+  const prevDay = run({
+    date: "2026-09-14", timestamp: "2026-09-14T14:30:00.000Z",
+    positions: [pos("SMCI", "2.000000"), pos("APA", "3.000000")],
+  });
+  const morning = run({
+    date: "2026-09-15", timestamp: "2026-09-15T14:30:00.000Z",
+    positions: [pos("SMCI", "2.000000"), pos("APA", "3.000000")], // stale: pre-sale
     agenticDailyReturn: 0.01,
-  } as TradeRun;
-  const noonStop: TradeRun = {
-    date: "2026-09-15",
-    timestamp: "2026-09-15T19:00:00.000Z",
-    positions: [], // thin intraday exit — cannot override the morning snapshot
-    trades: [{ symbol: "SMCI", side: "sell", quantity: "2.000000", avgPrice: "47" } as TradeSnapshot],
-    portfolioAfter: { cash: "104", totalValue: "250" },
-  } as TradeRun;
+  });
+  const noonFullExit = run({
+    date: "2026-09-15", timestamp: "2026-09-15T19:00:00.000Z",
+    positions: [], trades: [trade("SMCI", "sell", "2.000000", "47")],
+  });
 
-  it("the fully-sold name is dropped from the stale snapshot", () => {
-    const merged = mergeRunsByDate([noonStop, morning])[0];
-    const syms = (merged.positions ?? []).map(p => p.symbol);
+  it("a fully-sold name is dropped from the stale snapshot", () => {
+    const m = mergeRunsByDate([noonFullExit, morning, prevDay]).find(r => r.date === "2026-09-15")!;
+    const syms = (m.positions ?? []).map(p => p.symbol);
     expect(syms).not.toContain("SMCI");
     expect(syms).toContain("APA");
   });
 
-  it("but a later PARTIAL sell only trims — it does not delete the lot", () => {
-    const noonTrim = {
-      ...noonStop,
-      trades: [{ symbol: "SMCI", side: "sell", quantity: "1.000000", avgPrice: "47" } as TradeSnapshot],
-    } as TradeRun;
-    const merged = mergeRunsByDate([noonTrim, morning])[0];
-    // Morning snapshot holds 2.0; a later sell of 1.0 leaves a real remainder.
-    expect((merged.positions ?? []).some(p => p.symbol === "SMCI")).toBe(true);
+  it("a later PARTIAL sell SUBTRACTS — the stale full quantity must not survive", () => {
+    const noonTrim = run({
+      date: "2026-09-15", timestamp: "2026-09-15T19:00:00.000Z",
+      positions: [], trades: [trade("SMCI", "sell", "1.000000", "47")],
+    });
+    const m = mergeRunsByDate([noonTrim, morning, prevDay]).find(r => r.date === "2026-09-15")!;
+    const p = (m.positions ?? []).find(x => x.symbol === "SMCI");
+    expect(p).toBeDefined();
+    // 2.0 held - 1.0 sold = 1.0. Leaving 2.0 would carry phantom equity into tomorrow's baseline.
+    expect(parseFloat(p!.quantity)).toBeCloseTo(1.0, 6);
   });
 
   it("re-merging an already-merged run is stable", () => {
-    const once = mergeRunsByDate([noonStop, morning]);
+    const once = mergeRunsByDate([noonFullExit, morning, prevDay]);
     const twice = mergeRunsByDate(once);
-    expect((twice[0].positions ?? []).map(p => p.symbol)).toEqual((once[0].positions ?? []).map(p => p.symbol));
+    const q = (rs: TradeRun[]) => (rs.find(r => r.date === "2026-09-15")!.positions ?? []).map(p => `${p.symbol}:${p.quantity}`);
+    expect(q(twice)).toEqual(q(once));
   });
 });
