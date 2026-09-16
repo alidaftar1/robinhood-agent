@@ -1,4 +1,5 @@
 import React from "react";
+import { vsSpyLabel } from "@/lib/dashboard-labels";
 import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
 import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, probBeatsSpy, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
 
@@ -545,7 +546,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={{ ...s.perfValue, color: returnColor(mainSharpe.sharpe) }}>
                 {mainSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(mainSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${mainSharpe.sharpe >= spySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{mainBeatsSpy ? `~${Math.round(mainBeatsSpy.prob * 100)}% beats SPY · ` : ""}{mainSharpe.n} days</span>
+              <span style={s.perfSince}>{spySharpe ? `vs SPY ${spySharpe.sharpe.toFixed(2)} (${vsSpyLabel(mainSharpe.sharpe, spySharpe.sharpe)}) · ` : ""}{mainBeatsSpy ? `~${Math.round(mainBeatsSpy.prob * 100)}% beats SPY · ` : ""}{mainSharpe.n} days</span>
             </div>
           )}
           {mainBookValue != null && (
@@ -610,7 +611,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <span style={{ ...s.perfValue, color: returnColor(influencerSharpe.sharpe) }}>
                 {influencerSharpe.sharpe >= 0 ? "" : "−"}{Math.abs(influencerSharpe.sharpe).toFixed(2)}
               </span>
-              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${influencerSharpe.sharpe >= inflSpySharpe.sharpe ? "ahead" : "behind"}) · ` : ""}{influencerBeatsSpy ? `~${Math.round(influencerBeatsSpy.prob * 100)}% beats SPY · ` : ""}{influencerSharpe.n} days</span>
+              <span style={s.perfSince}>{inflSpySharpe ? `vs SPY ${inflSpySharpe.sharpe.toFixed(2)} (${vsSpyLabel(influencerSharpe.sharpe, inflSpySharpe.sharpe)}) · ` : ""}{influencerBeatsSpy ? `~${Math.round(influencerBeatsSpy.prob * 100)}% beats SPY · ` : ""}{influencerSharpe.n} days</span>
             </div>
           )}
           {influencerPositions.length > 0 && (
