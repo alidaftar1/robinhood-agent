@@ -296,7 +296,8 @@ List only the names to HOLD on sympathy; every stop-loss not listed will be SOLD
           model: "claude-haiku-4-5-20251001",
           max_tokens: 512,
           system: `Call get_equity_orders for account ${ACCOUNT} filtered to today (${today}). Output exactly one line:
-VERIFIED_SELLS:[{"symbol":"XX","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
+VERIFIED_SELLS:[{"symbol":<TICKER>,"quantity":<QTY>,"avgPrice":<PRICE>,"state":<STATE>}]
+Every value must be a quoted JSON string — the <...> above are placeholders, not literals.
 Include only SELL orders placed today that are filled or pending (not cancelled/rejected). If none, output VERIFIED_SELLS:[]. Output nothing else.`,
           messages: [{ role: "user", content: "Verify today's sell orders." }],
           mcp_servers: [mcpServer],

@@ -187,3 +187,100 @@ export function isFullExit(sell: TradeDecisionSell, heldQty?: number): boolean {
   }
   return true;
 }
+
+/**
+ * Extract the JSON array the model answered with on its `marker` line.
+ *
+ * Deliberately strict — EVERY relaxation of this function has produced a duplicate-order bug, and
+ * the failure is always the same: a WRONG array reads as "none of your orders filled", so the whole
+ * decided list is re-placed against a broker that already filled it. `null` costs an alert and a
+ * manual reconcile; a wrong array costs real money. Never trade the first for the second.
+ *
+ * The rules, each of which exists because its absence broke:
+ *  1. LINE-ANCHORED. A bare `indexOf` is not, and the marker's TEMPLATE sits in the executor's own
+ *     system prompt, so a model echoing the format returned the placeholder row.
+ *  2. EXACTLY ONE anchored marker LINE, whose payload parses. Picking a side cannot work: "first
+ *     wins" loses to a LEADING template echo, "last wins" loses to a TRAILING one, and "last with
+ *     fallback" loses to a truncated final line (verifyBuys caps the model at 512 tokens, so
+ *     truncation is routine). Counting only the SUCCESSES fails too — with a truncated final line
+ *     the one surviving parse IS the template echo. Two marker lines means unknown state.
+ *  3. The array must be that marker's OWN payload — the next non-whitespace character after it must
+ *     be `[`. An unbounded scan adopted arrays belonging to a later marker or to prose, i.e. a
+ *     confidently WRONG verification.
+ *
+ * Returns `[]` for a genuine empty result and `null` when there is no single unambiguous answer.
+ * Callers MUST treat those differently: `[]` is "verified, nothing filled"; `null` is "unknown
+ * broker state" — record nothing, place nothing, reconcile by hand.
+ */
+export function extractJsonArray(text: string, marker: string): unknown[] | null {
+  if (text.length > MAX_SCAN_CHARS) return null;   // guard a future caller passing a transcript
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;   // strip BOM before anchoring
+  let answer: unknown[] | null = null;
+  let markerLines = 0;
+  for (let i = 0; i < body.length; i++) {
+    const atLineStart = i === 0 || body[i - 1] === "\n" || body[i - 1] === "\r";
+    if (!atLineStart || !body.startsWith(marker, i)) continue;
+    if (++markerLines > 1) return null;            // ambiguous — see rule 2
+    answer = payloadAt(body, i + marker.length);
+  }
+  // Exactly one anchored marker line, and its payload must parse. A SECOND anchored line is
+  // ambiguous even when only one of the two parses: with a truncated final line the surviving
+  // parse is the leading TEMPLATE ECHO, which is the duplicate-order path. Count the lines, not
+  // the successes.
+  return markerLines === 1 ? answer : null;
+}
+
+const MAX_SCAN_CHARS = 200_000;
+
+/** The array immediately following `pos`, or null if this marker's payload isn't one. */
+function payloadAt(body: string, pos: number): unknown[] | null {
+  let p = pos;
+  while (p < body.length && /\s/.test(body[p])) p++;   // all whitespace: the model may newline first
+  if (body[p] !== "[") return null;
+  const end = matchingBracket(body, p);
+  if (end === -1) return null;                          // truncated mid-array
+  try {
+    const v = JSON.parse(body.slice(p, end + 1));
+    return Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Index of the `]` closing the `[` at `open`, string- and escape-aware. -1 if unterminated. */
+function matchingBracket(text: string, open: number): number {
+  let depth = 0, inString = false, escaped = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "[") depth++;
+    else if (c === "]" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * Whether to RE-PLACE orders the broker never confirmed.
+ *
+ * Separated out and made pure because it is the single decision on this path that can spend real
+ * money twice. All three conditions are necessary:
+ *  • `missingCount > 0` — nothing to do otherwise.
+ *  • `sessionOk` — aborting the Anthropic request does NOT cancel a `place_equity_order` already
+ *    dispatched to the broker, so after an abort an order can still land AFTER our order-list read.
+ *  • `verifyComplete` — a partial read cannot prove an order is ABSENT, only that we didn't see it.
+ *
+ * Recording what filled is always safe and is deliberately NOT gated on any of this; only placing is.
+ */
+export function shouldRetryUnconfirmed(o: {
+  missingCount: number;
+  sessionOk: boolean;
+  verifyComplete: boolean;
+}): boolean {
+  return o.missingCount > 0 && o.sessionOk && o.verifyComplete;
+}

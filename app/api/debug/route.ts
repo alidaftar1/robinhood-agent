@@ -142,7 +142,7 @@ export async function GET(request: Request) {
       } else if (latest && prevDay?.portfolioAfter) {
         const todaySymbols = new Set(latest.positions.map(p => p.symbol));
         // Strip any previously inferred sells so we can re-derive them with the corrected formula
-        const realTrades = (latest.trades ?? []).filter(t => t.state !== "inferred");
+        const realTrades = (latest.trades ?? []).filter(t => !(t.state === "inferred" && t.side === "sell"));
         const recordedSells = new Set(realTrades.filter(t => t.side === "sell").map(t => t.symbol));
         const missingSellPos = prevDay.positions.filter(p => !todaySymbols.has(p.symbol) && !recordedSells.has(p.symbol));
 

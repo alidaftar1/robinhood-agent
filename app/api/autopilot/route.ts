@@ -378,11 +378,13 @@ export async function GET(request: Request) {
         );
       }
       // A buy that a guard dropped ON PURPOSE already explains itself in buySizingAdjustments
-      // (off-rails, cap, budget, dust, cooldown, did-not-confirm). Re-reporting it as an unexplained
+      // (off-rails, cap, budget, dust, cooldown). A NOT-CONFIRMED/UNVERIFIABLE note is deliberately
+      // NOT in GUARD_DROP: those record an execution failure or an unknown broker state, which must
+      // still surface as an anomaly rather than be explained away. Re-reporting it as an unexplained
       // anomaly is the noise registry entries #19/#25 exist to prevent — and it dispatches the paid
       // cloud agent at a guard doing its job. Only an absent buy with NO note is a real anomaly.
       // Match only notes recording a DELIBERATE guard drop. Matching "any note mentioning the
-      // symbol" silently swallowed the opposite case: "<SYM> buy DID NOT CONFIRM after retry" and
+      // symbol" silently swallowed the opposite case: "<SYM> buy NOT CONFIRMED" / "UNVERIFIABLE" and
       // "<SYM> $200→$150 (shrunk to fit budget)" both mention the symbol, so a genuine execution
       // failure — the AMAT 2026-08-31 case — would be suppressed by the very note added to make it
       // visible. The symbol is matched with a boundary so a note about AAPL cannot explain away a
