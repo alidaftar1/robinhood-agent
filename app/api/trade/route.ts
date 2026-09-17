@@ -853,7 +853,7 @@ export async function GET(request: Request) {
     }
 
     type VerifiedSell = { symbol: string; quantity: string; avgPrice: string; state: string };
-    async function verifySells(): Promise<Map<string, VerifiedSell>> {
+    async function verifySells(): Promise<Map<string, VerifiedSell> | null> {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 20_000);
       try {
@@ -861,7 +861,8 @@ export async function GET(request: Request) {
           model: "claude-haiku-4-5-20251001",
           max_tokens: 512,
           system: `Call get_equity_orders for account ${ACCOUNT} filtered to today (${today}). Output exactly one line:
-VERIFIED_SELLS:[{"symbol":"XX","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
+VERIFIED_SELLS:[{"symbol":<TICKER>,"quantity":<QTY>,"avgPrice":<PRICE>,"state":<STATE>}]
+Every value must be a quoted JSON string — the <...> above are placeholders, not literals.
 Include only SELL orders placed today that are filled or pending (not cancelled/rejected). If none, output VERIFIED_SELLS:[]. Output nothing else.`,
           messages: [{ role: "user", content: "Verify today's sell orders." }],
           mcp_servers: [mcpServer],
@@ -869,11 +870,24 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
         }, { signal: ctrl.signal });
         const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
         const m = txt.match(/^VERIFIED_SELLS:(.+)$/m);
-        if (!m) return new Map();
+        // null, NOT an empty Map. "Verified: nothing filled" and "could not verify" are different
+        // facts: the first means those orders are genuinely absent from the broker and may be
+        // re-placed; the second is unknown state, where re-placing could duplicate a fill that
+        // already went through. Collapsing them is what made a parse failure re-place everything.
+        if (!m) return null;
         const orders = JSON.parse(m[1]) as VerifiedSell[];
-        return new Map(orders.map(o => [o.symbol, o]));
+        // Reject a TEMPLATE ECHO. Unparseable <...> placeholders stop a verbatim echo, but a model
+        // that also obeys "every value must be a quoted JSON string" emits {"symbol":"<TICKER>"} —
+        // valid JSON, which parses to a map keyed "<TICKER>". Every real symbol then reads as
+        // missing, i.e. "nothing of yours filled", and the whole decided list gets re-placed.
+        // Treat any placeholder-shaped row as a failure to verify, not as a result.
+        const good = orders.filter(o => typeof o?.symbol === "string" && o.symbol.length > 0 && !o.symbol.startsWith("<"));
+        // A pure echo leaves nothing behind, so it still degrades to unknown state — but one bad
+        // row no longer discards confirmations that ARE real. Recording what filled is always safe.
+        if (good.length === 0 && orders.length > 0) return null;
+        return new Map(good.map(o => [o.symbol, o]));
       } catch {
-        return new Map();
+        return null;
       } finally {
         clearTimeout(timer);
       }
@@ -881,14 +895,38 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
 
     if (sellsToExecute.length > 0) {
       const ok = await runSellSession(sellsToExecute, 120_000);
-      if (ok) {
-        let verified = await verifySells();
+      // VERIFY regardless of ok — the executor places orders ONE AT A TIME, so an aborted or
+      // timed-out session can leave earlier orders already filled at the broker. Gating this on
+      // `ok` meant such a fill was never recorded, never alerted, and the position existed with no
+      // trade record. RETRY, by contrast, stays gated on `ok` below: recording what filled is
+      // always safe, re-placing an order is not.
+      if (!ok) console.warn("SELL_SESSION_ABORTED — verifying anyway (an order may have filled before the abort)");
+      const verifiedOrNull = await verifySells();
+      if (verifiedOrNull === null) {
+        // Unknown broker state. Record nothing, place nothing, and say so on the run itself —
+        // sendAlert alone is a side-channel the stored run, dashboard and reviewer never see.
+        console.warn("SELL_VERIFY_FAILED — unknown broker state, no retry");
+        buySizingAdjustments.push(...sellsToExecute.map(s =>
+          `${s.symbol} sell UNVERIFIABLE — the broker order-list check failed, so this run cannot tell whether it filled. No retry attempted (it could duplicate a fill). Reconcile manually.`
+        ));
+        await sendAlert(
+          `⚠️ Could not verify sell orders — ${today}`,
+          `The broker order-list check failed after the sell session, so this run cannot tell which of these filled: ${sellsToExecute.map(s => s.symbol).join(", ")}.\nNo retry was attempted. Check the account and reconcile manually.`,
+        );
+      } else {
+        let verified = verifiedOrNull;
         let missing = sellsToExecute.filter(s => !verified.has(s.symbol));
-        if (missing.length > 0) {
+        // What we can actually claim afterwards: whether a retry ran at all, and whether the
+        // follow-up check settled it. Without these the notes assert non-execution on the abort
+        // path — the one path where an order may still be in flight at the broker.
+        let retried = false, reverified = true, retryReached = true;
+        if (missing.length > 0 && ok) {
+          retried = true;
           console.warn("SELL_VERIFY_MISSING — retrying", { missing: missing.map(s => s.symbol) });
-          await runSellSession(missing, 90_000); // retry only the dropped orders
-          verified = await verifySells();
-          missing = sellsToExecute.filter(s => !verified.has(s.symbol));
+          const retryPlaced = await runSellSession(missing, 90_000); // retry only the dropped orders
+          const second = await verifySells();
+          if (second) { verified = second; missing = sellsToExecute.filter(s => !verified.has(s.symbol)); }
+          else { reverified = false; retryReached = retryPlaced; }
         }
         // Record ONLY confirmed sells. A decided sell with no confirmed order didn't
         // execute — leave it unrecorded (the position stays held) and alert.
@@ -909,11 +947,19 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
           // run/dashboard/reviewer never see, so without this a decided-but-unconfirmed sell
           // looked identical to a silently-bypassed guard (2026-08-31: same gap on the buy side).
           buySizingAdjustments.push(...missing.map(s =>
-            `${s.symbol} sell DID NOT CONFIRM after retry — still held; broker never verified the order filled`
+            !reverified
+              ? `${s.symbol} sell UNVERIFIABLE — ${retryReached ? "a retry WAS placed" : "a retry was attempted but may not have reached the broker"} and the follow-up check failed. Do NOT assume still-held; reconcile manually.`
+              : retried
+                ? `${s.symbol} sell DID NOT CONFIRM after retry — still held; broker never verified the order filled`
+                : `${s.symbol} sell NOT CONFIRMED (no retry attempted — the place session aborted, so an order may still be in flight). Verify before assuming still-held.`
           ));
           await sendAlert(
             `⚠️ Sell orders not confirmed — ${today}`,
-            `These decided sells did NOT execute even after a retry: ${missing.map(s => s.symbol).join(", ")}.\nThey are still held. The next run will re-attempt, or place them manually in Robinhood.`,
+            !reverified
+              ? `A retry was ${retryReached ? "placed" : "attempted (it may not have reached the broker)"} for these sells and the follow-up check failed, so their state is unknown: ${missing.map(s => s.symbol).join(", ")}.\nDo not assume they are still held — reconcile in Robinhood before the next run.`
+              : retried
+                ? `These decided sells did NOT execute even after a retry: ${missing.map(s => s.symbol).join(", ")}.\nThey are still held. The next run will re-attempt, or place them manually in Robinhood.`
+                : `These decided sells were not confirmed and NO retry was attempted (the place session aborted, so an order may still be in flight): ${missing.map(s => s.symbol).join(", ")}.\nVerify in Robinhood before assuming they are still held.`,
           );
         }
       }
@@ -956,7 +1002,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
         clearTimeout(timer);
       }
     }
-    async function verifyBuys(): Promise<Map<string, VerifiedBuy>> {
+    async function verifyBuys(): Promise<Map<string, VerifiedBuy> | null> {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 25_000);
       try {
@@ -964,7 +1010,8 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
           model: "claude-haiku-4-5-20251001",
           max_tokens: 512,
           system: `Call get_equity_orders for account ${ACCOUNT} filtered to today (${today}). Output exactly one line:
-VERIFIED_BUYS:[{"symbol":"XX","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
+VERIFIED_BUYS:[{"symbol":<TICKER>,"quantity":<QTY>,"avgPrice":<PRICE>,"state":<STATE>}]
+Every value must be a quoted JSON string — the <...> above are placeholders, not literals.
 Include only BUY orders placed today that are filled or pending (not cancelled/rejected). If none, output VERIFIED_BUYS:[]. Output nothing else.`,
           messages: [{ role: "user", content: "Verify today's buy orders." }],
           mcp_servers: [mcpServer],
@@ -972,11 +1019,24 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
         }, { signal: ctrl.signal });
         const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
         const m = txt.match(/^VERIFIED_BUYS:(.+)$/m);
-        if (!m) return new Map();
+        // null, NOT an empty Map. "Verified: nothing filled" and "could not verify" are different
+        // facts: the first means those orders are genuinely absent from the broker and may be
+        // re-placed; the second is unknown state, where re-placing could duplicate a fill that
+        // already went through. Collapsing them is what made a parse failure re-place everything.
+        if (!m) return null;
         const orders = JSON.parse(m[1]) as VerifiedBuy[];
-        return new Map(orders.map(o => [o.symbol, o]));
+        // Reject a TEMPLATE ECHO. Unparseable <...> placeholders stop a verbatim echo, but a model
+        // that also obeys "every value must be a quoted JSON string" emits {"symbol":"<TICKER>"} —
+        // valid JSON, which parses to a map keyed "<TICKER>". Every real symbol then reads as
+        // missing, i.e. "nothing of yours filled", and the whole decided list gets re-placed.
+        // Treat any placeholder-shaped row as a failure to verify, not as a result.
+        const good = orders.filter(o => typeof o?.symbol === "string" && o.symbol.length > 0 && !o.symbol.startsWith("<"));
+        // A pure echo leaves nothing behind, so it still degrades to unknown state — but one bad
+        // row no longer discards confirmations that ARE real. Recording what filled is always safe.
+        if (good.length === 0 && orders.length > 0) return null;
+        return new Map(good.map(o => [o.symbol, o]));
       } catch {
-        return new Map();
+        return null;
       } finally {
         clearTimeout(timer);
       }
@@ -984,14 +1044,29 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
 
     if (decision.buys.length > 0) {
       const ok = await runBuySession(decision.buys, 120_000);
-      if (ok) {
-        let verified = await verifyBuys();
+      // Verify regardless of ok; retry only when the session completed cleanly. See the sell path.
+      if (!ok) console.warn("BUY_SESSION_ABORTED — verifying anyway (an order may have filled before the abort)");
+      const verifiedOrNull = await verifyBuys();
+      if (verifiedOrNull === null) {
+        console.warn("BUY_VERIFY_FAILED — unknown broker state, no retry");
+        buySizingAdjustments.push(...decision.buys.map(b =>
+          `${b.symbol} buy UNVERIFIABLE — decided $${b.dollarAmount.toFixed(2)}; the broker order-list check failed, so this run cannot tell whether it filled. No retry attempted (it could duplicate a fill). Reconcile manually.`
+        ));
+        await sendAlert(
+          `⚠️ Could not verify buy orders — ${today}`,
+          `The broker order-list check failed after the buy session, so this run cannot tell which of these filled: ${decision.buys.map(b => b.symbol).join(", ")}.\nNo retry was attempted — it could duplicate a fill that already went through. Check the account and reconcile manually.`,
+        );
+      } else {
+        let verified = verifiedOrNull;
         let missing = decision.buys.filter(b => !verified.has(b.symbol));
-        if (missing.length > 0) {
+        let retried = false, reverified = true, retryReached = true;   // see the sell path
+        if (missing.length > 0 && ok) {
+          retried = true;
           console.warn("BUY_VERIFY_MISSING — retrying", { missing: missing.map(b => b.symbol) });
-          await runBuySession(missing, 90_000); // retry only the dropped/unconfirmed buys
-          verified = await verifyBuys();
-          missing = decision.buys.filter(b => !verified.has(b.symbol));
+          const retryPlaced = await runBuySession(missing, 90_000); // retry only the dropped/unconfirmed buys
+          const second = await verifyBuys();
+          if (second) { verified = second; missing = decision.buys.filter(b => !verified.has(b.symbol)); }
+          else { reverified = false; retryReached = retryPlaced; }
         }
         // Record ONLY confirmed buys with real fill data (preserve strategy tag).
         // Any non-S&P 500 ticker (expanded universe) can ONLY belong to the influencer bucket.
@@ -1010,11 +1085,19 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
           // and skeptical reviewer never see). Without this, a genuine execution failure is
           // indistinguishable from a silently-bypassed guardrail.
           buySizingAdjustments.push(...missing.map(b =>
-            `${b.symbol} buy DID NOT CONFIRM after retry — decided $${b.dollarAmount.toFixed(2)} but broker never verified a fill; remains unbought, next run re-evaluates`
+            !reverified
+              ? `${b.symbol} buy UNVERIFIABLE — ${retryReached ? "a retry WAS placed" : "a retry was attempted but may not have reached the broker"} and the follow-up check failed. Do NOT assume unbought; reconcile manually.`
+              : retried
+                ? `${b.symbol} buy DID NOT CONFIRM after retry — decided $${b.dollarAmount.toFixed(2)} but broker never verified a fill; remains unbought, next run re-evaluates`
+                : `${b.symbol} buy NOT CONFIRMED (no retry attempted — the place session aborted, so an order may still be in flight). Verify before assuming unbought.`
           ));
           await sendAlert(
             `⚠️ Buy orders not confirmed — ${today}`,
-            `These decided buys did NOT execute even after a retry: ${missing.map(b => b.symbol).join(", ")}.\nLikely insufficient buying power (today's sells settle T+1) or a dropped order. Place manually if still wanted; the next run re-evaluates.`,
+            !reverified
+              ? `A retry was ${retryReached ? "placed" : "attempted (it may not have reached the broker)"} for these buys and the follow-up check failed, so their state is unknown: ${missing.map(b => b.symbol).join(", ")}.\nDo not assume they are unbought — reconcile in Robinhood before the next run.`
+              : retried
+                ? `These decided buys did NOT execute even after a retry: ${missing.map(b => b.symbol).join(", ")}.\nLikely insufficient buying power (today's sells settle T+1) or a dropped order. Place manually if still wanted; the next run re-evaluates.`
+                : `These decided buys were not confirmed and NO retry was attempted (the place session aborted, so an order may still be in flight): ${missing.map(b => b.symbol).join(", ")}.\nVerify in Robinhood before assuming they are unbought.`,
           );
         }
       }
