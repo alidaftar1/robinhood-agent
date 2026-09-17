@@ -91,8 +91,8 @@ Alongside the momentum book, ~25% of the portfolio is a separate, deliberately *
 
 **Exit rules** (`/api/drop-check?scope=influencer`, checked several times a day — far more often than the main book's once-daily stop, because these names are volatile):
 
-- **−5% stop-loss from the buy price** (tighter, and measured from cost rather than the main book's intraday-from-prev-close).
-- **+40% take-profit**, always sold in code — a winner locking its gain is never held on sympathy.
+- **−10% stop-loss from the buy price** (measured from cost rather than the main book's intraday-from-prev-close). One exception, matching the take-profit below: a position the main book also holds is judged exactly like a main-book hold — −5%, same-day — since the sell is for the full merged lot. Widened from −5% on 2026-09-17: sleeve names run ~1.5x the daily volatility of main-book names, so −5%-from-cost was ~1.4σ and stopped out on noise (2 of the first 3 stops were whipsaws). At −10% the sleeve is ~2.7σ — still tighter than the main book's own −10%-from-entry rule at ~4σ.
+- **+40% take-profit**, sold in code — a winner locking its gain is never held on sympathy. One exception: a position the main book also holds is left alone, since the sell is for the full merged lot and a sleeve-only rule must not eject main-book shares.
 
 **Attribution ledger** — every qualifying pick is logged with its entry price, and `/api/influencer-ledger` tracks each channel's **forward returns and alpha vs SPY** (which YouTubers' picks actually work, stripped of the market's move). Small, correlated samples: a ranking hint, not a verdict.
 

@@ -1,6 +1,7 @@
-import { redisCommand } from "@/lib/run-store";
+import { redisCommand, type TradeSnapshot, type PositionSnapshot } from "@/lib/run-store";
 
-// Recent stop-out registry. When a name is stopped out (drop-check −5% exit), the
+// Recent stop-out registry. When a name is stopped out (drop-check exit — main −5% same-day,
+// influencer −10% from buy), the
 // next analysis run is otherwise BLIND to it — the name vanishes from positions and
 // reappears on the shortlist as a fresh candidate, so the book re-buys the thing it
 // just dumped at a loss (the GOOGL 07-23→07-24 whipsaw). This surfaces recent
@@ -134,4 +135,106 @@ export function resolveDropCheckExits<T extends { position: { symbol: string }; 
     .filter((e) => e.reason === "stop" && sympathyHolds.has(e.position.symbol))
     .map((e) => e.position.symbol);
   return { exiting, heldOnSympathy };
+}
+
+// ── Exit classification (pure) ───────────────────────────────────────────────
+// Which bar a held position is judged against, and whether it trips. Extracted from
+// app/api/drop-check so the thresholds are unit-testable — this decides real sells on
+// live money, and the two bars measure different things (see the constants there).
+export const MAIN_DROP_THRESHOLD_PCT = -5;        // same-day move, from prev close
+export const INFLUENCER_DROP_THRESHOLD_PCT = -10; // cumulative, from buy price
+export const TAKE_PROFIT_PCT = 40;                // influencer winners only
+
+/** Symbols the MAIN book has owned. Two independent signals, unioned:
+ *
+ *  (a) Any BUY not tagged `strategy:"influencer"`. Influencer buys are reliably tagged at buy time
+ *      (verified: 28/28 buys in the live window carry an explicit tag). Influencer SELLS often are
+ *      NOT — `sellStrategyTag` resolves the tag by looking for the buy in the IMMEDIATELY PRECEDING
+ *      run, so a sleeve name held for days exits untagged (PLTR and CAKE, both 2026-08-19,
+ *      strategy=undefined). Sells are therefore ignored entirely; netting them would over-count
+ *      sleeve ownership, which is the direction that hands MAIN capital the looser bar.
+ *
+ *  (b) Held in a snapshot but absent from that snapshot's `influencerPositions` — proof the name was
+ *      purely main-book at that moment. This is the signal that survives TRADE-RECORD AGING: run
+ *      history is LTRIM'd to MAX_RUNS, so a long-held main position's original buy scrolls out of
+ *      the window while the position keeps appearing in every snapshot. Without (b), such a name
+ *      later picked up by the sleeve would read as pure sleeve and get the looser bar.
+ *
+ *  Both signals are sticky within the window: once marked, a symbol keeps the tighter bar even if
+ *  the main book later exits. That is deliberate — un-marking requires per-lot quantities the data
+ *  model does not carry — and it errs tight, never loose. */
+export function symbolsWithMainOwnership(
+  runs: ReadonlyArray<{
+    trades?: TradeSnapshot[] | null;
+    positions?: PositionSnapshot[] | null;
+    influencerPositions?: PositionSnapshot[] | null;
+  }>,
+): Set<string> {
+  const syms = new Set<string>();
+  for (const r of runs) {
+    for (const t of r.trades ?? []) {
+      if (t.side === "buy" && t.strategy !== "influencer") syms.add(t.symbol);
+    }
+    // A run with NO influencerPositions field predates sleeve tracking and is no evidence either
+    // way. Treating its positions as main-owned would mark every symbol and silently collapse the
+    // sleeve back to the main bar forever. An empty ARRAY is real evidence (sleeve held nothing).
+    if (r.influencerPositions == null) continue;
+    const sleeve = new Set(r.influencerPositions.map(p => p.symbol));
+    for (const p of r.positions ?? []) if (!sleeve.has(p.symbol)) syms.add(p.symbol);
+  }
+  return syms;
+}
+
+export interface ExitContext {
+  isInfluencer: boolean;
+  /** Whether change1d was ACTUALLY computed from the position's buy price. False means it is an
+   *  intraday move from prev close — which the sleeve's cumulative-from-cost bar does not describe,
+   *  so the looser bar must not be applied to it (e.g. an influencer row with unusable avgCost). */
+  measuredFromBuy: boolean;
+  /** An influencer-TAGGED row that also contains MAIN-book shares. Positions are merged per symbol,
+   *  and a name can be both (PLTR: S&P member and a recurring influencer pick). The sleeve tag is
+   *  per-symbol, so without this the whole merged lot — main-book capital included — would inherit
+   *  the sleeve's looser leash, and the sell is for the full held quantity. */
+  mixedWithMain: boolean;
+}
+
+/** Build the exit context for a held position.
+ *
+ *  A MERGED lot is judged EXACTLY like a main-book hold — main bar, same-day from prev close — by
+ *  forcing `measuredFromBuy` off. Leaving it on would read a CUMULATIVE drawdown from blended cost
+ *  against the main book's SAME-DAY bar, a stricter test than either book applies on its own: a
+ *  lot 6% below blended cost but flat on the day would liquidate the full quantity, ejecting
+ *  main-book shares on an exit neither sleeve's rules sanction. A same-day BUY still measures from
+ *  its buy price regardless — that is the pre-purchase-decline guard, not a sleeve rule. */
+export function buildExitContext(args: {
+  isInfluencer: boolean;
+  mainOwned: boolean;
+  boughtToday: boolean;
+  /** Whether a from-cost reading is even possible (live price and avgCost both usable). */
+  canMeasureFromBuy: boolean;
+}): ExitContext {
+  const mixedWithMain = args.isInfluencer && args.mainOwned;
+  const wantFromBuy = (args.isInfluencer && !mixedWithMain) || args.boughtToday;
+  return {
+    isInfluencer: args.isInfluencer,
+    measuredFromBuy: wantFromBuy && args.canMeasureFromBuy,
+    mixedWithMain,
+  };
+}
+
+/** The stop bar for a position. The sleeve's LOOSER bar applies only to capital that is genuinely
+ *  pure-sleeve AND measured the way that bar is defined; every other case falls back to the main
+ *  book's tighter bar, which is the conservative direction. */
+export function stopThresholdFor(ctx: ExitContext): number {
+  const pureSleeve = ctx.isInfluencer && ctx.measuredFromBuy && !ctx.mixedWithMain;
+  return pureSleeve ? INFLUENCER_DROP_THRESHOLD_PCT : MAIN_DROP_THRESHOLD_PCT;
+}
+
+export function classifyExit(change1d: number, ctx: ExitContext): "stop" | "profit" | null {
+  if (change1d <= stopThresholdFor(ctx)) return "stop";
+  // Take-profit is a "+40% from BUY" target — meaningless against an intraday baseline. It also
+  // sells the FULL held quantity, so a merged lot must not be force-liquidated by a sleeve-only
+  // rule: that would eject main-book shares the momentum book still ranks.
+  if (ctx.isInfluencer && ctx.measuredFromBuy && !ctx.mixedWithMain && change1d >= TAKE_PROFIT_PCT) return "profit";
+  return null;
 }

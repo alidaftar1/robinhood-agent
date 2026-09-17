@@ -1,5 +1,5 @@
 const RUNS_KEY = "robinhood:runs";
-const MAX_RUNS = 90; // ~3 months of daily runs
+export const MAX_RUNS = 90; // ~3 months of daily runs
 
 export interface PositionSnapshot {
   symbol: string;

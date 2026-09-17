@@ -662,7 +662,7 @@ export async function GET(request: Request) {
     // ── Pre-buy momentum guard: reject influencer picks in a clear downtrend ──────
     // The influencer signal measures popularity, not price trend — a stock can be the
     // most-talked-about one precisely because it's crashing (SPCX bought mid-decline).
-    // Don't buy a falling knife; the −5% stop is cleanup, not a substitute for this.
+    // Don't buy a falling knife; the stop is cleanup, not a substitute for this — and for the sleeve that net is now −10%, i.e. half as tight, which strengthens the case for this screen.
     {
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
         b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));

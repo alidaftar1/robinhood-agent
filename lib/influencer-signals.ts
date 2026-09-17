@@ -624,7 +624,7 @@ FILL THE SLEEVE ONLY ON A QUALIFYING SIGNAL — an empty sleeve is a valid, corr
 
 ${rows}
 
-Reminder: influencer names are volatile by design and carry a tight −5% stop. That is expected —
+Reminder: influencer names are volatile by design and carry a −10% stop (from your buy price). That is expected —
 the sleeve is sized small (25%) precisely so you can take these higher-variance bets.
 ══════════════════════════════════════════════════════`;
 }

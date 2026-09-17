@@ -4,16 +4,28 @@ import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap } from "@/lib/market-data";
-import { saveRun, getRuns, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
-import { recordStopout, resolveDropCheckExits } from "@/lib/stopouts";
+import { saveRun, getRuns, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
+import { recordStopout, resolveDropCheckExits, classifyExit, buildExitContext, symbolsWithMainOwnership, stopThresholdFor,
+         MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT } from "@/lib/stopouts";
 import { sendAlert } from "@/lib/alert";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
 
-const DROP_THRESHOLD_PCT = -5; // sell if down ≥5% (intraday for main; from buy for influencer)
-const TAKE_PROFIT_PCT = 40;    // influencer winners: let winners run — lock the gain at +40% from buy price
+// Two separate bars, because they measure DIFFERENT THINGS. MAIN is a same-day shock detector
+// (intraday, from prev close): a name that was fine yesterday falling out of bed. INFLUENCER is a
+// CUMULATIVE drawdown from the buy price, which a slow drift reaches over days.
+//
+// They are calibrated to volatility, not set equal. Measured 2026-09-17: influencer-sleeve names
+// run ~3.7% daily vol vs ~2.5% for main-book names. The old shared −5% was therefore ~1.4σ for the
+// sleeve (SPCX/PLTR ~1.0σ — one ordinary day triggers it) while the main book's own cumulative rule
+// (−10% from entry, lib/strategy.ts LOSS DISCIPLINE) sits at ~4σ. The wildest names carried the
+// tightest leash and stopped out on noise: IMAX stopped −5.66% on 08-28 and was back ABOVE its buy
+// price within 10 days; CRM stopped −5.17% on 09-10 and recovered +3.2%. Of the 3 stops observed,
+// 2 were whipsaws. −10% puts the sleeve at ~2.7σ — still TIGHTER than the main book's −10% at ~4σ
+// (vol-matched parity would be ~−15%). Changed from −5% on 2026-09-17 (owner decision).
+// Thresholds + classifyExit live in lib/stopouts.ts so they are unit-testable.
 
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
@@ -34,7 +46,11 @@ export async function GET(request: Request) {
   // saves a sells-only run at the front of the list, so getLatestRun() alone would hide
   // the morning trade run's buys — which boughtTodaySymbols below needs. runs[0] is still
   // the canonical latest for held-positions/portfolio context.
-  const recentRuns = await getRuns(6);
+  // MAX_RUNS (the full retained history) so symbolsWithMainOwnership() sees main ownership on a
+  // long-held name. A SHORT window is the unsafe direction here: missing it reads a merged lot as
+  // pure sleeve and grants it the looser bar. Bound to the constant, not a literal — if MAX_RUNS
+  // is ever raised, a hardcoded 90 would silently start reading a subset.
+  const recentRuns = await getRuns(MAX_RUNS);
   const previousRun = recentRuns[0] ?? null;
   const heldPositions = previousRun?.positions ?? [];
 
@@ -42,9 +58,13 @@ export async function GET(request: Request) {
     return Response.json({ skipped: true, reason: "no positions held" });
   }
 
-  // Influencer picks: use tighter stop-loss vs buy price (not prev close)
-  // A position is an influencer pick if it appears in the latest run's influencerPositions
+  // Influencer picks: measured against the BUY price (not prev close), on their own -10% bar.
+  // A position is an influencer pick if it appears in the latest run's influencerPositions.
+  // Quantities are kept too: positions are merged per symbol, so an influencer-tagged row can also
+  // hold MAIN-book shares (PLTR is both an S&P member and a recurring pick). Such a mixed lot must
+  // NOT inherit the sleeve's looser leash — the sell would liquidate the main-book shares as well.
   const influencerSymbols = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
+  const mainOwnedSymbols = symbolsWithMainOwnership(recentRuns);
 
   // Names bought TODAY. Their intraday % from prev-close includes the part of the day
   // that happened BEFORE we bought them — measuring the stop from that baseline whipsaws
@@ -84,25 +104,33 @@ export async function GET(request: Request) {
       const currentPrice = q?.price ?? 0;
       const isInfluencer = influencerSymbols.has(p.symbol);
       // Measure from BUY price (avgCost) instead of prev-close for influencer picks (covers
-      // the −5% stop and +TP target) AND for same-day buys (avoid stopping on a pre-purchase
+      // the stop and +TP target) AND for same-day buys (avoid stopping on a pre-purchase
       // decline). Established main-book holds still use intraday-from-prev-close, which catches
       // a genuine fresh crash on a name that was fine yesterday.
-      const measureFromBuy = isInfluencer || boughtTodaySymbols.has(p.symbol);
+      const ctx = buildExitContext({
+        isInfluencer,
+        mainOwned: mainOwnedSymbols.has(p.symbol),
+        boughtToday: boughtTodaySymbols.has(p.symbol),
+        // A missing/zero cost basis makes a from-cost reading impossible; the context falls back
+        // to the intraday move, and the sleeve's from-cost bar is not applied to it.
+        canMeasureFromBuy: currentPrice > 0 && parseFloat(p.avgCost) > 0,
+      });
+      const change1d = ctx.measuredFromBuy
+        ? ((currentPrice - parseFloat(p.avgCost)) / parseFloat(p.avgCost)) * 100
+        : (q?.change1d ?? 0);
+      const reason = classifyExit(change1d, ctx);
+      // Which bar this name was actually judged against — an influencer name can fall back to the
+      // main bar (unusable cost basis, or a merged lot), and the model must not read that -5.4% as
+      // failing to meet a stated -10% sleeve bar.
+      const bar = stopThresholdFor(ctx) === INFLUENCER_DROP_THRESHOLD_PCT ? "influencer" : "main";
+      // State the BASIS too: "main bar" alone is ambiguous between a merged lot and an unusable
+      // cost basis, and those report different quantities. The sympathy judgment ("is the whole
+      // market down today?") is only meaningful against a same-day figure.
+      const basis = ctx.measuredFromBuy ? "from buy" : "same-day";
 
-      let change1d: number;
-      if (measureFromBuy && currentPrice > 0 && parseFloat(p.avgCost) > 0) {
-        change1d = ((currentPrice - parseFloat(p.avgCost)) / parseFloat(p.avgCost)) * 100;
-      } else {
-        change1d = q?.change1d ?? 0;
-      }
-
-      let reason: "stop" | "profit" | null = null;
-      if (change1d <= DROP_THRESHOLD_PCT) reason = "stop";
-      else if (isInfluencer && change1d >= TAKE_PROFIT_PCT) reason = "profit";
-
-      return { position: p, change1d, isInfluencer, reason };
+      return { position: p, change1d, isInfluencer, reason, bar, basis };
     })
-    .filter((e): e is { position: PositionSnapshot; change1d: number; isInfluencer: boolean; reason: "stop" | "profit" } => e.reason !== null);
+    .filter((e): e is { position: PositionSnapshot; change1d: number; isInfluencer: boolean; reason: "stop" | "profit"; bar: string; basis: string } => e.reason !== null);
 
   if (droppedPositions.length === 0) {
     const worst = positionsToCheck
@@ -169,7 +197,7 @@ export async function GET(request: Request) {
       const decisionSystem = `${basePrompt}
 
 🔴 RISK-EXIT DECISION — ${today} 🔴  (DECISION ONLY — you place NO orders)
-These held positions hit a STOP-LOSS (down ≥${Math.abs(DROP_THRESHOLD_PCT)}%): ${stopEntries.map((e) => `${e.position.symbol} (${e.change1d.toFixed(1)}%)`).join(", ")}.
+These held positions hit their STOP-LOSS (main book: ≥${Math.abs(MAIN_DROP_THRESHOLD_PCT)}% down — same-day from prev close, or from the BUY price if bought today; influencer sleeve: ≥${Math.abs(INFLUENCER_DROP_THRESHOLD_PCT)}% below its BUY price). Each name is tagged with the bar it was judged against AND the basis its figure is measured on, because a sleeve name can legitimately sit on the main bar (the main book also holds it, or its cost basis is unusable): ${stopEntries.map((e) => `${e.position.symbol} (${e.change1d.toFixed(1)}% ${e.basis}, ${e.bar} bar)`).join(", ")}.
 Default action is to SELL each — a stop-loss is a thesis breakdown, cut it. The ONE exception: if a drop is clearly broad-market SYMPATHY selling (whole market down, fundamentals unchanged), you may HOLD that name and let it recover.
 ${regimeLine}For EACH stop-loss name, decide SELL or HOLD-on-sympathy. (Take-profit exits are handled separately in code and are always sold — not your call.)
 Output EXACTLY one line, nothing else:
