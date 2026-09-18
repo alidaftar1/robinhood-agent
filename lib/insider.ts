@@ -41,9 +41,27 @@ export interface InsiderBuy {
   filingDate: string;
 }
 
-const UA = `RobinhoodAgent/1.0 ${process.env.ALERT_EMAIL ?? "your@email.com"}`;
+// SEC requires a contact User-Agent on every request. Built from ALERT_EMAIL rather than a
+// hardcoded address — a real address in a tracked file is exactly what scripts/check-secrets.sh
+// exists to stop. Exported so other EDGAR callers share one identity and one CIK fetch.
+// `||`, NOT `??`: `vercel env pull` writes ALERT_EMAIL="" into .env.local, and `??` only catches
+// null/undefined — so the empty string passed through and produced the contact-less UA
+// "RobinhoodAgent/1.0 ", which SEC answers with 403. getCIKMap catches that and returns an empty
+// Map, so every EDGAR consumer reported "no data" rather than an error.
+//
+// SCOPE: this was LOCAL/dry-run only. Production must have a non-empty ALERT_EMAIL or the daily
+// Resend alerts could not send, and they do — so ★INS was not silently degraded in prod (the
+// registry's "71 Form 4s parsed, 0 open-market buys" is itself evidence EDGAR was answering).
+// The warning below exists because the failure mode is indistinguishable from an empty result.
+const SEC_CONTACT = process.env.ALERT_EMAIL || "";
+export const SEC_UA = `RobinhoodAgent/1.0 ${SEC_CONTACT || "contact-not-configured"}`;
+if (!SEC_CONTACT) {
+  // Loud, because the failure mode is indistinguishable from a genuinely empty result.
+  console.warn("SEC_CONTACT_MISSING — ALERT_EMAIL is unset/blank; SEC requires a contact User-Agent and will 403. EDGAR-derived signals (insider buys, earnings releases) will be EMPTY, not merely sparse.");
+}
+const UA = SEC_UA;
 
-async function getCIKMap(signal: AbortSignal): Promise<Map<string, string>> {
+export async function getCIKMap(signal: AbortSignal): Promise<Map<string, string>> {
   try {
     const res = await fetch("https://www.sec.gov/files/company_tickers.json", {
       headers: { "User-Agent": UA },

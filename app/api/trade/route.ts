@@ -19,6 +19,7 @@ import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
 import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow";
 import { fetchNewsSignals } from "@/lib/news";
+import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
@@ -456,6 +457,28 @@ export async function GET(request: Request) {
       return Response.json({ skipped: true, reason: "degenerate market data", universe: marketData.stocks.length, shortlist: v1Buy.length });
     }
 
+    // Earnings RELEASE context — what these names actually said and guided, for the same population
+    // the beat-record covers. Placed AFTER the degenerate-data return above on purpose: a run that
+    // trades nothing must not pay for EDGAR fetches or Sonnet calls. getEarningsReleaseAnalyses
+    // serves cache hits free, caps fresh analyses per run, and reports any name it could not cover.
+    // Fail-safe end to end: a failure yields no section and never reaches the outer catch.
+    const releaseCtrl = new AbortController();
+    const releaseTimer = setTimeout(() => releaseCtrl.abort(), 90_000);
+    let earningsReleaseSection = "";
+    const releaseNotes: string[] = [];
+    try {
+      const { analyses, notes } = await getEarningsReleaseAnalyses(beatSymbols, recentEarnings, releaseCtrl.signal);
+      // INSIDE the try: formatting a cached blob from an older schema could throw, and this block
+      // must never be the reason a trade run 500s with zero trades.
+      earningsReleaseSection = formatEarningsReleases(analyses);
+      releaseNotes.push(...notes);
+      console.log("EARNINGS_RELEASE_SCOPE", { considered: beatSymbols.length, analysed: analyses.size, notes: notes.length });
+    } catch (e) {
+      console.warn("EARNINGS_RELEASE_FAILED — continuing without it", e instanceof Error ? e.message : String(e));
+    } finally {
+      clearTimeout(releaseTimer);
+    }
+
     const runTimestamp = new Date().toISOString();
     let textContent = "";
     let trades: TradeSnapshot[] = [];
@@ -483,7 +506,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null)),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
@@ -558,7 +581,9 @@ export async function GET(request: Request) {
     // filter) so its drops are recorded too — 2026-08-31: an off-rails AMAT buy was dropped correctly
     // but only console.error'd + alerted separately, leaving NO buySizingAdjustments note, so the
     // reviewer flagged "decided buy absent, no explanation" (registry #19). Every drop belongs here.
-    let buySizingAdjustments: string[] = [];
+    // Seeded with earnings-release coverage gaps gathered above, so a per-run cap or an EDGAR
+    // miss is visible on the stored run. Prefixed CONTEXT — these are not dropped orders.
+    let buySizingAdjustments: string[] = [...releaseNotes];
     if (decisionParseNote) buySizingAdjustments.push(decisionParseNote);
     // Influencer-sleeve guard drops (position cap, downtrend screen). Collected separately because
     // those guards run before buySizingAdjustments' own guards, then merged in below.
