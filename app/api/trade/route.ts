@@ -326,7 +326,22 @@ export async function GET(request: Request) {
     // Deterministic: quality-eligible names with positive 12-1 momentum, sector-capped. The LLM may
     // ONLY buy MAIN-book names from this list (enforced by a hard filter after the decision). Falls back
     // to momentum-only (no quality screen) + an alert if SEC/quality data is unavailable, so the strategy
-    // still runs; the shortlist is top-12 so a held name only rotates out once it leaves the top-12.
+    // still runs. Rotation is NOT keyed on list position: a held name ranking below the cut is still
+    // shown (as ◆HELD via `retained`), so it only rotates out when its momentum goes negative or it
+    // loses quality-eligibility.
+    //
+    // ONE REAL SIDE EFFECT of widening the list (2026-09-18), deliberately accepted by the owner:
+    // sleeve classification at route.ts ~1079 infers "influencer" from `!v1ShortlistSet.has(sym)`,
+    // so a growing shortlist moves overlapping names (e.g. GOOGL, which carries an influencer
+    // signal AND ranks on momentum) from influencer to MAIN. Such a name then gets the main book's
+    // regime — daily drop-check, -5% SAME-DAY stop, -10%-from-entry loss discipline, STALE
+    // time-stop — instead of the sleeve's hourly check and -10%-from-buy stop, and it bypasses the
+    // sleeve's pre-buy guards (2-slot cap, downtrend screen, net>=3 floor, rebuy cooldown). The
+    // coupling PREDATES this change (MU and TGT already classify main for the same reason); a wider
+    // list just enlarges the affected set. Owner's call: an S&P name belongs in the main book's
+    // framework. If sleeve membership ever needs to be list-size-independent, key it on
+    // SP500_UNIVERSE instead, which matches the documented "non-S&P tickers can ONLY be influencer
+    // picks" rule.
     const quality = await getQualityScores();
     if (!quality) {
       console.warn("V1_QUALITY_UNAVAILABLE — main book running momentum-only this run (no quality screen)");
@@ -429,7 +444,7 @@ export async function GET(request: Request) {
     // shortlist is too small to form a book, DO NOT trade — a data glitch must NEVER drive a mass
     // rotation/liquidation. Skip the run, leaving the existing book (and its −5% stops) untouched.
     const UNIVERSE_FLOOR = 350;   // normal ~432
-    const SHORTLIST_FLOOR = 4;    // normal ~12
+    const SHORTLIST_FLOOR = 4;    // absolute floor; normal is now ~19-22 (derived), so this trips on a ~80% collapse
     // Count the BUY candidates only — retained ◆HELD names must not pad this floor (they could
     // mask a collapsed opportunity set and let the run trade on degenerate data).
     if (marketData.stocks.length < UNIVERSE_FLOOR || v1Buy.length < SHORTLIST_FLOOR) {

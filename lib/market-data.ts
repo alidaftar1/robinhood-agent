@@ -329,8 +329,17 @@ export function buildV1Shortlist(
   opts: { N?: number; shortlistSize?: number; held?: Set<string> } = {},
 ): { buy: StockData[]; retained: StockData[] } {
   const N = opts.N ?? 6;
+  // SECTOR RISK — unchanged, and deliberately NOT derived from the list size. This is the only
+  // sector control on buys (there is no second check at buy time), so it stays pinned to the
+  // TARGET POSITION COUNT: ≤2 buyable names per sector out of ~6 held ≈ the 40% cap.
   const maxPerSector = Math.max(1, Math.floor(0.4 * N)); // N=6 → 2/sector
-  const size = opts.shortlistSize ?? 12;
+  // CHOICE SET — widened from a hardcoded 12 (2026-09-18). The model could previously pick ~6 names
+  // from 12, and half that list was already-held names, so its real latitude was a few slots.
+  // DERIVED, not a literal: the list can never hold more than maxPerSector × (number of sectors),
+  // so this is the exact saturation point and raising it further changes nothing. Deriving it also
+  // keeps that true if N changes — at N=8 the ceiling is 33, and a hardcoded 22 would silently
+  // re-truncate. Strictly more candidates at identical sector risk; no limit is relaxed.
+  const size = opts.shortlistSize ?? maxPerSector * Object.keys(SECTOR_ETFS).length;
   const held = opts.held ?? new Set<string>();
   const ranked = stocks
     .filter((s) => typeof s.mom12_1 === "number" && (s.mom12_1 as number) > 0 && eligible.has(s.symbol))

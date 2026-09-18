@@ -6,7 +6,7 @@ import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
-import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist } from "@/lib/market-data";
+import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist, STOCK_SECTOR } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, probBeatsSpy, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
 import { formatMarketContext, type SectorData } from "@/lib/market-data";
@@ -586,36 +586,73 @@ describe("positionCapQty: per-position top-up guard", () => {
 // ─── hysteresis: held names retained past the buy-cutoff (anti-churn) ─────────
 
 describe("hysteresis: buildV1Shortlist retention band for held names", () => {
-  // 14 quality-eligible names with descending momentum. Buy shortlist is top-12; a held name
-  // ranked #13 (still positive momentum) must be RETAINED, not dropped — that drop is what caused
-  // the ILMN↔INCY churn (sold at 65% momentum as "decayed", rebought at 65% the next day).
-  const stocks = Array.from({ length: 14 }, (_, i) => ({
-    symbol: `S${i}`, price: 100, mom12_1: 100 - i * 5, // S0=100% … S13=35%, all positive
-    beta: 1, change1d: 0, change5d: 0, change14d: 0, change30d: 0, distFrom52wHigh: 0,
-    volatility30d: 0.2, sharpe5d: 0, sharpe14d: 0, relStrength1d: 0, earningsDate: null,
-  })) as unknown as import("@/lib/market-data").StockData[];
-  const eligible = new Set(stocks.map((s) => s.symbol));
+  // REAL sector-mapped symbols. The previous fixture used S0..S13, none of which exist in
+  // STOCK_SECTOR — so all 14 fell into the "?" bucket, maxPerSector capped `buy` at 2, and every
+  // assertion here passed for the wrong reason at ANY shortlistSize. These tests also no longer
+  // pin shortlistSize, so they exercise the PRODUCTION default (derived, not a literal).
+  //
+  // Two names per sector across all 11 sectors = the 22-name ceiling, plus AAPL as a THIRD XLK
+  // name with the lowest momentum — so the SECTOR CAP (not the list length) pushes it out of
+  // `buy`. Holding it is the anti-churn case: still positive momentum, must be RETAINED.
+  const SYMS = [
+    "NVDA", "MSFT",   // XLK
+    "LLY", "JNJ",     // XLV
+    "JPM", "V",       // XLF
+    "XOM", "CVX",     // XLE
+    "CAT", "GE",      // XLI
+    "AMZN", "HD",     // XLY
+    "KO", "PG",       // XLP
+    "LIN", "SHW",     // XLB
+    "AMT", "PLD",     // XLRE
+    "NEE", "SO",      // XLU
+    "GOOGL", "META",  // XLC
+    "AAPL",           // XLK #3 — squeezed out by the 2/sector cap, not by list length
+  ];
+  const mk = (syms: string[], mom: (i: number) => number) =>
+    syms.map((symbol, i) => ({
+      symbol, price: 100, mom12_1: mom(i),
+      beta: 1, change1d: 0, change5d: 0, change14d: 0, change30d: 0, distFrom52wHigh: 0,
+      volatility30d: 0.2, sharpe5d: 0, sharpe14d: 0, relStrength1d: 0, earningsDate: null,
+    })) as unknown as import("@/lib/market-data").StockData[];
+  const stocks = mk(SYMS, (i) => 100 - i * 2);   // descending; AAPL lowest, all positive
+  const eligible = new Set(SYMS);
 
-  it("a held name below the buy-cutoff is NOT in the buy-allowlist (buy list stays top-12)", () => {
-    const { buy } = buildV1Shortlist(stocks, eligible, { shortlistSize: 12, held: new Set(["S13"]) });
-    expect(buy.map((s) => s.symbol)).not.toContain("S13"); // render-only → not buyable
+  it("the default shortlist is the full sector ceiling, not a truncated 12", () => {
+    const { buy } = buildV1Shortlist(stocks, eligible, { held: new Set() });
+    expect(buy.length).toBe(22);            // 11 sectors x 2 — the derived saturation point
+    expect(buy.length).toBeGreaterThan(12); // the old hardcoded cut would have stopped here
+  });
+
+  it("no sector exceeds the cap at the default size (the only sector risk control on buys)", () => {
+    const { buy } = buildV1Shortlist(stocks, eligible, { held: new Set() });
+    const perSector: Record<string, number> = {};
+    for (const s of buy) {
+      const sec = STOCK_SECTOR[s.symbol] ?? "?";
+      perSector[sec] = (perSector[sec] ?? 0) + 1;
+    }
+    expect(Math.max(...Object.values(perSector))).toBe(2);
+  });
+
+  it("a held name below the buy-cutoff is NOT in the buy-allowlist", () => {
+    const { buy } = buildV1Shortlist(stocks, eligible, { held: new Set(["AAPL"]) });
+    expect(buy.map((s) => s.symbol)).not.toContain("AAPL"); // render-only → not buyable
   });
 
   it("RETAINS a held name below the buy-cutoff (still positive momentum) as render-only", () => {
-    const { retained } = buildV1Shortlist(stocks, eligible, { shortlistSize: 12, held: new Set(["S13"]) });
-    expect(retained.map((s) => s.symbol)).toContain("S13"); // ◆HELD → retained, not churned
+    const { retained } = buildV1Shortlist(stocks, eligible, { held: new Set(["AAPL"]) });
+    expect(retained.map((s) => s.symbol)).toContain("AAPL"); // ◆HELD → retained, not churned
   });
 
   it("does NOT retain a held name whose momentum went negative (genuine decay → sell)", () => {
-    const decayed = stocks.map((s) => s.symbol === "S13" ? { ...s, mom12_1: -3 } : s);
-    const { buy, retained } = buildV1Shortlist(decayed, eligible, { shortlistSize: 12, held: new Set(["S13"]) });
-    expect([...buy, ...retained].map((s) => s.symbol)).not.toContain("S13"); // real decay: in neither list
+    const decayed = stocks.map((s) => s.symbol === "AAPL" ? { ...s, mom12_1: -3 } : s);
+    const { buy, retained } = buildV1Shortlist(decayed, eligible, { held: new Set(["AAPL"]) });
+    expect([...buy, ...retained].map((s) => s.symbol)).not.toContain("AAPL"); // real decay: neither list
   });
 
   it("marks retained holdings ◆HELD in the rendered table", () => {
-    const { buy, retained } = buildV1Shortlist(stocks, eligible, { shortlistSize: 12, held: new Set(["S13"]) });
-    const table = formatV1Shortlist([...buy, ...retained], {}, {}, {}, new Set(["S13"]));
-    expect(table).toMatch(/S13.*◆HELD/);
+    const { buy, retained } = buildV1Shortlist(stocks, eligible, { held: new Set(["AAPL"]) });
+    const table = formatV1Shortlist([...buy, ...retained], {}, {}, {}, new Set(["AAPL"]));
+    expect(table).toMatch(/AAPL.*◆HELD/);
   });
 });
 
