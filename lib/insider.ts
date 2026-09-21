@@ -61,7 +61,13 @@ if (!SEC_CONTACT) {
 }
 const UA = SEC_UA;
 
+// Memoised for the process lifetime: company_tickers.json is ~800KB and several callers ask per
+// SYMBOL, which re-downloaded it once per name (a 40-name valuation sweep fetched ~32MB and timed
+// out). The ticker->CIK mapping is effectively static within a run.
+let cikMapCache: Map<string, string> | null = null;
+
 export async function getCIKMap(signal: AbortSignal): Promise<Map<string, string>> {
+  if (cikMapCache && cikMapCache.size > 0) return cikMapCache;
   try {
     const res = await fetch("https://www.sec.gov/files/company_tickers.json", {
       headers: { "User-Agent": UA },
@@ -76,6 +82,7 @@ export async function getCIKMap(signal: AbortSignal): Promise<Map<string, string
         map.set(entry.ticker.toUpperCase(), String(entry.cik_str).padStart(10, "0"));
       }
     }
+    if (map.size > 0) cikMapCache = map;
     return map;
   } catch {
     return new Map();
