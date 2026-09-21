@@ -1,45 +1,65 @@
 {
   "runDate": "2026-09-21",
-  "horizonMonths": [3, 6],
+  "horizonMonths": [
+    3,
+    6
+  ],
   "capitalCommitted": 0,
-  "note": "PAPER RUN — no capital deployed. Research-driven selection done by hand, as the dry run the conviction-sleeve spec (docs/strategy-conviction-sleeve.md §11 step 7) calls for before any money moves. Scored forward against SPY by scripts/score-paper-run.ts. This exists because research-driven selection CANNOT be backtested — a model knows the outcome of any historical date — so forward scoring is the only honest evidence.",
+  "note": "PAPER RUN \u2014 no capital deployed. Research-driven selection done by hand, as the dry run the conviction-sleeve spec (docs/strategy-conviction-sleeve.md \u00a711 step 7) calls for before any money moves. Scored forward against SPY by scripts/score-paper-run.ts. This exists because research-driven selection CANNOT be backtested \u2014 a model knows the outcome of any historical date \u2014 so forward scoring is the only honest evidence.",
   "macroAsOf": {
     "fedFunds": "3.75-4.00%, HIKED 2026-09-16 (first hike since 2023); futures ~4.2% Dec, ~4.7% Sep-2027",
     "corePCE": "3.3%, accelerating from 3.0% Dec-2025",
-    "equityRiskPremium": "0.02% — among the lowest on record",
+    "equityRiskPremium": "0.02% \u2014 among the lowest on record",
     "spxForward": "~19.7x",
     "brent": "~$100, peaked $113 May; EIA models ~$90 2H26 falling to ~$77 by 2Q27",
     "politics": "US midterms Nov-2026; Democrats +7-8 generic ballot; divided government base case",
     "keyLegal": "Supreme Court struck down IEEPA tariffs 6-3 on 2026-02-20; ~$128.7bn refunds processing"
   },
-  "spyEntry": 773.50,
+  "spyEntry": 773.5,
   "picks": [
     {
-      "rank": 1, "symbol": "MRK", "entry": 149.50, "beta": 0.31,
-      "thesis": "Cash-generative low-beta defensive with pricing power against 3.3% core PCE. Pipeline repricing (Phase 3 cancer-vaccine win, sac-TMT, Winrevair +75%) is upside optionality inside a 3-6mo window, while the Keytruda LOE sits in 2028 — outside it.",
-      "verifiedFromFilings": "Q2-2026 8-K: Keytruda/QLEX $8.366bn of $16.6bn total sales = 50.4% single-product concentration. KEYTRUDA QLEX (subcutaneous, the LOE mitigant) only $463m = 5.5% of the franchise — early, not established.",
+      "rank": 1,
+      "symbol": "MRK",
+      "entry": 149.5,
+      "beta": 0.31,
+      "thesis": "Cash-generative low-beta defensive with pricing power against 3.3% core PCE. Pipeline repricing (Phase 3 cancer-vaccine win, sac-TMT, Winrevair +75%) is upside optionality inside a 3-6mo window, while the Keytruda LOE sits in 2028 \u2014 outside it.",
+      "verifiedFromFilings": "Q2-2026 8-K: Keytruda/QLEX $8.366bn of $16.6bn total sales = 50.4% single-product concentration. KEYTRUDA QLEX (subcutaneous, the LOE mitigant) only $463m = 5.5% of the franchise \u2014 early, not established.",
       "falsifiers": [
         "a sac-TMT or intismeran Phase 3 readout misses",
         "Keytruda erosion runs ahead of plan before 2028",
         "post-midterm drug-pricing legislation advances",
-        "QLEX conversion stalls below ~10% of the franchise by mid-2027"
+        "QLEX conversion stalls below ~10% of the franchise by mid-2027",
+        "QLEX revenue fails to scale materially above ~5.5% of the Keytruda franchise over the next 2-3 quarters despite the mid-2026 approvals"
       ],
-      "knownWeakness": "Entry price $149.50 is ABOVE the ~$131 average analyst target cited in the August source I used, which quoted the stock at ~$121. The stock has already run +23% past the price my thesis was built on. Upside-to-target is negative at entry unless targets are revised up."
+      "knownWeakness": "Entry price $149.50 is ABOVE the ~$131 average analyst target cited in the August source I used, which quoted the stock at ~$121. The stock has already run +23% past the price my thesis was built on. Upside-to-target is negative at entry unless targets are revised up.",
+      "thesisRevised": {
+        "date": "2026-09-21",
+        "trigger": "Entry price ($149.50) checked against the source the thesis was built on (~$121, $131 avg target).",
+        "whatChanged": "The re-rating I described as PROSPECTIVE has largely already happened: +73% over the past year, +23% in the six weeks since that source. Targets were revised up repeatedly (HSBC 150->172, Leerink 127->161, Guggenheim 146->170, Wells Fargo 150->170), but the current 26-analyst AVERAGE is ~$148 against a ~$149 price \u2014 consensus upside is now approximately zero.",
+        "revisedClaim": "The thesis is no longer 'the market will re-rate the pipeline'. It is the narrower and harder claim that QLEX conversion executes from 5.5% of the franchise, and that the recent $161-172 targets are right while the $148 average is too low. Mid-2026 oncology approvals (bladder, TNBC, renal cell) are fresh, so revenue lags approvals \u2014 that is the specific thing that has to show up.",
+        "rankingEffect": "No longer a clear #1. The implied valuation cushion does not exist. NOT ranked against ROST with confidence, because there is no valuation data on either \u2014 the exact gap recorded in biggestGap, which bit the top pick."
+      }
     },
     {
-      "rank": 2, "symbol": "ROST", "entry": 231.25, "beta": 0.66,
-      "thesis": "Structural, not cyclical, trade-down: post-2022 behaviour change with $100k+ households now shopping off-price. Keyed directly to verified macro — 3.3% inflation plus a softening labour market.",
-      "verifiedFromFilings": "Q2-2026 8-K: comps +10% driven PRIMARILY BY TRAFFIC (high-quality comp). But 405 of the 610bps operating-margin gain came from one-time IEEPA tariff refunds (~$253m, $1.60/sh); ex-refund +205bps vs a 130-150bps plan — underlying beat is real. Guidance DECELERATES: Q3 comps +6-7%, Q4 +4-5%. FY2025 10-K Item 1A: 'more than half of the goods we sell originate from China' but 'we directly import only a small portion' — tariff exposure is largely INDIRECT via vendor cost.",
+      "rank": 2,
+      "symbol": "ROST",
+      "entry": 231.25,
+      "beta": 0.66,
+      "thesis": "Structural, not cyclical, trade-down: post-2022 behaviour change with $100k+ households now shopping off-price. Keyed directly to verified macro \u2014 3.3% inflation plus a softening labour market.",
+      "verifiedFromFilings": "Q2-2026 8-K: comps +10% driven PRIMARILY BY TRAFFIC (high-quality comp). But 405 of the 610bps operating-margin gain came from one-time IEEPA tariff refunds (~$253m, $1.60/sh); ex-refund +205bps vs a 130-150bps plan \u2014 underlying beat is real. Guidance DECELERATES: Q3 comps +6-7%, Q4 +4-5%. FY2025 10-K Item 1A: 'more than half of the goods we sell originate from China' but 'we directly import only a small portion' \u2014 tariff exposure is largely INDIRECT via vendor cost.",
       "falsifiers": [
         "comps decelerate below ~3%",
         "gross margin compresses on non-IEEPA (Sec 301/232) tariffs",
         "consumer class actions over passed-through tariff costs gain traction",
         "traffic growth turns negative (the comp becomes price-driven)"
       ],
-      "knownWeakness": "Most of the reported margin beat is non-recurring. Company's own risk factors name fuel, energy, rates and housing costs as consumer headwinds — the same inflation that drives trade-down also squeezes its customer."
+      "knownWeakness": "Most of the reported margin beat is non-recurring. Company's own risk factors name fuel, energy, rates and housing costs as consumer headwinds \u2014 the same inflation that drives trade-down also squeezes its customer."
     },
     {
-      "rank": 3, "symbol": "GOOGL", "entry": 354.97, "beta": 1.11,
+      "rank": 3,
+      "symbol": "GOOGL",
+      "entry": 354.97,
+      "beta": 1.11,
       "thesis": "Best growth in the set: Q2-2026 revenue +24%, Cloud +82% to $24.8bn, Cloud operating income TRIPLED $2.83bn -> $8.81bn, operating margin 34%. AI capex is converting into contracted profitable revenue rather than depreciation.",
       "verifiedFromFilings": "Q2-2026 8-K cash statement: operating cash flow $39.1bn (+41% YoY) but capex $44.9bn (+100%) => FREE CASH FLOW -$5.9bn, versus +$5.3bn a year earlier. Buybacks $0 versus $13.2bn. Trailing four quarters of FCF: $24.5bn -> $24.6bn -> $10.1bn -> -$5.9bn (a trend, not a blip); TTM FCF still +$53.3bn. Depreciation +43% and accelerating.",
       "falsifiers": [
@@ -48,23 +68,29 @@
         "an adverse antitrust remedy in search or ad tech",
         "server useful-life extension flatters earnings while cash keeps deteriorating"
       ],
-      "knownWeakness": "Ranked 3rd not 1st ONLY on cash profile. Negative-and-falling FCF with capital returns suspended is the wrong shape for a hiking cycle at a 0.02% risk premium. If optimising for absolute return rather than risk-adjusted, this is arguably the best pick — flagged as a judgment call, not a fact."
+      "knownWeakness": "Ranked 3rd not 1st ONLY on cash profile. Negative-and-falling FCF with capital returns suspended is the wrong shape for a hiking cycle at a 0.02% risk premium. If optimising for absolute return rather than risk-adjusted, this is arguably the best pick \u2014 flagged as a judgment call, not a fact."
     },
     {
-      "rank": 4, "symbol": "EXPD", "entry": 192.15, "beta": 0.65,
-      "thesis": "Asset-light freight forwarder monetising disruption — emergency surcharges, Red Sea diversion, the 25-30% Cape of Good Hope premium. Q1 EPS +16%, Q2 +51%.",
+      "rank": 4,
+      "symbol": "EXPD",
+      "entry": 192.15,
+      "beta": 0.65,
+      "thesis": "Asset-light freight forwarder monetising disruption \u2014 emergency surcharges, Red Sea diversion, the 25-30% Cape of Good Hope premium. Q1 EPS +16%, Q2 +51%.",
       "verifiedFromFilings": "NOT VERIFIED FROM FILINGS. Thesis rests on secondary sources only. The EPS bridge (price vs volume vs buyback) and net revenue per shipment were never checked.",
       "falsifiers": [
         "Hormuz normalises and air/ocean spot rates revert to pre-conflict",
         "a quarter where tonnage grows but EPS does not (price, not volume, was the driver)",
         "EIA's de-escalation path plays out: Brent to ~$77 by 2Q27"
       ],
-      "knownWeakness": "Bets AGAINST the consensus de-escalation, and is CORRELATED with energy names — both are 'disruption persists' trades. Weakest evidentiary base of the five."
+      "knownWeakness": "Bets AGAINST the consensus de-escalation, and is CORRELATED with energy names \u2014 both are 'disruption persists' trades. Weakest evidentiary base of the five."
     },
     {
-      "rank": 5, "symbol": "KO", "entry": 87.12, "beta": -0.02,
+      "rank": 5,
+      "symbol": "KO",
+      "entry": 87.12,
+      "beta": -0.02,
       "thesis": "Negative beta is genuinely rare and is worth more than upside in a multiple-compression scenario. Verified pricing power: late-2025 pricing actions delivering both volume and revenue growth.",
-      "verifiedFromFilings": "NOT VERIFIED FROM FILINGS. Unit case volume — the number that separates real pricing power from a value trap — was never checked.",
+      "verifiedFromFilings": "NOT VERIFIED FROM FILINGS. Unit case volume \u2014 the number that separates real pricing power from a value trap \u2014 was never checked.",
       "falsifiers": [
         "unit case volume turns negative (pricing without volume)",
         "the defensive rotation reverses and beta turns positive",
@@ -74,11 +100,26 @@
     }
   ],
   "rejectedTheses": [
-    { "thesis": "Energy (TRGP 78%, APA 86% momentum)", "why": "Brent peaked $113, already ~$100, EIA models $77 by 2Q27. Buying a shock after the peak into live mediation." },
-    { "thesis": "P&C insurance (rates up + climate losses)", "why": "Property-cat reinsurance rates FELL 14.7% at Jan-2026 renewals, largest since 2014, on record $700bn+ capital. Property is softening." },
-    { "thesis": "Banks (steepening curve, NII)", "why": "Q1-2026 was the first NII decline since mid-2024, and most bullish sources assume CUTS — they predate the September hike." },
-    { "thesis": "Defense (active Iran conflict)", "why": "Index +150% since 2020 at elevated valuations; 2026 earnings-growth expectations fell 15%->12%; munitions replenishment is a production-constrained 3-5 year project; no durable war lift." },
-    { "thesis": "Utilities / power for AI capex", "why": "Zero names pass on any quality basis, and it is the most rate-sensitive sector in a hiking cycle." }
+    {
+      "thesis": "Energy (TRGP 78%, APA 86% momentum)",
+      "why": "Brent peaked $113, already ~$100, EIA models $77 by 2Q27. Buying a shock after the peak into live mediation."
+    },
+    {
+      "thesis": "P&C insurance (rates up + climate losses)",
+      "why": "Property-cat reinsurance rates FELL 14.7% at Jan-2026 renewals, largest since 2014, on record $700bn+ capital. Property is softening."
+    },
+    {
+      "thesis": "Banks (steepening curve, NII)",
+      "why": "Q1-2026 was the first NII decline since mid-2024, and most bullish sources assume CUTS \u2014 they predate the September hike."
+    },
+    {
+      "thesis": "Defense (active Iran conflict)",
+      "why": "Index +150% since 2020 at elevated valuations; 2026 earnings-growth expectations fell 15%->12%; munitions replenishment is a production-constrained 3-5 year project; no durable war lift."
+    },
+    {
+      "thesis": "Utilities / power for AI capex",
+      "why": "Zero names pass on any quality basis, and it is the most rate-sensitive sector in a hiking cycle."
+    }
   ],
   "biggestGap": "No valuation data anywhere in this analysis or in the repo. Not a P/E, not an FCF yield, not an EV/EBITDA. With the equity risk premium at 0.02%, valuation is the single most decision-relevant variable and it is the one thing neither the screen nor this research computed."
 }
