@@ -214,3 +214,67 @@ describe("filedPoints picks the populated unit key", () => {
     expect(filedPoints({ "USD/shares": {}, USD: [pt] }).length).toBe(1);
   });
 });
+
+import { formatValuations } from "@/lib/valuation";
+
+describe("formatValuations — the prompt block", () => {
+  const mk = (symbol: string, peTTM: number | null, peFY: number | null, opts: Partial<import("@/lib/valuation").Valuation> = {}) =>
+    ({ symbol, price: 100, ttmEps: 1, fyEps: 1, fyEnd: "2025-12-31", peTTM, peFY,
+       hasNegativeQuarter: false, distorted: false, grew: false,
+       headline: (peTTM != null ? "peTTM" : "peFY") as "peTTM" | "peFY", ...opts });
+
+  test("renders nothing when there is nothing to say", () => {
+    expect(formatValuations(new Map())).toBe("");
+  });
+
+  test("sorts cheapest first so the comparison is doable at a glance", () => {
+    const m = new Map<string, any>([
+      ["DEARCO", mk("DEARCO", 40, 40)],
+      ["CHEAPCO", mk("CHEAPCO", 10, 10)],
+      ["MIDCO", mk("MIDCO", 25, 25)],
+    ]);
+    const out = formatValuations(m);
+    expect(out.indexOf("CHEAPCO")).toBeLessThan(out.indexOf("MIDCO"));
+    expect(out.indexOf("MIDCO")).toBeLessThan(out.indexOf("DEARCO"));
+  });
+
+  test("states that this is the ONLY price-based input, and why that matters", () => {
+    const out = formatValuations(new Map([["ACME", mk("ACME", 20, 20)]]) as any);
+    expect(out).toMatch(/only price-based/i);
+    expect(out).toMatch(/no price\s+term/i);      // names the quality score's blind spot
+    expect(out).toMatch(/never whether it is EXPENSIVE/i);
+  });
+
+  test("forbids the two misreadings that would do damage", () => {
+    const out = formatValuations(new Map([["ACME", mk("ACME", 20, 20)]]) as any);
+    // must not become a buy trigger or an eligibility override...
+    expect(out).toMatch(/does NOT change eligibility/i);
+    // ...and absence must not be read as cheapness.
+    expect(out).toMatch(/missing name\s+means no reliable figure, NOT that it is cheap/i);
+  });
+
+  test("a charge-distorted name is sorted and shown on its FULL-YEAR figure", () => {
+    const m = new Map<string, any>([
+      ["CLEANCO", mk("CLEANCO", 30, 30)],
+      ["CHARGEDCO", mk("CHARGEDCO", 119, 20, { distorted: true, headline: "peFY" })],
+    ]);
+    const out = formatValuations(m);
+    // 20x (real) must sort ahead of 30x — NOT 119x behind it.
+    expect(out.indexOf("CHARGEDCO")).toBeLessThan(out.indexOf("CLEANCO"));
+    expect(out).toMatch(/do not quote the trailing number/i);
+  });
+});
+
+describe("the block cannot be read as a sell reason", () => {
+  test("states BUY-SIDE ONLY and forbids selling on a multiple", () => {
+    // Main-book sells are NOT shortlist-gated in code — route.ts executes any decided sell that
+    // maps to a live position. So the prompt is the only guard, and every other line in this block
+    // is phrased in buy vocabulary.
+    const v: any = { symbol: "RICH", price: 100, ttmEps: 1, fyEps: 1, fyEnd: "2025-12-31",
+      peTTM: 60, peFY: 60, hasNegativeQuarter: false, distorted: false, grew: false, headline: "peTTM" };
+    const out = formatValuations(new Map([["RICH", v]]));
+    expect(out).toMatch(/BUY-SIDE ONLY/);
+    expect(out).toMatch(/never on its own a reason to SELL/i);
+    expect(out).toMatch(/Do not trim or exit a holding because of its P\/E/i);
+  });
+});

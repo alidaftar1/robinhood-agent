@@ -20,6 +20,7 @@ import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-r
 import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow";
 import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
+import { getValuations, formatValuations } from "@/lib/valuation";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
@@ -507,6 +508,31 @@ export async function GET(request: Request) {
       clearTimeout(releaseTimer);
     }
 
+    // VALUATION — the only price-based check in the system. Everything else the model sees is
+    // profitability (quality = ROE/ROA/leverage, no price term) or trend (12-1 momentum asks whether
+    // a name went UP, never whether it is EXPENSIVE). Scoped to names it can actually act on, EPS
+    // cached (it changes only on a filing) while the P/E is recomputed from the live price.
+    // Fail-safe: a failure yields no section rather than reaching the outer catch.
+    let valuationSection = "";
+    const valuationNotes: string[] = [];
+    try {
+      const valCtrl = new AbortController();
+      // 20s, not 60: maxDuration is 300 and the declared caps (earnings 90 + analysis 150 + the
+      // sell session's 120) already exceed it. Valuation is the most expendable input here — a run
+      // that times out DURING order placement leaves partially-executed trades, which is far worse
+      // than a run with no P/E block.
+      const valTimer = setTimeout(() => valCtrl.abort(), 20_000);
+      try {
+        const valSymbols = [...v1Buy.map(s => s.symbol), ...heldMainSymbols];
+        const { valuations, notes } = await getValuations(valSymbols, (sym) => priceMap.get(sym), valCtrl.signal);
+        valuationSection = formatValuations(valuations);
+        valuationNotes.push(...notes);
+        console.log("VALUATION_SCOPE", { considered: valSymbols.length, priced: valuations.size, notes: notes.length });
+      } finally { clearTimeout(valTimer); }
+    } catch (e) {
+      console.warn("VALUATION_FAILED — continuing without it", e instanceof Error ? e.message : String(e));
+    }
+
     const runTimestamp = new Date().toISOString();
     let textContent = "";
     let trades: TradeSnapshot[] = [];
@@ -534,7 +560,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, isRebalanceDay),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, isRebalanceDay, valuationSection),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
@@ -617,7 +643,7 @@ export async function GET(request: Request) {
     // reviewer flagged "decided buy absent, no explanation" (registry #19). Every drop belongs here.
     // Seeded with earnings-release coverage gaps gathered above, so a per-run cap or an EDGAR
     // miss is visible on the stored run. Prefixed CONTEXT — these are not dropped orders.
-    let buySizingAdjustments: string[] = [...releaseNotes, ...contextWarnings];
+    let buySizingAdjustments: string[] = [...releaseNotes, ...contextWarnings, ...valuationNotes];
     if (decisionParseNote) buySizingAdjustments.push(decisionParseNote);
     // Influencer-sleeve guard drops (position cap, downtrend screen). Collected separately because
     // those guards run before buySizingAdjustments' own guards, then merged in below.

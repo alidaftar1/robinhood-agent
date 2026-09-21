@@ -1,4 +1,5 @@
 import { SEC_UA, getCIKMap } from "@/lib/insider";
+import { redisCommand, redisPost } from "@/lib/run-store";
 
 // ─── Valuation from PRIMARY filings data ─────────────────────────────────────
 //
@@ -187,15 +188,16 @@ export function buildValuation(symbol: string, price: number, points: XbrlPoint[
   return { symbol, price, ttmEps: ttm, fyEps, fyEnd, peTTM, peFY, hasNegativeQuarter: negative, distorted, grew, headline };
 }
 
-/** Fetch + compute for one symbol. Fail-safe: returns null rather than throwing. */
-export async function fetchValuation(symbol: string, price: number, signal?: AbortSignal): Promise<Valuation | null> {
+/** Fetch the raw EPS datapoints for a symbol. Separated so callers can CACHE them — they change
+ *  only on a filing, while the price they are divided by changes continuously. */
+export async function fetchEpsPoints(symbol: string, signal?: AbortSignal): Promise<XbrlPoint[]> {
   try {
     const cikMap = await getCIKMap(signal ?? AbortSignal.timeout(30_000));
     const cik = cikMap.get(symbol.toUpperCase());
     // NOTE getCIKMap is filtered to SP500_UNIVERSE, so every non-S&P name (the influencer sleeve's
-    // SPCX/CAKE/IMAX, and any stale ticker from an acquisition) returns null here PERMANENTLY —
-    // a universe constraint, not missing data. Widen the map before relying on this off-index.
-    if (!cik) return null;
+    // SPCX/CAKE/IMAX, and any stale ticker from an acquisition) resolves to nothing here
+    // PERMANENTLY — a universe constraint, not missing data. Widen the map before relying on this.
+    if (!cik) return [];
     // Prefer the tag with the MOST RECENT data, not merely the first with any: filers migrate tags
     // and abandon the old one mid-history, leaving a short stale series that would otherwise win.
     let points: XbrlPoint[] = [];
@@ -207,9 +209,16 @@ export async function fetchValuation(symbol: string, price: number, signal?: Abo
       if (end > newest) { newest = end; points = got; }
     }
     if (points.length === 0) points = await factsEps(cik, signal);   // companyconcept can be empty
-    if (points.length === 0) return null;
-    return buildValuation(symbol, price, points);
-  } catch { return null; }
+    return points;
+  } catch { return []; }
+}
+
+/** Fetch + compute for one symbol. Fail-safe: returns null rather than throwing. */
+export async function fetchValuation(symbol: string, price: number, signal?: AbortSignal): Promise<Valuation | null> {
+  const points = await fetchEpsPoints(symbol, signal);
+  if (points.length === 0) return null;
+  const v = buildValuation(symbol, price, points);
+  return v.headline === "none" ? null : v;
 }
 
 /** One-line rendering that can never quote a distorted figure on its own. */
@@ -228,4 +237,116 @@ export function formatValuation(v: Valuation): string {
     return `${v.symbol}: P/E ${v.peTTM}x trailing (${fyLabel} ${v.peFY}x — earnings grew, the full-year figure is stale)`;
   }
   return `${v.symbol}: P/E ${v.peTTM}x trailing (${fyLabel} ${v.peFY ?? "n/a"}x)`;
+}
+
+// ─── Batch access with caching ───────────────────────────────────────────────
+//
+// Caches the EXPENSIVE, SLOW-MOVING half (EPS from XBRL, which changes quarterly) and recomputes
+// the cheap half (price / EPS) from a live quote every call. Caching a P/E directly would go stale
+// the moment the price moved, which is the whole point of the number.
+
+const EPS_CACHE_PREFIX = "valuation:eps:";
+const EPS_TTL_SECONDS = 7 * 24 * 60 * 60;   // EPS only changes on a filing
+
+interface CachedEps { v: 1; points: XbrlPoint[]; cachedAt: string }
+
+/** Keep only the fields the maths reads. XBRL points carry accn/frame/etc — dead weight that
+ *  roughly doubles a blob already large enough to break the cache write. */
+const slimPoint = (p: XbrlPoint): XbrlPoint =>
+  ({ start: p.start, end: p.end, val: p.val, form: p.form, fy: p.fy, fp: p.fp, filed: p.filed });
+
+/**
+ * Valuations for many symbols. Returns only what it could compute — a symbol absent from the map
+ * means "no usable valuation", never a guessed one.
+ *
+ * `maxFresh` bounds how many symbols may hit SEC on a cold cache, so a first run cannot stall the
+ * trade cron. Skipped names simply have no entry (and are reported in `notes`), rather than being
+ * silently dropped.
+ */
+export async function getValuations(
+  symbols: string[],
+  priceOf: (symbol: string) => number | undefined,
+  signal: AbortSignal,
+  maxFresh = 25,
+): Promise<{ valuations: Map<string, Valuation>; notes: string[] }> {
+  const valuations = new Map<string, Valuation>();
+  const notes: string[] = [];
+  let fresh = 0;
+  const skipped: string[] = [];
+  const noData: string[] = [];
+
+  for (const symbol of [...new Set(symbols)]) {
+    const price = priceOf(symbol);
+    if (!price || price <= 0) continue;          // no price, no P/E — nothing to say
+    const key = `${EPS_CACHE_PREFIX}${symbol.toUpperCase()}`;   // match the uppercase CIK lookup
+    let points: XbrlPoint[] | null = null;
+
+    try {
+      const raw = await redisCommand("GET", key) as string | null;
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<CachedEps>;
+        // VALIDATE on read: an older-schema or truncated blob would otherwise reach
+        // stitchTtmEps().filter and throw OUTSIDE any per-symbol try, discarding every valuation
+        // computed so far. Same precedent as lib/earnings-release's re-normalise-on-read.
+        if (parsed?.v === 1 && Array.isArray(parsed.points) && parsed.points.length) points = parsed.points;
+      }
+    } catch { /* cache unavailable or unparseable — fall through to a live read */ }
+
+    if (points === null) {   // explicit: an empty ARRAY is truthy and must not count as a hit
+      if (fresh >= maxFresh) { skipped.push(symbol); continue; }
+      fresh++;
+      points = await fetchEpsPoints(symbol, signal);
+      if (points.length === 0) { noData.push(symbol); continue; }
+      try {
+        // POST/pipeline, NOT redisCommand: that helper encodes the value into the URL PATH, which a
+        // ~45KB EPS blob blows past (~75KB encoded) — and it does not check res.ok, so the failure
+        // was invisible. Same reason lib/influencer-signals caches transcripts this way.
+        const payload: CachedEps = { v: 1, points: points.map(slimPoint), cachedAt: new Date().toISOString() };
+        await redisPost("pipeline", [["SET", key, JSON.stringify(payload), "EX", EPS_TTL_SECONDS]]);
+      } catch (e) {
+        console.warn("VALUATION_EPS_CACHE_WRITE_FAILED", { symbol, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    const v = buildValuation(symbol, price, points);
+    if (v.headline !== "none") valuations.set(symbol, v);
+  }
+
+  if (skipped.length) {
+    notes.push(`CONTEXT — P/E not fetched this run for: ${skipped.join(", ")} (hit the ${maxFresh}-per-run cap, or the run's valuation time budget expired). No order was affected.`);
+  }
+  if (noData.length) {
+    // Distinct from the cap: these were ATTEMPTED and SEC returned nothing usable — a non-S&P CIK
+    // miss, a filer with no us-gaap EPS tag, or a 403/429. Previously dropped with no trace at all.
+    notes.push(`CONTEXT — no SEC EPS data for: ${noData.join(", ")}. Absent from the valuation block; this does NOT mean cheap. No order was affected.`);
+  }
+  if (valuations.size === 0 && symbols.length > 0) {
+    // Whole-block failure (empty CIK map, SEC outage) renders an EMPTY STRING into the prompt,
+    // indistinguishable from "valuation deliberately off" — the silent-degradation shape this file
+    // warns about at the top.
+    notes.push(`CONTEXT — the VALUATION block is EMPTY this run: no P/E could be computed for any of ${symbols.length} names. Treat its absence as missing data, not as a signal.`);
+    console.warn("VALUATION_BLOCK_EMPTY", { considered: symbols.length });
+  }
+  return { valuations, notes };
+}
+
+/** Compact block for the analysis prompt. Empty when there is nothing to say. */
+export function formatValuations(vals: Map<string, Valuation>): string {
+  if (vals.size === 0) return "";
+  const rows = [...vals.values()]
+    .sort((a, b) => (a.headline === "peTTM" ? a.peTTM! : a.peFY!) - (b.headline === "peTTM" ? b.peTTM! : b.peFY!))
+    .map(v => "  " + formatValuation(v));
+  return `\nVALUATION (P/E computed from SEC filings — the ONLY price-based check in this system):
+Everything else you are shown is either PROFITABILITY (the quality score is ROE/ROA/leverage, no price
+term) or TREND (12-1 momentum asks whether a name went UP, never whether it is EXPENSIVE). This block
+is the only input that can tell you what you are PAYING for the earnings.
+Use it to DISCRIMINATE BETWEEN names already on the shortlist — a cheaper name with comparable momentum
+and quality is the better buy, and a high multiple on decelerating growth deserves a smaller position
+or none. It does NOT change eligibility and does NOT override the shortlist or any cap. A missing name
+means no reliable figure, NOT that it is cheap. Where a name shows "⚠ depressed by charges", the
+full-year figure is the real one — do not quote the trailing number.
+BUY-SIDE ONLY. Valuation is never on its own a reason to SELL a name you already hold: a rich
+multiple is not a thesis break, and main-book sells are not shortlist-gated in code, so the model is
+the only check. Do not trim or exit a holding because of its P/E.
+${rows.join("\n")}`;
 }
