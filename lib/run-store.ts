@@ -1,5 +1,10 @@
 const RUNS_KEY = "robinhood:runs";
-export const MAX_RUNS = 90; // ~3 months of daily runs
+// RECORDS, not dates: several routes write extra records on a date that already has one
+// (drop-check exits, earnings-exit, same-day re-runs), so the number of distinct DATES is always
+// lower — ~1.2 records/date observed. heldDaysOf needs STALE_DAYS (60) distinct dates, so 90
+// records left only ~15 dates of headroom and a busier week would have made the main-book
+// time-stop unreachable again. 150 gives ~125 dates at the observed ratio.
+export const MAX_RUNS = 150;
 
 export interface PositionSnapshot {
   symbol: string;
@@ -537,7 +542,7 @@ export async function dedupeRuns(): Promise<number> {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) throw new Error("Upstash not configured");
-  const all = await getRuns(90);
+  const all = await getRuns(MAX_RUNS);
   const deduped = mergeRunsByDate(all);
   // Safety: never let a logic slip turn this history-rewriting call into a wipe.
   if (all.length > 0 && deduped.length === 0) {
@@ -777,9 +782,12 @@ export async function backfillSleeveReturns(): Promise<string[]> {
   return changes;
 }
 
-// Updates a specific run by date, applying an updater function. Rewrites the full list.
+// Updates a specific run by date, applying an updater function. Rewrites the FULL list.
+// MUST read MAX_RUNS, not a literal: this DELs the key and RPUSHes back whatever it read, so any
+// record beyond the read window is permanently destroyed. A hardcoded 90 was lossless only while
+// 90 WAS MAX_RUNS — raising the cap turned every patch call into a silent truncation.
 export async function updateRunByDate(date: string, updater: (run: TradeRun) => TradeRun): Promise<boolean> {
-  const all = await getRuns(90);
+  const all = await getRuns(MAX_RUNS);
   const idx = all.findIndex(r => r.date === date);
   if (idx < 0) return false;
   all[idx] = updater(all[idx]);

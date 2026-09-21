@@ -1,3 +1,4 @@
+import { isMainRebalanceDay } from "@/lib/strategy";
 import { requireCronAuth } from "@/lib/auth";
 import { parseTradeDecision, isFullExit } from "@/lib/trade-decision";
 import { dashboardPublicUrl } from "@/lib/dashboard-auth";
@@ -314,9 +315,20 @@ export async function GET(request: Request) {
   // model buys=[] is correct on a day with no qualifying signal), so this fires on ordinary days.
   // Worth surfacing in the email, never worth a paid agentic run on its own.
   if (trades.length === 0 && buyingPower && parseFloat(buyingPower) > 50) {
-    softIssues.push(
-      `No trades executed but buying power is $${parseFloat(buyingPower).toFixed(2)} — possible analysis issue.`,
-    );
+    // Cadence-aware: main-book buys only run inside the weekly rebalance window, so on the other
+    // three weekdays "no trades + cash" is the DESIGNED state, not a signal. Saying "possible
+    // analysis issue" there is a false alarm in the email and in the cloud fixer's work list.
+    // Only an ISSUE when buys were actually open. Outside the window this is the designed state on
+    // 3 weekdays in 5 — pushing it regardless would flip the email to "NEEDS ATTENTION" on most days
+    // (softIssues feeds allIssues -> needsAttention -> the stored work list), desensitising the
+    // banner for real problems. Logged, not raised.
+    if (isMainRebalanceDay(today, isMarketHoliday)) {
+      softIssues.push(
+        `No trades executed but buying power is $${parseFloat(buyingPower).toFixed(2)} — possible analysis issue (main-book buys were OPEN today).`,
+      );
+    } else {
+      console.log("NO_TRADES_OUTSIDE_REBALANCE_WINDOW — expected", { buyingPower });
+    }
   }
 
   if (agenticReturn != null && Math.abs(agenticReturn) > 0.30) {

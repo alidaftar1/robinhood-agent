@@ -30,7 +30,7 @@ curl -s "$APP_URL/api/runs?limit=10" -H "Authorization: Bearer $CRON_SECRET"
 
 Check:
 - `date` field matches today's PT date
-- `trades` array is non-empty (if `portfolioAfter.cash > $50` and trades is empty → problem)
+- `trades` array is non-empty — BUT only inside the weekly rebalance window. Main-book buys run on the first two trading days of the week; on the other three, empty trades with cash on hand is the EXPECTED state, not a problem
 - `summary` doesn't mention unrecoverable errors
 - `agenticDailyReturn` is not null (if null and portfolioAfter exists → needs patch)
 

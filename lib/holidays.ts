@@ -29,3 +29,16 @@ const NYSE_HOLIDAYS = new Set([
 export function isMarketHoliday(date: string): boolean {
   return NYSE_HOLIDAYS.has(date);
 }
+
+/**
+ * Does the hardcoded table still cover `year`?
+ *
+ * Once it lapses, isMarketHoliday returns false for every real holiday — which used to cost only a
+ * wasted cron run. It is now load-bearing: isMainRebalanceDay picks the first two non-holiday weekdays,
+ * so a lapsed table can select CLOSED sessions and silently skip that week's main-book rebalance
+ * entirely, with logs indistinguishable from a normal off-day.
+ */
+export function holidayTableCovers(year: number): boolean {
+  for (const d of NYSE_HOLIDAYS) if (d.startsWith(`${year}-`)) return true;
+  return false;
+}

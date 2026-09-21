@@ -5,7 +5,7 @@ import { SCENARIOS, formatFixtureMarketData, buildV1PromptFromScenario } from ".
 import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
-import { buildSystemPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE } from "@/lib/strategy";
+import { buildSystemPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE, STALE_DAYS } from "@/lib/strategy";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist, STOCK_SECTOR } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, probBeatsSpy, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
@@ -455,8 +455,8 @@ describe("staleness time-stop: flat holdings flagged ⏳STALE (main + influencer
   const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
     { symbol: "PLTR", quantity: "2", avgCost: "120", price: "123", heldDays: 12 }, // infl 12d/+2.5% → stale (≥10d, <8%)
     { symbol: "BTC",  quantity: "1", avgCost: "27",  price: "40",  heldDays: 20 }, // infl +48% → caught a move → not stale
-    { symbol: "ROST", quantity: "3", avgCost: "240", price: "242", heldDays: 16 }, // main 16d/+0.8% → stale (≥15d, <3%)
-    { symbol: "GE",   quantity: "1", avgCost: "300", price: "300", heldDays: 8 },  // main only 8d → too new
+    { symbol: "ROST", quantity: "3", avgCost: "240", price: "242", heldDays: STALE_DAYS + 1 }, // main, flat past the clock → stale
+    { symbol: "GE",   quantity: "1", avgCost: "300", price: "300", heldDays: STALE_DAYS - 1 },  // main, flat but inside the clock → not yet
   ]};
   const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR", "BTC"], [], [], {});
   const lineFor = (s: string) => prompt.split("\n").find((l: string) => l.trim().startsWith(s)) ?? "";
@@ -467,7 +467,7 @@ describe("staleness time-stop: flat holdings flagged ⏳STALE (main + influencer
   it("does NOT flag an influencer holding that caught a big move", () => {
     expect(lineFor("BTC")).not.toMatch(/⏳STALE/);
   });
-  it("flags a flat main holding on the 3-week clock", () => {
+  it("flags a flat main holding once past the main-book clock (months, not weeks)", () => {
     expect(lineFor("ROST")).toMatch(/⏳STALE/);
   });
   it("does NOT flag a main holding that's too new (< STALE_DAYS)", () => {
@@ -1273,7 +1273,7 @@ describe("time-stop: staleness rule wiring in the buy prompt", () => {
     // (needs heldDays ≥ threshold AND flat return). No age → no stale tag on the line.
     const prompt = build([{ symbol: "MKC", quantity: "2", avgCost: "50.00" }]);
     // Match the per-position TAG ("⏳STALE (held 20d, ...") specifically — the RULE text also contains
-    // "⏳STALE (held ≥ 15 trading days ...", so a bare substring would false-match the always-present rule.
+    // "⏳STALE (held ≥ <STALE_DAYS> trading days ...", so a bare substring would false-match the always-present rule.
     expect(prompt).not.toMatch(/⏳STALE \(held \d+d/);
   });
 });

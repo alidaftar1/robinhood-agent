@@ -87,7 +87,7 @@ Sell a held name when ANY of:
 3. **Stop-loss:** `-5%` from entry (hard). Keep existing drop-check (already sell-only).
 4. **Reversal time-stop:** held `>= 10` trading days with no bounce (didn't reach target, still below
    `sma10`). Short-term reversal should resolve fast; a dead dip is dead money. (Replaces the current
-   15-day *momentum* staleness stop, which doesn't fit a reversal thesis.)
+   60-day *momentum* staleness stop, which doesn't fit a reversal thesis.)
 
 ## 5. Portfolio / risk controls (mostly unchanged)
 - **Concentration:** 4–6 positions (current setting).

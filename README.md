@@ -1,6 +1,6 @@
 # Robinhood Agent
 
-An autonomous equity trading agent built with Claude AI and the Robinhood MCP server. Runs daily on Vercel, rebalances a real portfolio, and emails a summary report — no human required.
+An autonomous equity trading agent built with Claude AI and the Robinhood MCP server. Runs daily on Vercel; rebalances the main book weekly over the first two trading days, with risk exits daily, and emails a summary report — no human required.
 
 ### ▶ [Live dashboard — real portfolio vs. the S&P 500](https://robinhood-agent.vercel.app/public)
 
@@ -36,7 +36,7 @@ All crons are scheduled via **Vercel** (`vercel.json`), which sends `Authorizati
 | Time (PT) | Endpoint | Purpose |
 |---|---|---|
 | 6:30am | `/api/insider` | Refresh EDGAR insider buy cache |
-| 7:30am | `/api/trade` | Daily rebalance |
+| 7:30am | `/api/trade` | Weekly rebalance (main-book buys run on the first two trading days of each week; sells and risk exits run daily) |
 | 8:00am | `/api/autopilot` | Monitoring email + self-heal |
 | 10:00am | `/api/drop-check` | Stop-loss: exit any position down ≥5% intraday |
 
@@ -218,7 +218,7 @@ The script sources `.env.local` and calls `claude --print` with the autopilot in
 ## Key files
 
 ```
-app/api/trade/route.ts          — Four-session daily rebalance cron
+app/api/trade/route.ts          — Four-session weekly rebalance (main-book buys run on the first two trading days of each week; sells and risk exits run daily) cron
 app/api/autopilot/route.ts      — Monitoring cron + self-heal
 app/api/drop-check/route.ts     — Intraday stop-loss
 app/api/earnings-exit/route.ts  — Pre-earnings exit

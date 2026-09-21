@@ -3,16 +3,16 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, type PortfolioContext } from "@/lib/strategy";
+import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
-import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { parseTradeDecision, isFullExit, type TradeDecision } from "@/lib/trade-decision";
-import { isMarketHoliday } from "@/lib/holidays";
+import { isMarketHoliday, holidayTableCovers } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
@@ -90,6 +90,22 @@ export async function GET(request: Request) {
 
   try {
     const today = new Date().toISOString().split("T")[0];
+    const isRebalanceDay = isMainRebalanceDay(today, isMarketHoliday);
+    // Surfaced on the RUN, not just in Vercel logs — a silent console.warn is how the unreachable
+    // stale clock went unnoticed in the first place. An ARRAY, not a string: these conditions are
+    // independent and can hold together, and a single slot silently dropped one of them.
+    const contextWarnings: string[] = [];
+    const yr = Number(today.slice(0, 4));
+    // Only the CURRENT year is load-bearing: a Mon-Fri window can only span a year boundary in the
+    // last week of December, so yr+1 is checked as a maintenance reminder from mid-December only.
+    const needsNextYear = today.slice(5, 7) === "12" && Number(today.slice(8, 10)) >= 15;
+    if (!holidayTableCovers(yr) || (needsNextYear && !holidayTableCovers(yr + 1))) {
+      // Load-bearing now: a lapsed table can point the rebalance at a CLOSED Monday and skip the
+      // week's main-book buys with no other symptom.
+      const missing = [yr, ...(needsNextYear ? [yr + 1] : [])].filter((y) => !holidayTableCovers(y));
+      console.error("HOLIDAY_TABLE_LAPSED — NYSE_HOLIDAYS is missing a year the rebalance window can span; it may land on closed sessions", { missing });
+      contextWarnings.push(`CONTEXT — the NYSE holiday table has no entries for ${missing.join(" and ")}. isMarketHoliday now returns false for every real holiday, so the weekly rebalance window can land on CLOSED sessions and skip a week's main-book buys with no other symptom. Update lib/holidays.ts. No order was affected.`);
+    }
 
     if (isMarketHoliday(today)) {
       console.log("MARKET_HOLIDAY_SKIP", { date: today });
@@ -141,7 +157,7 @@ export async function GET(request: Request) {
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 3000,
-        system: buildV1AnalysisPrompt(today, dryShortlistTable, portfolioCtx, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), [], [], Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string]))),
+        system: buildV1AnalysisPrompt(today, dryShortlistTable, portfolioCtx, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), [], [], Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string])), new Map(), new Map(), new Map(), {}, {}, [], "", "", isRebalanceDay),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -271,7 +287,19 @@ export async function GET(request: Request) {
       // snapshot gap (routine here) and only breaks on a real exit.
       let heldDaysOf: (symbol: string) => number | undefined = () => undefined;
       try {
-        const history = mergeRunsByDate(await getRuns(60)); // newest-first, one run per date
+        // Fetch RECORDS, count DATES. Several routes write extra records on a date that already has
+        // one (drop-check exits, earnings-exit, same-day re-runs), so N records is always FEWER than
+        // N distinct dates — at the observed ~1.2 records/date, getRuns(60) yielded only ~50 dates
+        // and `heldDays >= STALE_DAYS` (60) was unreachable: the main-book time-stop was dead code
+        // while its rule text still rendered into every prompt. Pull the full retained history and
+        // say so loudly if it still cannot span the clock.
+        const history = mergeRunsByDate(await getRuns(MAX_RUNS)); // newest-first, one run per date
+        if (history.length < STALE_DAYS) {
+          console.warn("STALE_WINDOW_TOO_SHORT — heldDays cannot reach STALE_DAYS, the main-book time-stop cannot fire", {
+            distinctDates: history.length, staleDays: STALE_DAYS, maxRuns: MAX_RUNS,
+          });
+          contextWarnings.push(`CONTEXT — the main-book TIME-STOP cannot fire: only ${history.length} distinct run dates are retained but STALE_DAYS is ${STALE_DAYS}. Raise MAX_RUNS (currently ${MAX_RUNS} records, shared across dates) or lower STALE_DAYS. No order was affected.`);
+        }
         heldDaysOf = (symbol: string) => {
           let held = 0, absent = 0;
           for (const run of history) {
@@ -506,7 +534,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, isRebalanceDay),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
@@ -552,8 +580,14 @@ export async function GET(request: Request) {
     // whipsaw (or a weak "it's high quality" justification) is never silent. Uses the
     // DECIDED buys (the model's judgment), not post-sizing, so intent is audited even if
     // the buy is later dropped for budget.
+    // These flags audit INTENT, so they deliberately read decidedRaw.buys and still fire for a buy
+    // later dropped for budget or rails. The ONE exception is the rebalance gate: off-cycle, a main
+    // buy is dropped for a calendar reason with no bearing on churn, so flagging it would warn about
+    // a trade that could never have happened today. Such a buy still gets a DEFERRED note, which
+    // carries its own churn-intent marker.
+    const flagBuys = isRebalanceDay ? decidedRaw.buys : decidedRaw.buys.filter(b => !v1ShortlistSet.has(b.symbol));
     let reentryNote = "";
-    const reentries = decidedRaw.buys.filter(b => recentStopouts.some(s => s.symbol === b.symbol));
+    const reentries = flagBuys.filter(b => recentStopouts.some(s => s.symbol === b.symbol));
     if (reentries.length > 0) {
       const notes = reentries.map(b => {
         const s = recentStopouts.find(x => x.symbol === b.symbol)!;
@@ -565,7 +599,7 @@ export async function GET(request: Request) {
     // Rotation-churn audit (companion to the stop re-entry flag): the model re-bought a name it
     // DISCRETIONARILY sold within the last few days (ILMN 08-06→08-07). Deterministic membership flag;
     // whether a genuine fresh catalyst justifies it is the reviewer's judgment.
-    const churnRebuys = decidedRaw.buys.filter(b => recentSells.some(s => s.symbol === b.symbol));
+    const churnRebuys = flagBuys.filter(b => recentSells.some(s => s.symbol === b.symbol));
     if (churnRebuys.length > 0) {
       const notes = churnRebuys.map(b => {
         const s = recentSells.find(x => x.symbol === b.symbol)!;
@@ -583,7 +617,7 @@ export async function GET(request: Request) {
     // reviewer flagged "decided buy absent, no explanation" (registry #19). Every drop belongs here.
     // Seeded with earnings-release coverage gaps gathered above, so a per-run cap or an EDGAR
     // miss is visible on the stored run. Prefixed CONTEXT — these are not dropped orders.
-    let buySizingAdjustments: string[] = [...releaseNotes];
+    let buySizingAdjustments: string[] = [...releaseNotes, ...contextWarnings];
     if (decisionParseNote) buySizingAdjustments.push(decisionParseNote);
     // Influencer-sleeve guard drops (position cap, downtrend screen). Collected separately because
     // those guards run before buySizingAdjustments' own guards, then merged in below.
@@ -606,6 +640,58 @@ export async function GET(request: Request) {
         offList.push(b.symbol);
         return false;
       });
+
+      // ── Weekly rebalance gate (main book only) ────────────────────────────────
+      // 12-1 momentum is a months-horizon signal; re-deciding it every morning turned the book over
+      // ~2x in five weeks and made 18% of round-trips profitable. The strategy doc always specified a
+      // WEEKLY rebalance — this enforces it. Deliberately BUYS ONLY: sells stay available every day
+      // so risk exits (loss discipline, a bearish event, a downgrade) are never delayed, and the
+      // influencer sleeve keeps its own cadence. A sell without a re-buy simply holds cash until the
+      // next rebalance, which is the conservative direction.
+      //
+      // TWO KNOWN INTERACTIONS, accepted deliberately:
+      //  · T+1 SETTLEMENT. Today's sells never fund today's buys, and SELLS run every day while buys
+      //    run twice a week — so this is bounded by total sell frequency, not by rotation frequency
+      //    (a Wednesday stop-out or loss-discipline exit waits for the next window just as a rotation
+      //    does). Positions run $400-$750, so an exit idle for up to three sessions at typical market
+      //    drift costs order-of-$1, not cents. The two-day window exists partly to shorten this: a
+      //    Monday sell settles Tuesday and can be redeployed inside the same window.
+      //  · NOT "one event". The Tuesday prompt is identical to Monday's — nothing tells the model the
+      //    week's rebalance already happened, so a ⏳STALE rotate-or-justify call can be re-litigated
+      //    on day two. Bounded by hysteresis/◆HELD and by buying power, and the churn diagnosis is
+      //    still materially addressed (2 open days of 5, main buys hard-dropped in code on the other
+      //    3, vs 26 buys in 25 days before). Enforcing it would need a mainBookRebalancedThisWeek
+      //    flag in the prompt; deliberately not built yet.
+      //  · RE-BUY COOLDOWN. lib/stopouts RECENT_SELL_DAYS=7 was tuned for daily buys; with buys only
+      //    on the rebalance day, a name sold in week N is still inside the window at week N+1, so an
+      //    exit effectively blocks re-entry for two rebalances. That is MORE anti-churn, which is the
+      //    direction this change wants — left as-is on purpose, not overlooked.
+      if (!isRebalanceDay) {
+        // DELIBERATELY NARROWER than the file's other influencer classifiers, which are all
+        // `tag || (candidate && !shortlist)`. Here the `!shortlist` guard also applies to the
+        // EXPLICIT-TAG branch, so a name that is both a main-shortlist entry and a sleeve pick
+        // (PLTR, GOOGL) is treated as MAIN and deferred — the owner's 2026-09-18 decision that an
+        // S&P name belongs to the main book's framework. Every other use of that predicate is
+        // RESTRICTIVE (they add constraints to influencer buys) except the recording site, which is
+        // pure accounting; this one is PERMISSIVE, so the looser form would let a shortlist name
+        // through the gate on any weekday. KNOWN INCONSISTENCY: a tagged shortlist name is MAIN to
+        // this gate but still books as "influencer" at the recording site and charges the 2-slot
+        // sleeve cap. Pre-existing, not introduced here, and not worth a sleeve-accounting change
+        // inside a cadence diff — but it means one name can be MAIN to the gate and SLEEVE to P&L.
+        const isSleeveBuy = (b: { symbol: string; strategy?: string }) =>
+          !v1ShortlistSet.has(b.symbol) && (b.strategy === "influencer" || influencerCandidateSet.has(b.symbol));
+        const deferred = decision.buys.filter(b => !isSleeveBuy(b));
+        if (deferred.length > 0) {
+          decision.buys = decision.buys.filter(isSleeveBuy);
+          console.log("MAIN_BUYS_DEFERRED_OFF_REBALANCE_DAY", { deferred: deferred.map(b => b.symbol), nextWindow: "first two trading days of next week" });
+          buySizingAdjustments.push(...deferred.map(b => {
+            // Preserve the churn signal: without this, a re-buy attempted 2 days after selling the
+            // same name reads as a neutral deferral and the intent is lost from the audit trail.
+            const churn = recentSells.some(x => x.symbol === b.symbol) ? " ⚠ this was also a re-buy of a name sold in the last few days (churn intent)." : "";
+            return `${b.symbol} main-book buy DEFERRED — outside the weekly rebalance window (main-book buys run on the first two trading days of the week; sells and risk exits still run daily). Re-evaluated at the next window.${churn}`;
+          }));
+        }
+      }
       if (offList.length > 0) {
         console.error("V1_OFF_RAILS_BUYS_DROPPED", offList);
         // Record in the run so decided-vs-executed reconciles (not just a separate alert email). A

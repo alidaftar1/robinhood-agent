@@ -1,6 +1,6 @@
 import React from "react";
 import { vsSpyLabel } from "@/lib/dashboard-labels";
-import { getRuns, mergeRunsByDate, type TradeRun } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate, type TradeRun, MAX_RUNS } from "@/lib/run-store";
 import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, probBeatsSpy, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ export function LoginScreen() {
 // account number and adds a public tagline. Everything else (returns, $ values,
 // positions, thesis) is shown in both — the page output contains no secrets.
 export async function DashboardView({ isPublic = false }: { isPublic?: boolean }) {
-  const allRuns = await getRuns(90);
+  const allRuns = await getRuns(MAX_RUNS);
   // Collapse same-day runs with the canonical merge. The OLD naive "latest
   // timestamp per date" dedup silently dropped the richer run's correct return
   // AND — on days with two FULL runs (e.g. the 7:30 rotation plus an 8am
@@ -460,7 +460,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
         <div style={s.subtitle}>
           {isPublic ? "Autonomous AI trading agent" : "AI trading account ••••4256"}
           {current?.portfolioAfter && ` · $${parseFloat(current.portfolioAfter.totalValue).toFixed(0)} total`}
-          {` · Trades daily at 7:30am PT`}
+          {` · Main book buys on the first two trading days of each week; sells and risk exits run daily`}
           {latest && ` · Last run ${latest.date}`}
         </div>
       </div>

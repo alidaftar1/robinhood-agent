@@ -86,7 +86,54 @@ export interface PortfolioContext {
 // Staleness time-stop (adapted from a mean-reversion time-stop to fit a MOMENTUM book):
 // a position held this long that's still roughly flat is dead money — free it — UNLESS it's a
 // genuine winner or still has strong momentum (let winners run). Soft rule, model applies judgment.
-export const STALE_DAYS = 15;        // ~3 trading weeks (main book)
+// 60 trading days ~ 3 months. Was 15 (~3 trading weeks), which fought the signal it sits on:
+// 12-1 momentum is a MONTHS-horizon signal, so 15 days of flatness carries no information about
+// whether the thesis is working. Measured 2026-09-21 over 17 closed round-trips: average hold 13.9
+// calendar days, 18% winners, -$120.59 realized -- the book was harvesting a small loss on each
+// rotation. 60 days still catches genuinely dead money without evicting a thesis before its horizon.
+export const STALE_DAYS = 60;
+/**
+ * Is `date` inside the week's MAIN-BOOK rebalance WINDOW — the first two trading days of the week?
+ *
+ * The strategy doc specifies a WEEKLY rebalance ("because the 12-1 signal is slow, this turns over
+ * infrequently -- long holds emerge naturally"), but the trade cron ran daily, so the main book was
+ * re-deciding a months-horizon signal every morning. That mismatch produced the churn: 26 buys in 25
+ * trading days, ~2x turnover in five weeks, 18% of round-trips profitable.
+ *
+ * TWO days, not one, for two concrete reasons found in review:
+ *  1. NO CATCH-UP otherwise. The trade cron does fail (it has 529'd and self-healed before). With a
+ *     single-day window, one failed Monday gives the week ZERO main-book buy windows, silently —
+ *     and because the time-stop is suspended off-cycle, a stale holding waits an extra week too.
+ *  2. T+1 SETTLEMENT. Today's sells never fund today's buys. With a one-day window, capital freed on
+ *     the rebalance day could not be redeployed until the FOLLOWING week. A second day lets Monday's
+ *     proceeds go back to work on Tuesday.
+ *
+ * Two of five weekdays still removes 60% of the churn opportunity, and consecutive days act as one
+ * rebalance event rather than two independent decisions.
+ *
+ * The window starts at the first TRADING day of the week, so a Monday holiday shifts it to Tue+Wed
+ * rather than skipping the week.
+ */
+export function isMainRebalanceDay(date: string, isHoliday: (d: string) => boolean): boolean {
+  const d = new Date(`${date}T00:00:00Z`);
+  // Called on every stored run record by the reviewer, so a single legacy/corrupt date must not
+  // throw: an unparseable date yields NaN for getUTCDay(), skips both weekend guards, and then
+  // throws in toISOString() — which would disable the entire skeptical-reviewer pass for the day.
+  if (Number.isNaN(d.getTime())) return false;
+  const dow = d.getUTCDay();                       // 0=Sun .. 6=Sat
+  if (dow === 0 || dow === 6) return false;
+  const monday = new Date(d);
+  monday.setUTCDate(d.getUTCDate() - (dow - 1));
+  const open: string[] = [];
+  for (let i = 0; i < 5 && open.length < 2; i++) {
+    const c = new Date(monday);
+    c.setUTCDate(monday.getUTCDate() + i);
+    const iso = c.toISOString().slice(0, 10);
+    if (!isHoliday(iso)) open.push(iso);            // first TWO non-holiday weekdays
+  }
+  return open.includes(date);
+}
+
 export const STALE_RETURN_PCT = 3;   // "flat" = up less than this since entry
 // Influencer sleeve is on a TIGHTER clock: only 2 slots (scarce), and it exists to catch BIG
 // moves — a name that's gone flat for ~2 weeks is failing that purpose and blocking a fresher pick.
@@ -203,7 +250,7 @@ Rules for each field:
 // hard filter in the trade route enforces this regardless of what the model outputs. The influencer
 // sleeve is unchanged (≤2 slots on its own signal). This is the sole analysis-prompt builder (the V0
 // buildAnalysisPrompt was removed 2026-08-25 once the evals were migrated to grade V1).
-export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = [], marketRegime: string = "", earningsReleaseSection: string = ""): string {
+export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = [], marketRegime: string = "", earningsReleaseSection: string = "", isRebalanceDay: boolean = true): string {
   // MACRO-REGIME context only (Phase 0 news). The analysis is otherwise macro-blind,
   // yet it's asked to judge whether a move is broad-market SYMPATHY vs name-specific.
   // These are general business headlines — regime read only, NOT per-name, NOT a buy
@@ -325,11 +372,30 @@ Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} | Today: ${today
 ${marketRegime}${marketContextBlock}
 T+1 SETTLEMENT RULE: cash account — sell proceeds do NOT settle until tomorrow. Your buy budget is the settled buying power above; it does NOT increase when you sell today. Plan buys within settled buying power only.
 
+${isRebalanceDay ? "" : `
+⛔ NOT THE WEEKLY REBALANCE DAY — MAIN-BOOK BUYS ARE CLOSED TODAY.
+The main book rebalances ONCE A WEEK, over the first TWO trading days of the week. 12-1 momentum is a
+months-horizon signal; re-deciding it every morning churned the book (~2x turnover in five weeks,
+18% of round-trips profitable) and that is what this rule exists to stop. Today:
+  · Do NOT propose any MAIN-BOOK buy. Code drops them, so proposing one only wastes a slot and makes
+    your thesis disagree with the trades that actually happen.
+  · Main-book SELLS remain available for RISK ONLY — risk is never deferred. Sell if loss discipline
+    applies, a bearish ⚡NEWS↓ event or ↓FIRM downgrade lands, or a holding genuinely fell off the
+    shortlist (momentum went negative / lost quality-eligibility).
+  · The next window is the first two trading days of next week. Do NOT make a ROTATION sell today. Any sell whose reason is "free a slot for a better name" or
+    "rotate this ⏳STALE holding into a stronger one" MUST WAIT for the rebalance day: the paired buy
+    would be dropped, leaving the book in cash with nothing bought. The TIME-STOP's rotate-or-justify
+    requirement is SUSPENDED on non-rebalance days — a ⏳STALE holding simply waits.
+  · The INFLUENCER SLEEVE is unaffected; decide it normally — EXCEPT a sleeve pick that also appears
+    on the main shortlist, which belongs to the main book and is deferred with the rest.
+  · Holding an unchanged main book is the CORRECT and expected outcome on a non-rebalance day. Say so
+    plainly in your thesis rather than manufacturing activity.
+`}
 STRATEGY — QUALITY-MOMENTUM (main book):
-- BUY: pick up to 6 MAIN-book names from the shortlist above — your highest-conviction (strongest 12-month momentum + solid quality). Size each meaningfully in DOLLARS (a concentrated ~6-name book beats a long thin tail; each buy is a dollar amount, e.g. $250, min $50, max $${maxPos}). You may ONLY buy MAIN-book names that appear in the shortlist — nothing else.
-- SELL (HYSTERESIS — do not churn on ranking noise): a held MAIN-book name still on the shortlist STAYS. Names marked ◆HELD are current holdings the retention band deliberately kept — they still have positive momentum and passed quality; they were kept even though newer names out-rank them. A ◆HELD name is NOT a rotation candidate: do NOT sell it just because it ranks below fresher names, and do NOT call it "decayed" — its momentum is still positive (that is WHY it's ◆HELD). Ranking below newer names is boundary noise, not a thesis change. SELL a held MAIN name ONLY when: (a) it has genuinely FALLEN OFF the shortlist entirely (its momentum went negative or it lost quality-eligibility — it won't appear above at all), or (b) a specific real reason applies — a ↓FIRM downgrade, a bearish ⚡NEWS↓ material event (lawsuit/cut guidance/deal collapse/regulatory), a sector-cap trim, or you need to free a slot for a clearly higher-conviction NEW name and this is the weakest holding. "Off the top few" or "another name out-ranks it" is NOT a valid sell reason for a ◆HELD name. For each MAIN holding you DO sell, state the specific reason in your thesis (which of a/b, with the number).
+${isRebalanceDay ? `- BUY: pick up to 6 MAIN-book names from the shortlist above — your highest-conviction (strongest 12-month momentum + solid quality). Size each meaningfully in DOLLARS (a concentrated ~6-name book beats a long thin tail; each buy is a dollar amount, e.g. $250, min $50, max $${maxPos}). You may ONLY buy MAIN-book names that appear in the shortlist — nothing else.` : "- BUY: CLOSED today (see the ⛔ rebalance-window block immediately above). Propose no MAIN-book buy."}
+- SELL (HYSTERESIS — do not churn on ranking noise): a held MAIN-book name still on the shortlist STAYS. Names marked ◆HELD are current holdings the retention band deliberately kept — they still have positive momentum and passed quality; they were kept even though newer names out-rank them. A ◆HELD name is NOT a rotation candidate: do NOT sell it just because it ranks below fresher names, and do NOT call it "decayed" — its momentum is still positive (that is WHY it's ◆HELD). Ranking below newer names is boundary noise, not a thesis change. SELL a held MAIN name ONLY when: (a) it has genuinely FALLEN OFF the shortlist entirely (its momentum went negative or it lost quality-eligibility — it won't appear above at all), or (b) a specific real reason applies — a ↓FIRM downgrade, a bearish ⚡NEWS↓ material event (lawsuit/cut guidance/deal collapse/regulatory), a sector-cap trim${isRebalanceDay ? ", or you need to free a slot for a clearly higher-conviction NEW name and this is the weakest holding" : ""}. "Off the top few" or "another name out-ranks it" is NOT a valid sell reason for a ◆HELD name. For each MAIN holding you DO sell, state the specific reason in your thesis (which of a/b, with the number).
 - LOSS DISCIPLINE (a materially-underwater holding must EARN its keep): the hysteresis above keeps a ◆HELD name for still RANKING — but that alone is NOT enough for a name meaningfully DOWN FROM COST. For any MAIN holding more than 10% below entry (see its "% since entry"), "it's still on the shortlist" or "the sector is leading" does NOT justify keeping it — 12-month momentum ranks on a year of trend that a recent breakdown barely moves, so a losing name can still rank. To KEEP a MAIN name down >10% from cost you MUST cite a NAME-SPECIFIC reason it recovers: a fresh catalyst ON THAT NAME (★INS / ⚡↑ / ⚡NEWS↑), a confirmed reversal (↑RECOVERING, or it now ranks near the TOP on fresh momentum), or specific evidence its own thesis is intact. Absent a name-specific reason, SELL it — a thin sector/thematic rationale on a name that is meaningfully underwater is the "held a broken name on a thin reason" trap. For any holding >10% below entry, your thesis MUST name the specific keep-reason or sell it.
-- TIME-STOP (staleness — DEFAULT IS ROTATE, keeping requires a justified exception): a MAIN holding tagged ⏳STALE (held ≥ ${STALE_DAYS} trading days and still up less than +${STALE_RETURN_PCT}% since entry) is dead money — the thesis has had weeks to work. You MUST rotate a ⏳STALE holding into a stronger shortlist name UNLESS you give a SPECIFIC, EVIDENCED reason to keep it: (i) it is genuinely RE-ACCELERATING — cite the concrete signal (it ranks high on the shortlist now / a fresh ↑RECOVERING or rising momentum), OR (ii) a fresh ★INS or ⚡↑ catalyst worth waiting on. A vague "it might move" / "I still like it" / "it hasn't lost money" is NOT a valid keep-reason — that is exactly the dead-money trap. If you KEEP a ⏳STALE holding, your thesis MUST state which specific exception (i/ii) applies, with the signal named.
+- TIME-STOP (staleness — DEFAULT IS ROTATE, keeping requires a justified exception): a MAIN holding tagged ⏳STALE (held ≥ ${STALE_DAYS} trading days and still up less than +${STALE_RETURN_PCT}% since entry) is dead money — the thesis has had months to work. You MUST rotate a ⏳STALE holding into a stronger shortlist name UNLESS you give a SPECIFIC, EVIDENCED reason to keep it: (i) it is genuinely RE-ACCELERATING — cite the concrete signal (it ranks high on the shortlist now / a fresh ↑RECOVERING or rising momentum), OR (ii) a fresh ★INS or ⚡↑ catalyst worth waiting on. A vague "it might move" / "I still like it" / "it hasn't lost money" is NOT a valid keep-reason — that is exactly the dead-money trap. If you KEEP a ⏳STALE holding, your thesis MUST state which specific exception (i/ii) applies, with the signal named.
 - INFLUENCER TIME-STOP (this applies to the sleeve TOO — do not skip it): a ⏳STALE INFLUENCER holding is on the SAME forced-default — its "[INFLUENCER SLEEVE]" do-not-sell protection does NOT apply while it's ⏳STALE (its line says so). You MUST rotate it out (into a qualifying higher-net influencer pick if one exists, ELSE TO CASH) unless it's re-accelerating with a named signal (rising 5d / ↑RECOVERING). "The sleeve is full (2/2)" or "buying power is low" is NOT a reason to keep a stale name — freeing the slot IS the action; a stale name held is worse than an empty slot. Review EVERY influencer holding for ⏳STALE the same way you review the main book, not just for earnings/news.
 - DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −10%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist. THREE EXCEPTIONS where you MAY trim/exit an influencer holding (tag the sell "strategy":"influencer"): (1) EARNINGS — if it shows ⚠⚠ IMMINENT EARNINGS (≤3 days), the earnings hold-judgment applies (these names gap ±10%+ on the print) — trim/exit, or let a high-conviction one ride. If it carries a strong 📈EARN-RECORD (beat most of its last quarters, positive avg surprise), that is a real reason to HOLD it through — even if it's ⏳STALE — since a serial beater's flat run tends to resolve UP on the print (this is exactly the PLTR case: sold as stale+earnings while a 4/4 beater, then +20% on the beat). Name the record in your thesis. (2) NEWS — if it shows a bearish ⚡NEWS↓ material event (lawsuit, cut guidance, deal collapse, regulatory action), that is a real reason to trim/exit — name the event in your thesis. (3) STALE (DEFAULT IS ROTATE) — if it's tagged ⏳STALE (held ≥ ${INFLUENCER_STALE_DAYS} trading days and still up less than +${INFLUENCER_STALE_RETURN_PCT}%), it has NOT caught a move: the sleeve exists to catch BIG momentum and has only 2 scarce slots, so a flat name is dead weight blocking a fresher pick. You MUST ROTATE it out (into a qualifying higher-net influencer pick if one exists, else to cash) UNLESS it is genuinely RE-ACCELERATING — and you cite the signal (rising 5d momentum / ↑RECOVERING). "Might still pop" is NOT a valid keep-reason. If you keep a ⏳STALE influencer holding, your thesis MUST name the re-acceleration signal.
 - The shortlist already limits NEW picks to ≤2 per sector. Still, if adding a name would push a sector (counting your CURRENT holdings) past ~40% of the book, prefer another shortlist name from a lighter sector.
@@ -348,7 +414,7 @@ CONSTRAINTS:
 - HARD LIMIT: total cost of all buys ≤ ${bp} (settled buying power). Fixed — selling today does NOT increase it.
 ${stopoutBlock}${recentSellsBlock}${earningsReleaseSection}${influencerSection ?? ""}
 
-Write a brief thesis (2–4 sentences): which shortlist names you're buying and why (momentum + quality), and — per the hysteresis rule above — which current holdings you're selling WITH the specific reason for each (fell off the shortlist entirely / ↓FIRM / sector-cap trim / freeing a slot for a higher-conviction name). Do NOT sell a ◆HELD name for merely ranking below newer names.${influencerSection ? " It MUST also state your influencer-sleeve decision: which influencer pick(s) you're buying and why, OR — if none — the specific disqualifier (priced above the per-position cap, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer sleeve." : ""} Then compute sum(buys[i].dollarAmount) and verify it is ≤ ${bp}; if it exceeds, reduce dollar amounts or remove buys until it fits. Then output exactly one line:
+${isRebalanceDay ? "Write a brief thesis (2–4 sentences): which shortlist names you're buying and why (momentum + quality), and" : "Write a brief thesis (2–4 sentences). MAIN-BOOK BUYS ARE CLOSED TODAY — do not name any main-book buy, and do not sell to free a slot. If no risk sell is due, say plainly that the main book is unchanged pending the rebalance — but a genuine risk sell (loss discipline / ⚡NEWS↓ / ↓FIRM / fell off the shortlist) is still CORRECT today and must not be withheld. Then state"} — per the hysteresis rule above — which current holdings you're selling WITH the specific reason for each (fell off the shortlist entirely / ↓FIRM / sector-cap trim${isRebalanceDay ? " / freeing a slot for a higher-conviction name" : ""}). Do NOT sell a ◆HELD name for merely ranking below newer names.${influencerSection ? " It MUST also state your influencer-sleeve decision: which influencer pick(s) you're buying and why, OR — if none — the specific disqualifier (priced above the per-position cap, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer sleeve." : ""} Then compute sum(buys[i].dollarAmount) and verify it is ≤ ${bp}; if it exceeds, reduce dollar amounts or remove buys until it fits. Then output exactly one line:
 TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","exit":"all"}],"buys":[{"symbol":"X","dollarAmount":D,"strategy":"main"}]}
 
 Rules:

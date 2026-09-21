@@ -1,7 +1,9 @@
+import { STALE_DAYS } from "@/lib/strategy";
+import { isMainRebalanceDay } from "@/lib/strategy";
+import { isMarketHoliday } from "@/lib/holidays";
 import Anthropic from "@anthropic-ai/sdk";
 import type { TradeRun } from "@/lib/run-store";
 import { formatKnownIssues } from "@/lib/autopilot-known-issues";
-import { STALE_DAYS } from "@/lib/strategy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SKEPTICAL-REVIEWER PASS
@@ -40,8 +42,17 @@ const SCHEDULED_TRADE_CRON_UTC = "14:30 UTC (7:30am PT)";
 const SUMMARY_CHAR_LIMIT = 16000;
 
 // Trim a run to just what the reviewer needs — keeps the prompt small and cheap.
-function compactRun(r: TradeRun) {
+export const REVIEW_HISTORY_DAYS = 15;
+/** Date the weekly main-book buy gate went live; runs before this ran buys every weekday.
+ *  If the deploy slips past this date, bump it — otherwise a pre-gate run gets stamped with the
+ *  new rule and its own main-book buy reads as a bypassed guardrail. */
+export const WEEKLY_GATE_EFFECTIVE = "2026-09-22";
+
+function compactRun(r: TradeRun, isRebalanceDay?: boolean) {
+  // Cadence context: without it, zero main-book buys plus rising settled cash reads as a broken
+  // guardrail rather than the weekly rebalance working as designed.
   return {
+    mainBookBuysOpen: isRebalanceDay ?? null,   // per-record, not "today" — history rows carry their own value
     date: r.date,
     timestamp: r.timestamp,
     agenticDailyReturn: r.agenticDailyReturn ?? null,
@@ -80,7 +91,23 @@ function compactRun(r: TradeRun) {
   };
 }
 
-const SYSTEM_PROMPT = `You are a skeptical quant risk reviewer auditing a live autonomous trading agent's daily run BEFORE its owner sees it. The owner keeps catching problems the automated checks miss — your job is to catch them first.
+const SYSTEM_PROMPT = `You are a skeptical quant risk reviewer auditing a live autonomous trading agent's daily run BEFORE its owner sees it.
+
+CADENCE — READ FIRST: the MAIN BOOK rebalances WEEKLY, over a TWO-DAY window: the first two trading
+days of the week. Outside that window its BUYS are closed in code. Read "mainBookBuysOpen" on
+the run — do not assume which day it is:
+  · false (3 weekdays in 5) — zero main-book buys, an unchanged main book and settled cash building
+    up are the EXPECTED, CORRECT state. Do NOT raise them as idle-capital, missed-opportunity or
+    broken-guardrail concerns. Sells, risk exits and the influencer sleeve still run daily.
+  · true (2 weekdays in 5) — buys are OPEN, but zero buys is STILL usually correct: hysteresis keeps
+    ◆HELD names, the ${STALE_DAYS}-day time-stop rarely fires, and a whole-share remainder is normally idle.
+    Only raise it when MATERIAL settled cash (> ~5% of equity) sat unused across an ENTIRE open
+    window with buyable shortlist names present — a single quiet open day is not evidence of
+    anything.
+  · null — the row predates the weekly gate (it ran under daily buys). Its cadence is unknown; do
+    not reason about it, and do not treat a main-book buy on such a row as a bypassed guardrail.
+Idle cash is worth raising when it persists THROUGH a full rebalance window with buyable names
+available. The owner keeps catching problems the automated checks miss — your job is to catch them first.
 
 You are reviewing a recovered, reconciled run, so do NOT re-report things the deterministic layer already handles (cash reconciliation, missing-sell patching, extreme >30% returns). Look for JUDGMENT-level problems: bad entries, derived numbers that don't add up, concentration drift, signs the morning silently failed and recovered, anything that smells wrong.
 
@@ -129,24 +156,28 @@ ${reconciled
 }
 
 function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[], verify?: VerifyContext | null): string {
-  // Cover the full main-book staleness window (STALE_DAYS) so a held position's most recent
-  // buy trade is always visible here — heldDaysOf (app/api/trade/route.ts) already looks back
-  // 60 runs when computing the age fed to the model, but this reviewer's own window used to be a
-  // flat 7, so any name bought further back than that (e.g. GOOGL, bought 07-27) looked like it
-  // had "no purchase visible in recent history" even though it's held correctly and on-schedule.
-  // A too-short window can't tell a genuinely unverifiable ancient lot apart from one it just
-  // hasn't been shown, which produced exactly that false "impossible to verify" concern 08-14.
+  // History window: a too-short window cannot tell a genuinely unverifiable ancient lot apart from
+  // one it simply was not shown — that produced a false "impossible to verify" concern on 08-14
+  // when this window was a flat 7 runs.
   const history = recentRuns
     .filter((r) => r.date !== todayRun.date)
-    .slice(0, STALE_DAYS)
-    .map(compactRun);
+    // Pinned to a REVIEWER window, deliberately not STALE_DAYS: that constant moved to 60 while the
+    // caller still passes getRuns(30), which made this slice a no-op and roughly doubled the daily
+    // reviewer prompt. A held name older than this window shows no buy trade here — the reviewer is
+    // told not to treat that as unverifiable (registry #18), so the window is a cost/benefit choice,
+    // not a correctness one.
+    .slice(0, REVIEW_HISTORY_DAYS)
+    // null for dates BEFORE the weekly gate shipped: stamping today's rule on older runs makes a
+    // Wed/Thu/Fri row claim "buys closed" while its own trades contain a main-book buy, which reads
+    // as a bypassed guardrail rather than as history.
+    .map((r) => compactRun(r, r.date >= WEEKLY_GATE_EFFECTIVE ? isMainRebalanceDay(r.date, isMarketHoliday) : undefined));
 
   return `SCHEDULED trade cron time: ${SCHEDULED_TRADE_CRON_UTC}. A today timestamp materially later than that implies the morning failed at least once and silently recovered.
 
 ${formatVerify(verify)}
 
 TODAY'S RUN:
-${JSON.stringify(compactRun(todayRun), null, 2)}
+${JSON.stringify(compactRun(todayRun, todayRun.date >= WEEKLY_GATE_EFFECTIVE ? isMainRebalanceDay(todayRun.date, isMarketHoliday) : undefined), null, 2)}
 
 TODAY'S RUN SUMMARY (full — includes the per-name thesis and the trailing TRADE_DECISION line):
 ${(todayRun.summary ?? "").slice(0, SUMMARY_CHAR_LIMIT)}
