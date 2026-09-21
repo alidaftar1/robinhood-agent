@@ -95,8 +95,9 @@ describe("formatValuation", () => {
     const s = formatValuation(buildValuation("MRK", 149.50, MRK));
     expect(s).toContain("⚠");
     expect(s).toContain("20.54x");           // the usable number
-    expect(s).toMatch(/distorted/i);
+    expect(s).toMatch(/depressed by charges/i);
     expect(s).toMatch(/full-year/i);
+    expect(s).not.toContain("null");
   });
 
   test("a clean name reads plainly", () => {
@@ -132,5 +133,84 @@ describe("filedPoints — the empty-object trap", () => {
 
   test("drops null entries inside an otherwise valid array", () => {
     expect(filedPoints({ "USD/shares": [null, { form: "10-K", val: 2, start: "a", end: "b", fy: 1, fp: "FY" }] }).length).toBe(1);
+  });
+});
+
+describe("silent-wrong guards — a bad TTM must be null, never a number", () => {
+  const q = (start: string, end: string, val: number, form = "10-Q"): XbrlPoint =>
+    ({ start, end, val, form, fy: 2026, fp: "Q1" });
+
+  test("a GAP in the quarter series returns null, not a TTM spanning 18 months", () => {
+    // slice(-4) alone takes "the four most recent quarters I could resolve" — with Q3/Q4'25
+    // unresolvable that silently summed an 18-month window and reported it as trailing-twelve.
+    const gapped = [
+      q("2025-01-01", "2025-03-31", 1), q("2025-04-01", "2025-06-30", 1),
+      q("2026-01-01", "2026-03-31", 1), q("2026-04-01", "2026-06-30", 1),
+    ];
+    expect(stitchTtmEps(gapped).ttm).toBeNull();
+  });
+
+  test("a discrete Q4 tagged a day off the fiscal-year end is not double-counted", () => {
+    // 52/53-week filers tag Q4 as ending 12-30 while the FY says 12-31. An exact-match guard then
+    // derived a SECOND Q4 — verified to overstate TTM by 30% and silently drop Q1.
+    const offByOne = [
+      q("2025-01-01", "2025-03-31", 1), q("2025-04-01", "2025-06-30", 2), q("2025-07-01", "2025-09-30", 3),
+      q("2025-10-01", "2025-12-30", 4),                       // discrete Q4, end 12-30
+      q("2025-01-01", "2025-09-30", 6), q("2025-01-01", "2025-12-31", 10, "10-K"),  // FY end 12-31
+    ];
+    expect(stitchTtmEps(offByOne).ttm).toBeCloseTo(10, 2);   // not 13
+  });
+
+  test("contiguous quarters still produce a TTM", () => {
+    const clean = [
+      q("2025-10-01", "2025-12-31", 1), q("2026-01-01", "2026-03-31", 2),
+      q("2026-04-01", "2026-06-30", 3), q("2026-07-01", "2026-09-30", 4),
+    ];
+    expect(stitchTtmEps(clean).ttm).toBeCloseTo(10, 2);
+  });
+});
+
+describe("divergence is DIRECTIONAL — growth is not distortion", () => {
+  const q = (start: string, end: string, val: number, form = "10-Q"): XbrlPoint =>
+    ({ start, end, val, form, fy: 2026, fp: "Q1" });
+  const grower = [
+    q("2025-01-01", "2025-12-31", 1.20, "10-K"),
+    q("2025-10-01", "2025-12-31", 0.75), q("2026-01-01", "2026-03-31", 0.75),
+    q("2026-04-01", "2026-06-30", 0.75), q("2026-07-01", "2026-09-30", 0.75),
+  ];
+
+  test("a company whose earnings TRIPLED leads with trailing, not the stale full year", () => {
+    // Symmetric >2x called this "distorted" and pushed the reader to the full year — reporting
+    // 100x while suppressing the correct 40x.
+    const v = buildValuation("GROW", 120, grower);
+    expect(v.peTTM).toBeCloseTo(40, 0);
+    expect(v.peFY).toBeCloseTo(100, 0);
+    expect(v.distorted).toBe(false);
+    expect(v.grew).toBe(true);
+    expect(v.headline).toBe("peTTM");
+    expect(formatValuation(v)).toContain("earnings grew");
+  });
+});
+
+describe("recency", () => {
+  const q = (start: string, end: string, val: number, form = "10-Q"): XbrlPoint =>
+    ({ start, end, val, form, fy: 2019, fp: "Q1" });
+  test("a years-stale filing history yields no P/E rather than a confident one", () => {
+    const old = [
+      q("2018-10-01", "2018-12-31", 1), q("2019-01-01", "2019-03-31", 1),
+      q("2019-04-01", "2019-06-30", 1), q("2019-07-01", "2019-09-30", 1),
+    ];
+    const v = buildValuation("STALE", 100, old, Date.parse("2026-09-21T00:00:00Z"));
+    expect(v.peTTM).toBeNull();
+    expect(v.headline).toBe("none");
+    expect(formatValuation(v)).not.toContain("25x");
+  });
+});
+
+describe("filedPoints picks the populated unit key", () => {
+  test("an empty USD/shares must not mask a populated USD array", () => {
+    // `units["USD/shares"] ?? units.USD` — {} is not nullish, so the real data was never reached.
+    const pt = { start: "2026-01-01", end: "2026-03-31", val: 5, form: "10-K", fy: 2026, fp: "FY" };
+    expect(filedPoints({ "USD/shares": {}, USD: [pt] }).length).toBe(1);
   });
 });
