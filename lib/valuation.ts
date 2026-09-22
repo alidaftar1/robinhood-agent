@@ -248,6 +248,30 @@ export function formatValuation(v: Valuation): string {
 const EPS_CACHE_PREFIX = "valuation:eps:";
 const EPS_TTL_SECONDS = 7 * 24 * 60 * 60;   // EPS only changes on a filing
 
+/**
+ * Has this symbol REPORTED since its EPS was cached?
+ *
+ * A TTL alone cannot solve this. The staleness guard in buildValuation measures the newest XBRL
+ * period END against ~200 days, so an entry written the day before a 10-Q has a newest end ~90 days
+ * old and sails through — while the price it is divided by is now POST-print. The result is a
+ * confident P/E built from pre-print earnings and a post-print price, for up to a week, on exactly
+ * the names the run flags 📊REPORTED. A beat that gaps the stock +15% renders as a suddenly
+ * expensive multiple, and the block's own guidance then argues against the name that just beat.
+ */
+export function isCacheStaleAfterEarnings(cachedAt: string | undefined, reportDate: string | undefined): boolean {
+  if (!reportDate) return false;                      // nothing reported in the window — TTL governs
+  if (!cachedAt) return true;                         // unknown age next to a known report — refetch
+  // Compare on CALENDAR DAY, not timestamp: a bare "2026-09-15" parses to midnight, so a cache
+  // written the same day at 14:00 would look LATER than its own print. Earnings land before the
+  // open or after the close and the XBRL filing lags the press release by hours or days, so
+  // same-day is genuinely ambiguous — and ambiguity must refetch. A wasted SEC call is cheap; a
+  // post-print price over pre-print earnings in the prompt is not.
+  const c = Date.parse(cachedAt), r = Date.parse(reportDate);
+  if (!Number.isFinite(c) || !Number.isFinite(r)) return true;   // unparseable — refetch, never trust
+  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  return day(r) >= day(c);                            // reported on or after the cache-write DAY
+}
+
 interface CachedEps { v: 1; points: XbrlPoint[]; cachedAt: string }
 
 /** Keep only the fields the maths reads. XBRL points carry accn/frame/etc — dead weight that
@@ -267,13 +291,19 @@ export async function getValuations(
   symbols: string[],
   priceOf: (symbol: string) => number | undefined,
   signal: AbortSignal,
-  maxFresh = 25,
+  opts: {
+    maxFresh?: number;
+    /** symbol -> most recent earnings report date. Cached EPS predating a report is discarded. */
+    reportedOn?: Map<string, string>;
+  } = {},
 ): Promise<{ valuations: Map<string, Valuation>; notes: string[] }> {
+  const maxFresh = opts.maxFresh ?? 25;
   const valuations = new Map<string, Valuation>();
   const notes: string[] = [];
   let fresh = 0;
   const skipped: string[] = [];
   const noData: string[] = [];
+  const staleAfterPrint: string[] = [];
 
   for (const symbol of [...new Set(symbols)]) {
     const price = priceOf(symbol);
@@ -285,10 +315,15 @@ export async function getValuations(
       const raw = await redisCommand("GET", key) as string | null;
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<CachedEps>;
+        // Discard EPS cached BEFORE this name's latest print: the price would be post-print and the
+        // earnings pre-print, which is a confidently WRONG multiple rather than a missing one.
+        const stalePrint = isCacheStaleAfterEarnings(parsed?.cachedAt, opts.reportedOn?.get(symbol.toUpperCase()));
         // VALIDATE on read: an older-schema or truncated blob would otherwise reach
         // stitchTtmEps().filter and throw OUTSIDE any per-symbol try, discarding every valuation
         // computed so far. Same precedent as lib/earnings-release's re-normalise-on-read.
-        if (parsed?.v === 1 && Array.isArray(parsed.points) && parsed.points.length) points = parsed.points;
+        const usable = parsed?.v === 1 && Array.isArray(parsed.points) && parsed.points.length > 0;
+        if (stalePrint) staleAfterPrint.push(symbol);
+        else if (usable) points = parsed.points!;
       }
     } catch { /* cache unavailable or unparseable — fall through to a live read */ }
 
@@ -319,6 +354,9 @@ export async function getValuations(
     // Distinct from the cap: these were ATTEMPTED and SEC returned nothing usable — a non-S&P CIK
     // miss, a filer with no us-gaap EPS tag, or a 403/429. Previously dropped with no trace at all.
     notes.push(`CONTEXT — no SEC EPS data for: ${noData.join(", ")}. Absent from the valuation block; this does NOT mean cheap. No order was affected.`);
+  }
+  if (staleAfterPrint.length) {
+    notes.push(`CONTEXT — P/E refetched after a fresh earnings report for: ${staleAfterPrint.join(", ")} (cached EPS predated the print). No order was affected.`);
   }
   if (valuations.size === 0 && symbols.length > 0) {
     // Whole-block failure (empty CIK map, SEC outage) renders an EMPTY STRING into the prompt,

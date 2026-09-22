@@ -524,7 +524,10 @@ export async function GET(request: Request) {
       const valTimer = setTimeout(() => valCtrl.abort(), 20_000);
       try {
         const valSymbols = [...v1Buy.map(s => s.symbol), ...heldMainSymbols];
-        const { valuations, notes } = await getValuations(valSymbols, (sym) => priceMap.get(sym), valCtrl.signal);
+        // recentEarnings is already in hand: pass it so EPS cached BEFORE a fresh print is discarded
+        // rather than divided into a post-print price.
+        const reportedOn = new Map([...recentEarnings].map(([sym, r]) => [sym.toUpperCase(), r.date]));
+        const { valuations, notes } = await getValuations(valSymbols, (sym) => priceMap.get(sym), valCtrl.signal, { reportedOn });
         valuationSection = formatValuations(valuations);
         valuationNotes.push(...notes);
         console.log("VALUATION_SCOPE", { considered: valSymbols.length, priced: valuations.size, notes: notes.length });

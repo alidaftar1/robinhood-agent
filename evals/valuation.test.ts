@@ -278,3 +278,35 @@ describe("the block cannot be read as a sell reason", () => {
     expect(out).toMatch(/Do not trim or exit a holding because of its P\/E/i);
   });
 });
+
+import { isCacheStaleAfterEarnings } from "@/lib/valuation";
+
+describe("EPS cache must not survive an earnings print", () => {
+  // The TTL cannot solve this: buildValuation's staleness guard measures the newest XBRL period END
+  // against ~200 days, so an entry written the day before a 10-Q has a newest end ~90 days old and
+  // passes — while the price it is divided by is now post-print. A beat that gaps the stock +15%
+  // then renders as a suddenly expensive multiple, and the block's own guidance argues against the
+  // name that just beat. Worst on exactly the population the run flags 📊REPORTED.
+  test("a report AFTER the cache write invalidates it", () => {
+    expect(isCacheStaleAfterEarnings("2026-09-10T00:00:00Z", "2026-09-15")).toBe(true);
+  });
+
+  test("a report on the SAME day invalidates it — the write may have preceded the print", () => {
+    expect(isCacheStaleAfterEarnings("2026-09-15T14:00:00Z", "2026-09-15")).toBe(true);
+  });
+
+  test("a report BEFORE the cache write is fine — the cache already includes it", () => {
+    expect(isCacheStaleAfterEarnings("2026-09-20T00:00:00Z", "2026-09-15")).toBe(false);
+  });
+
+  test("no recent report means the TTL governs, not this check", () => {
+    expect(isCacheStaleAfterEarnings("2026-09-10T00:00:00Z", undefined)).toBe(false);
+  });
+
+  test("unknown or unparseable dates refetch rather than trust the cache", () => {
+    // Fail toward a fresh read: a wasted SEC call is cheap, a wrong P/E in the prompt is not.
+    expect(isCacheStaleAfterEarnings(undefined, "2026-09-15")).toBe(true);
+    expect(isCacheStaleAfterEarnings("not-a-date", "2026-09-15")).toBe(true);
+    expect(isCacheStaleAfterEarnings("2026-09-10T00:00:00Z", "garbage")).toBe(true);
+  });
+});
