@@ -203,7 +203,9 @@ This is NOT a de-risking instruction. A hawkish rate path or a thin risk premium
 choosing AMONG the buys you were going to make; it is not a reason to raise cash, hedge, sit out
 the rebalance, or trim the book. Nor is it a reason to SIZE THEM SMALLER — conviction goes into
 size here, so systematically undersizing on a macro read is the same portfolio-level de-risk by
-another route, and it ends the rebalance in cash just as surely. This strategy has no cash or
+another route, and it ends the rebalance in cash just as surely. This does NOT touch name-specific
+risk sizing: sizing down or skipping an ⚠EARN name, or any other per-name risk rule, is correct and
+unaffected — what is ruled out is shrinking the whole book because of a macro view. This strategy has no cash or
 hedge action — de-risking happens through the per-name stops, and nothing here overrides that.
 ${rows.join("\n")}
 `;

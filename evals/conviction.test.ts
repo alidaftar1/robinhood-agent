@@ -293,6 +293,11 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     const out = formatConviction(withMacro, "2026-09-22", ctx());
     expect(out).toMatch(/Nor is it a reason to SIZE THEM SMALLER/);
     expect(out).toMatch(/ends the rebalance in cash just as surely/);
+    // MUST NOT suppress legitimate per-name risk sizing. strategy.ts tells the model to size down
+    // or avoid an ⚠EARN name (binary ±10% gap risk); a blanket "do not size smaller" bleeding into
+    // that would turn a de-risking guard into a risk-INCREASING one.
+    expect(out).toMatch(/does NOT touch name-specific/);
+    expect(out).toMatch(/⚠EARN name/);
   });
 
   test("macro does not promise a verification the model cannot perform", () => {
