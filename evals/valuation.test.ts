@@ -18,6 +18,13 @@ const GOOGL: XbrlPoint[] = [
   p("2026-04-01", "2026-06-30", 9.11),
 ];
 
+// Four flat quarters and a matching full year: no divergence in either direction.
+const KO_STEADY: XbrlPoint[] = [
+  p("2026-04-01", "2026-06-30", 0.95), p("2026-01-01", "2026-03-31", 0.95),
+  p("2025-10-01", "2025-12-31", 0.95), p("2025-07-01", "2025-09-30", 0.95),
+  p("2025-01-01", "2025-12-31", 3.70, "10-K"),
+];
+
 describe("TTM stitching", () => {
   test("derives the never-reported Q4 from (full year minus nine months)", () => {
     // MRK Q4'25 = 7.28 - 6.08 = 1.20. Summing raw datapoints instead would double-count the
@@ -101,9 +108,20 @@ describe("formatValuation", () => {
   });
 
   test("a clean name reads plainly", () => {
-    const s = formatValuation(buildValuation("GOOGL", 354.97, GOOGL));
-    expect(s).toContain("17.83x");
+    // Deliberately NOT the GOOGL fixture, which this test used to call clean. Its TTM (19.91) is
+    // 1.84x its last full year (10.81) — the flattering divergence that makes a name look cheapest
+    // on the shortlist when it may be carrying a one-time gain. A genuinely unremarkable name is
+    // what "plainly" should mean, so the no-warning assertion keeps its teeth.
+    const s = formatValuation(buildValuation("KO", 70, KO_STEADY));
+    expect(s).toContain("x trailing");
     expect(s).not.toContain("⚠");
+  });
+
+  test("the real GOOGL numbers now carry the flattering-divergence warning", () => {
+    const v = buildValuation("GOOGL", 354.97, GOOGL);
+    expect(v.peTTM).toBe(17.83);            // unchanged — the flag does not move the number
+    expect(v.flattered).toBe(true);
+    expect(formatValuation(v)).toContain("FLATTERED");
   });
 });
 
@@ -495,5 +513,49 @@ describe("a truncated read must not be cached as a complete one", () => {
     });
     expect(notes.join(" ")).not.toMatch(/time budget/i);
     expect(valuations.has(SYM)).toBe(true);   // proves the fixture itself is valuable
+  });
+});
+
+describe("the dangerous distortion is the one that looks CHEAP", () => {
+  // Observed live on GOOGL the day this shipped: quarterly diluted EPS ran 2.87 -> 5.11 -> 9.11,
+  // printing 12.66x trailing against 23.31x for the full year. The block tells the model a cheaper
+  // name is the better buy, so an inflated-EPS name is actively attractive — while the already
+  // handled direction (looks expensive) is self-limiting because the model just passes on it.
+  const pts = (fy: number, q: number) => [
+    { start: "2026-04-01", end: "2026-06-30", val: q, form: "10-Q", fy: 2026, fp: "Q2", filed: "2026-07-23" },
+    { start: "2026-01-01", end: "2026-03-31", val: q, form: "10-Q", fy: 2026, fp: "Q1", filed: "2026-04-23" },
+    { start: "2025-10-01", end: "2025-12-31", val: q, form: "10-Q", fy: 2025, fp: "Q4", filed: "2026-01-23" },
+    { start: "2025-07-01", end: "2025-09-30", val: q, form: "10-Q", fy: 2025, fp: "Q3", filed: "2025-10-23" },
+    { start: "2025-01-01", end: "2025-12-31", val: fy, form: "10-K", fy: 2025, fp: "FY", filed: "2026-02-01" },
+  ];
+  const asOf = Date.parse("2026-07-25");
+
+  test("a trailing figure far CHEAPER than the full year is flagged, not published bare", () => {
+    // TTM 4.00 vs FY 1.60 -> peTTM 25x, peFY 62.5x, ratio 2.5
+    const v = buildValuation("XYZ", 100, pts(1.6, 1.0), asOf);
+    expect(v.peTTM! < v.peFY!).toBe(true);
+    expect(formatValuation(v)).toMatch(/one-time gain/i);
+  });
+
+  test("the flag fires BELOW the `grew` threshold — GOOGL's real 1.84 ratio", () => {
+    // TTM 4.00 vs FY 2.17 -> ratio ~1.84, which `grew` (>2) misses entirely.
+    const v = buildValuation("XYZ", 100, pts(2.17, 1.0), asOf);
+    expect(v.grew).toBe(false);
+    expect(v.flattered).toBe(true);
+    expect(formatValuation(v)).toMatch(/FLATTERED/);
+  });
+
+  test("a normal name is NOT flagged — the warning must stay rare enough to mean something", () => {
+    const v = buildValuation("XYZ", 100, pts(3.8, 1.0), asOf);   // ratio ~1.05
+    expect(v.flattered).toBe(false);
+    expect(formatValuation(v)).not.toMatch(/FLATTERED/);
+  });
+
+  test("the opposite direction still routes to the full year, unchanged", () => {
+    // TTM 1.00 vs FY 4.00 -> peTTM 100x, peFY 25x, ratio 4 -> trailing depressed by charges.
+    const v = buildValuation("XYZ", 100, pts(4.0, 0.25), asOf);
+    const out = formatValuation(v);
+    expect(out).toMatch(/use the full-year figure/i);
+    expect(out).not.toMatch(/FLATTERED/);   // the two warnings must never both fire
   });
 });
