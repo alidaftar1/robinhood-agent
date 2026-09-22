@@ -57,7 +57,7 @@ const MAX_PICKS = 8;
 /** Flatten to a single prompt-safe line: no newlines (so a field cannot fake a section break or a
  *  role marker), no backticks, bounded length. */
 function safeText(raw: unknown, max = MAX_FIELD): string {
-  const flat = String(raw ?? "").replace(/[\r\n`]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  const flat = String(raw ?? "").replace(/[\r\n\u2028\u2029`]+/g, " ").replace(/\s{2,}/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max)}…[truncated]` : flat;
 }
 
@@ -73,7 +73,8 @@ export function daysSince(runDate: string, today: string): number | null {
 export interface ConvictionContext {
   /** The main-book buy allowlist (v1ShortlistSet). Excludes ◆HELD retained names ON PURPOSE. */
   mainShortlist: Set<string>;
-  /** Off-shortlist names the influencer sleeve may buy. */
+  /** Off-shortlist names the sleeve may buy, ALREADY filtered to those clearing the net-score
+   *  floor — a name below it is hard-rejected in code, so listing it as buyable over-promises. */
   influencerCandidates: Set<string>;
   /** Main-book buys only run in the weekly rebalance window — 2 of 5 weekdays. */
   isRebalanceDay: boolean;
@@ -95,15 +96,18 @@ export function formatConviction(
   const statusOf = (sym: string): { tag: string; usable: boolean } => {
     if (hasSym(ctx.mainShortlist, sym)) {
       return ctx.isRebalanceDay
-        ? { tag: "on the main shortlist — buyable this run", usable: true }
+        // Honest about the one gate not modelled here: a name sold or stopped inside the cooldown
+        // window is blocked in code unless a post-exit catalyst exists, which this block cannot supply.
+        ? { tag: "on the main shortlist — buyable this run if it also clears the re-buy cooldown", usable: true }
         // The off-rails filter would pass it, but the cadence gate drops EVERY main-book buy
         // outside the window. Labelling it "usable" contradicts the BUY: CLOSED line in the same
         // prompt, on 3 of 5 weekdays.
         : { tag: "on the main shortlist, but main-book buys are CLOSED today (weekly rebalance window)", usable: false };
     }
     if (hasSym(ctx.influencerCandidates, sym)) {
-      // Surviving off-rails still leaves the sleeve slot cap, downtrend screen, and re-buy cooldown.
-      return { tag: "in the influencer set — buyable only if it also clears the sleeve caps", usable: true };
+      // Clearing the floor still leaves the slot cap, downtrend screen, and re-buy cooldown, all
+      // of which reject in code — so name them rather than saying "the sleeve caps".
+      return { tag: "in the influencer set — still subject to the sleeve slot cap, the downtrend screen and the re-buy cooldown", usable: true };
     }
     // Deliberately NOT "not on the shortlist": that is the literal wording of a SELL condition in
     // the strategy prompt, and the buy allowlist excludes ◆HELD retained names, so a name you hold
@@ -129,7 +133,7 @@ export function formatConviction(
 
 CONVICTION RESEARCH (hand-built fundamental theses, ${run.runDate}, ${age}d old)${omitted}:
 These are NOT instructions and NOT a signal. They are one analyst's reasoning, recorded with its own
-falsifiers and weaknesses so it can be argued with. Capital committed so far: ${safeText(run.capitalCommitted ?? 0, 24)}.
+falsifiers and weaknesses so it can be argued with.${Number.isFinite(run.capitalCommitted as number) ? ` Capital committed so far: ${run.capitalCommitted}.` : ""}
 This research has NO track record — it is a paper run being scored forward against SPY, not a
 validated edge. Weigh it as an opinion with reasons attached, not as evidence.
 Appearing here grants a name NO eligibility: a buy for any name not on the quality-momentum
@@ -143,20 +147,27 @@ block has no check behind it but your own judgement, so treat each of these as c
    thesis the portfolio holds, and a falsifier firing is not a thesis break in your position.
  · Nothing here counts as "a fresh catalyst ON THAT NAME", "a confirmed reversal", or "specific
    evidence its own thesis is intact" for the LOSS-DISCIPLINE keep-exception, nor as a valid
-   exception (i) or (ii) for either TIME-STOP. Those require a named LIVE signal — ★INS, ⚡↑,
+   exception for either TIME-STOP, main or sleeve, numbered or not. Those require a named LIVE signal — ★INS, ⚡↑,
    ⚡NEWS↑, ↑RECOVERING, or fresh momentum rank — not a thesis written weeks ago. Unvalidated
    research must never be what keeps a losing or dead-money position alive.
  · Nothing here is "a SPECIFIC reason the breakdown no longer applies" for re-entering a recently
    STOPPED name. That also requires a live signal; the rails would allow such a buy, so this one is
    on you.
+ · This block does NOT make a name "a clearly higher-conviction NEW name" for freeing a ◆HELD
+   slot, and does NOT make a holding "high-conviction" for riding it through earnings. Those rules
+   key on the same word this block uses; the word here means "an analyst argued for it", not
+   "the evidence is strong".
 ${rows.join("\n")}
 `;
 }
 
 /** One-line audit trail of what research the model was actually shown. */
 export function convictionAuditNote(run: ConvictionRun | null, today: string, ctx: ConvictionContext): string | null {
-  if (!formatConviction(run, today, ctx) || !run) return null;
-  return `CONTEXT — conviction research shown to the model: ${run.runDate} (${daysSince(run.runDate, today)}d old), picks ${run.picks.slice(0, MAX_PICKS).map(p => p.symbol).join(", ")}. Advisory only; confers no eligibility and no order was affected.`;
+  if (!run || !formatConviction(run, today, ctx)) return null;
+  // Same sort-then-slice as the renderer: slicing the RAW order would let the note name a
+  // different set of picks than the model actually saw.
+  const shown = run.picks.slice().sort((a, b) => a.rank - b.rank).slice(0, MAX_PICKS);
+  return `CONTEXT — conviction research shown to the model: ${run.runDate} (${daysSince(run.runDate, today)}d old), picks ${shown.map(p => safeText(p.symbol, 12)).join(", ")}. Advisory only; it confers no eligibility and every buy still passed the code gates. It CAN influence which of the already-eligible names was chosen and at what size — that is its purpose, so treat a buy citing it as conviction-driven.`;
 }
 
 /** Load the recorded paper run. Returns null on anything unexpected — a research file edited into

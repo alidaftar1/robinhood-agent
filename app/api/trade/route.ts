@@ -573,7 +573,11 @@ export async function GET(request: Request) {
       // buy is dropped, so a pick labelled "usable" would contradict the BUY: CLOSED line in the
       // same prompt on 3 of 5 weekdays.
       const convictionRun = loadConvictionRun();
-      const convictionCtx = { mainShortlist: v1ShortlistSet, influencerCandidates: influencerCandidateSet, isRebalanceDay };
+      // Filter to the names that would actually clear the hard net-score floor: the candidate set
+      // is the top 12 by net REGARDLESS of value, but a buy below the floor is rejected in code.
+      const convictionInfluencer = new Set(
+        [...influencerCandidateSet].filter(t => (influencerNet[t] ?? 0) >= INFLUENCER_BUY_FLOOR));
+      const convictionCtx = { mainShortlist: v1ShortlistSet, influencerCandidates: convictionInfluencer, isRebalanceDay };
       convictionSection = formatConviction(convictionRun, today, convictionCtx);
       const auditNote = convictionAuditNote(convictionRun, today, convictionCtx);
       if (auditNote) convictionNotes.push(auditNote);   // so the run records WHAT research it saw
