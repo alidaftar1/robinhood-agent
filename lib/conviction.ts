@@ -137,12 +137,18 @@ shortlist or influencer set is dropped in code. Use this ONLY to discriminate am
 already buy${anyUsable ? "" : " — and NONE of these names is buyable this run, so it is context only"}.
 The falsifiers are the most useful part: if one has come true, that is a reason AGAINST BUYING the
 name, and it outranks the thesis.
-BUY-SIDE ONLY, in BOTH directions. Never sell, trim, or exit a holding because of anything here —
-the code's off-rails filter guards BUYS only, so on the sell side this text has no check behind it
-but your own judgement. And nothing here is "a fresh catalyst" or "specific evidence the thesis is
-intact" for the loss-discipline or time-stop KEEP exceptions: unvalidated research must not be what
-keeps a losing position alive. Sell and keep decisions come from the position's own stop, target,
-and momentum.
+NEW BUYS ONLY, and nothing else. The code's off-rails filter guards BUYS — every other use of this
+block has no check behind it but your own judgement, so treat each of these as closed:
+ · Never sell, trim, or exit a holding because of anything here. A thesis recorded here is not a
+   thesis the portfolio holds, and a falsifier firing is not a thesis break in your position.
+ · Nothing here counts as "a fresh catalyst ON THAT NAME", "a confirmed reversal", or "specific
+   evidence its own thesis is intact" for the LOSS-DISCIPLINE keep-exception, nor as a valid
+   exception (i) or (ii) for either TIME-STOP. Those require a named LIVE signal — ★INS, ⚡↑,
+   ⚡NEWS↑, ↑RECOVERING, or fresh momentum rank — not a thesis written weeks ago. Unvalidated
+   research must never be what keeps a losing or dead-money position alive.
+ · Nothing here is "a SPECIFIC reason the breakdown no longer applies" for re-entering a recently
+   STOPPED name. That also requires a live signal; the rails would allow such a buy, so this one is
+   on you.
 ${rows.join("\n")}
 `;
 }

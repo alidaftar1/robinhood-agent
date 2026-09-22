@@ -67,7 +67,7 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     // a sell of something already held. The valuation block carries the same guard for the same
     // reason. If this assertion ever fails, the block has become able to move money with no check.
     const out = formatConviction(run, "2026-09-22", ctx({ mainShortlist: new Set(["MRK"]) }));
-    expect(out).toMatch(/BUY-SIDE ONLY/);
+    expect(out).toMatch(/NEW BUYS ONLY/);
     expect(out).toMatch(/Never sell, trim, or exit/i);
   });
 
@@ -115,8 +115,9 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     // to close the bullish side too, not just silence the falsifiers.
     const out = formatConviction(run, "2026-09-22", ctx({ mainShortlist: new Set(["MRK"]) }));
     // Line-wrapped in the rendered block, so match across whitespace rather than pinning a wrap.
-    expect(out).toMatch(/specific evidence the thesis is\s+intact/);
-    expect(out).toMatch(/must not be what\s+keeps a losing position alive/);
+    expect(out).toMatch(/specific\s+evidence its own thesis is intact/);
+    expect(out).toMatch(/must never be what keeps a losing or dead-money position alive/);
+    expect(out).toMatch(/TIME-STOP/);
   });
 
   test("capitalCommitted cannot break onto its own prompt line", () => {
@@ -137,5 +138,15 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     const out = formatConviction(many, "2026-09-22", ctx());
     expect(out).toContain("further picks not shown");
     expect(out.length).toBeLessThan(6000);
+  });
+
+  test("research cannot justify re-entering a recently STOPPED name", () => {
+    // The rails ALLOW this buy (the name is on the shortlist), so the off-rails filter is no
+    // protection. strategy.ts requires "a SPECIFIC reason the breakdown no longer applies" to
+    // re-buy a stopped name, and a thesis reads exactly like one — the anti-churn guard is the
+    // thing this block is most likely to erode.
+    const out = formatConviction(run, "2026-09-22", ctx({ mainShortlist: new Set(["MRK"]) }));
+    expect(out).toMatch(/breakdown no longer applies/);
+    expect(out).toMatch(/STOPPED name/);
   });
 });
