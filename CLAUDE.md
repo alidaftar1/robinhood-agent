@@ -251,7 +251,9 @@ version was the safety fix. Every one passed its tests. The gate caught all thre
 - **A passing test proves nothing about a direction bug.** Tests written alongside the code inherit
   its blind spot, and several here passed while being provably vacuous. Before trusting a test that
   guards a direction, BREAK the guard and confirm the test fails. `evals/fail-closed.test.ts` holds
-  these invariants and is mutation-verified; add to it rather than writing a new happy-path case.
+  these invariants; its `normalizeReportDate` cases are mutation-verified, and it carries a control
+  asserting that UNDEGRADED input still publishes so the suite cannot pass by rejecting everything.
+  Add to it rather than writing a new happy-path case.
 
 ### Trade execution
 - **A reasoning/decision LLM must NEVER hold the Robinhood MCP trade token.** The model that ingests

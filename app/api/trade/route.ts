@@ -529,12 +529,7 @@ export async function GET(request: Request) {
         // Built from lastReport, NOT recentEarnings: 📊REPORTED is a 7-day flag, but the filing
         // that makes a post-print P/E safe lands 23-38 days after the press release. Keying
         // suppression to the 7-day flag stops guarding weeks before the fix arrives.
-        // These dates come straight from Finnhub and are interpolated into the live-money prompt,
-        // so normalise the shape — but NEVER by dropping the entry. A dropped entry does not
-        // suppress the name, it UN-suppresses it: getValuations sees reportDate === undefined,
-        // pointsIncludeReport returns true on its first line, and the full multiple is published
-        // against a gapped post-print price. Carrying an unreadable date through is the safe
-        // choice, because pointsIncludeReport fails safe on a date it cannot parse and withholds.
+        // Normalised, never dropped — dropping un-suppresses. See normalizeReportDate.
         const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
         const reportedOn = new Map(
           [...perSymbolLastReport].map(([sym, r]) => [sym.toUpperCase(), normalizeReportDate(r.date)] as const),

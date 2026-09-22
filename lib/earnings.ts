@@ -118,7 +118,12 @@ export interface RecentEarnings { date: string; daysAgo: number }
  *  and never return something Date.parse can read unless it is genuinely the report date. */
 export function normalizeReportDate(raw: unknown): string {
   const trimmed = String(raw ?? "").slice(0, 10);   // "2026-09-15T00:00:00" -> "2026-09-15"
-  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : "unparseable";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  // Observable on purpose: if the vendor ever changes format (single-digit months, say), EVERY
+  // reported name suppresses at once and the only trace would be "(reported unparseable)" buried
+  // in the prompt. This file's whole doctrine is that silent degradation is the real failure.
+  console.warn("EARNINGS_REPORT_DATE_UNPARSEABLE — suppressing this name's P/E", { raw: String(raw ?? "").slice(0, 40) });
+  return "unparseable";
 }
 
 /** How recent a print must be to earn the 📊REPORTED flag — independent of how far back we LOOK. */

@@ -62,17 +62,26 @@ describe("degraded inputs withhold the P/E rather than publish one", () => {
     ["SEC returning nothing", {}, async () => []],
   ];
 
-  for (const [name, opts, fetchPoints] of cases) {
+  // A SEPARATE symbol per case. Sharing one key let case 1's successful cache write turn case 3
+  // into a cache HIT: it never called its own fetchPoints, published, and the invariant went
+  // unexercised. Invisible under `bun test` (NODE_ENV=test skips .env.local, so there is no cache
+  // at all) and only reachable with creds — i.e. the suite silently stopped testing the thing.
+  cases.forEach(([name, opts, fetchPoints], i) => {
     test(name, async () => {
+      const sym = `${SYM}X${i}`;
+      const remap = opts?.reportedOn
+        ? { ...opts, reportedOn: new Map([...opts.reportedOn].map(([, v]) => [sym, v] as const)) }
+        : (opts ?? {});
       const ctrl = new AbortController();
-      const { valuations } = await getValuations([SYM], priceOf, ctrl.signal, { ...opts, fetchPoints });
-      expect(valuations.has(SYM)).toBe(false);
+      const { valuations } = await getValuations([sym], priceOf, ctrl.signal, { ...remap, fetchPoints });
+      expect(valuations.has(sym)).toBe(false);
     });
-  }
+  });
 
   test("the CONTROL: undegraded input DOES publish, so the above cannot pass vacuously", async () => {
     const ctrl = new AbortController();
-    const { valuations } = await getValuations([SYM], priceOf, ctrl.signal, { fetchPoints: async () => good });
-    expect(valuations.has(SYM)).toBe(true);
+    const sym = `${SYM}CTRL`;
+    const { valuations } = await getValuations([sym], priceOf, ctrl.signal, { fetchPoints: async () => good });
+    expect(valuations.has(sym)).toBe(true);
   });
 });

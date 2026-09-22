@@ -32,8 +32,6 @@ export interface Valuation {
   peFY: number | null;
   /** TTM contains a loss-making quarter, so trailing earnings understate the run-rate. */
   hasNegativeQuarter: boolean;
-  /** Trailing looks materially CHEAPER than the full year — possibly a one-time gain, not growth. */
-  flattered: boolean;
   /** Full-year P/E is >2x the trailing one — earnings GREW, so the full-year figure is stale. */
   grew: boolean;
   /** peTTM and peFY disagree by >2x — trailing earnings are distorted; do NOT quote peTTM alone. */
@@ -170,7 +168,7 @@ export function buildValuation(symbol: string, price: number, points: XbrlPoint[
   const stale = newest == null || (asOf - newest) / 86_400_000 > MAX_STALENESS_DAYS;
   if (stale) {
     return { symbol, price, ttmEps: null, fyEps: null, fyEnd: null, peTTM: null, peFY: null,
-             hasNegativeQuarter: false, distorted: false, grew: false, flattered: false, headline: "none" };
+             hasNegativeQuarter: false, distorted: false, grew: false, headline: "none" };
   }
   const { ttm, negative } = stitchTtmEps(points);
   const { eps: fyEps, end: fyEnd } = latestFyEps(points);
@@ -185,20 +183,9 @@ export function buildValuation(symbol: string, price: number, points: XbrlPoint[
   // and tells a halving company to use the flattering stale one, hiding a real deterioration.
   const distorted = peTTM != null && peFY != null && peTTM / peFY > 2;
   const grew = peTTM != null && peFY != null && peFY / peTTM > 2;
-  // ASYMMETRIC RISK, and the reason this exists at all. The two distortions are NOT equally
-  // dangerous here. A name whose trailing figure looks too EXPENSIVE is self-limiting — the model
-  // passes on it. A name whose trailing figure looks too CHEAP actively attracts a buy, and the
-  // block above tells the model in as many words that a cheaper name is the better buy. Observed
-  // live on GOOGL: quarterly diluted EPS ran 2.87 -> 5.11 -> 9.11, inflating TTM EPS and printing
-  // 12.66x trailing against 23.31x for the full year, which made the most expensive kind of name
-  // look like the cheapest on the shortlist. A 3x jump in two quarters is not usually operating
-  // growth; it is usually a one-time gain. `grew` does not catch this (1.84 < its 2.0 threshold),
-  // and would not caveat it if it did — it calls the trailing figure the usable one. So flag the
-  // DIVERGENCE at a lower bar without changing which figure is the headline.
-  const flattered = peTTM != null && peFY != null && peFY / peTTM > 1.5;
   const headline: Valuation["headline"] =
     peTTM != null && !distorted ? "peTTM" : peFY != null ? "peFY" : peTTM != null ? "peTTM" : "none";
-  return { symbol, price, ttmEps: ttm, fyEps, fyEnd, peTTM, peFY, hasNegativeQuarter: negative, distorted, grew, flattered, headline };
+  return { symbol, price, ttmEps: ttm, fyEps, fyEnd, peTTM, peFY, hasNegativeQuarter: negative, distorted, grew, headline };
 }
 
 /** Fetch the raw EPS datapoints for a symbol. Separated so callers can CACHE them — they change
@@ -240,11 +227,7 @@ export function formatValuation(v: Valuation): string {
     return `${v.symbol}: P/E ${v.peFY}x on ${fyLabel} — ⚠ ${why}; use the full-year figure`;
   }
   if (v.grew) {
-    return `${v.symbol}: P/E ${v.peTTM}x trailing (${fyLabel} ${v.peFY}x — earnings grew, the full-year figure is stale)`
-      + " — ⚠ verify the jump is operating growth, not a one-time gain, before treating it as cheap";
-  }
-  if (v.flattered) {
-    return `${v.symbol}: P/E ${v.peTTM}x trailing (${fyLabel} ${v.peFY}x) — ⚠ trailing is FLATTERED by a sharp EPS jump; a one-time gain would make this look cheap when it is not. Do not treat the trailing figure as the cheap one without checking.`;
+    return `${v.symbol}: P/E ${v.peTTM}x trailing (${fyLabel} ${v.peFY}x — earnings grew, the full-year figure is stale)`;
   }
   return `${v.symbol}: P/E ${v.peTTM}x trailing (${fyLabel} ${v.peFY ?? "n/a"}x)`;
 }
@@ -474,9 +457,12 @@ Use it to DISCRIMINATE BETWEEN names already on the shortlist — a cheaper name
 and quality is the better buy, and a high multiple on decelerating growth deserves a smaller position
 or none. It does NOT change eligibility and does NOT override the shortlist or any cap. A missing name
 means no reliable figure, NOT that it is cheap. Where a name shows "⚠ depressed by charges", the
-full-year figure is the real one — do not quote the trailing number. Where a name shows "⚠ trailing
-is FLATTERED", treat the opposite way: the cheap-looking trailing multiple may be a one-time gain
-rather than growth, so do NOT rank it as the cheap name on that basis.
+full-year figure is the real one — do not quote the trailing number.
+Both figures are printed for every name ON PURPOSE. Where they disagree materially, the CHEAPER one
+is not automatically the true one: a trailing multiple can be low because earnings genuinely grew,
+or because a one-time gain (an investment mark, an asset sale, a tax item) inflated trailing EPS.
+This system CANNOT tell those apart — it reads EPS, not the income statement — so where the two
+figures diverge, treat the cheapness as unproven rather than as a reason to prefer the name.
 BUY-SIDE ONLY. Valuation is never on its own a reason to SELL a name you already hold: a rich
 multiple is not a thesis break, and main-book sells are not shortlist-gated in code, so the model is
 the only check. Do not trim or exit a holding because of its P/E.
