@@ -348,8 +348,9 @@ export async function getValuations(
     const reportDate = opts.reportedOn?.get(symbol.toUpperCase());
     let askedSec = false;   // did we actually consult SEC for this name this run?
 
-    // Write with a TTL that depends on whether the blob covers a just-announced print. Shared by
-    // the first fetch and the refresh below so the two paths cannot drift apart.
+    // One TTL, unconditionally. An earlier revision varied it by whether the blob covered a
+    // just-announced print; see the EPS_TTL_SECONDS comment for why that was removed and must not
+    // come back. Single call site — kept as a closure only to keep the write next to its rationale.
     const cachePoints = async (pts: XbrlPoint[]) => {
       try {
         // POST/pipeline, NOT redisCommand: that helper encodes the value into the URL PATH, which a
@@ -408,7 +409,7 @@ export async function getValuations(
     notes.push(`CONTEXT — P/E not fetched this run for: ${skipped.join(", ")} (hit the ${maxFresh}-per-run cap, or the run's valuation time budget expired). No order was affected.`);
   }
   if (timedOut.length) {
-    notes.push(`CONTEXT — P/E lookup timed out for: ${timedOut.join(", ")} (valuation time budget expired; the trade run takes priority). A name here returned nothing WHILE the budget was expiring — a timeout and a genuine data gap are not distinguished on that path. Absent from the block; do NOT read it as a fact about the company. No order was affected.`);
+    notes.push(`CONTEXT — P/E lookup timed out for: ${timedOut.join(", ")} (valuation time budget expired; the trade run takes priority). A name here was either never fetched (the budget was already gone) or returned an incomplete read that was discarded. Absent from the block; do NOT read it as a fact about the company. No order was affected.`);
   }
   if (noData.length) {
     // Distinct from the cap: these were ATTEMPTED and SEC returned nothing usable — a non-S&P CIK

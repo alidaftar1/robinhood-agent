@@ -529,22 +529,26 @@ export async function GET(request: Request) {
         // Built from lastReport, NOT recentEarnings: 📊REPORTED is a 7-day flag, but the filing
         // that makes a post-print P/E safe lands 23-38 days after the press release. Keying
         // suppression to the 7-day flag stops guarding weeks before the fix arrives.
-        // Validate the shape: these dates come straight from Finnhub and are interpolated into the
-        // live-money prompt. An unparseable one also suppresses that name's P/E indefinitely, since
-        // pointsIncludeReport fails safe on a date it cannot read — so drop it rather than carry it.
+        // These dates come straight from Finnhub and are interpolated into the live-money prompt,
+        // so normalise the shape — but NEVER by dropping the entry. A dropped entry does not
+        // suppress the name, it UN-suppresses it: getValuations sees reportDate === undefined,
+        // pointsIncludeReport returns true on its first line, and the full multiple is published
+        // against a gapped post-print price. Carrying an unreadable date through is the safe
+        // choice, because pointsIncludeReport fails safe on a date it cannot parse and withholds.
         const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+        const normalizeReportDate = (raw: string) => {
+          const trimmed = String(raw).slice(0, 10);          // "2026-09-15T00:00:00" -> "2026-09-15"
+          return ISO_DATE.test(trimmed) ? trimmed : raw;     // still unreadable -> carried, suppresses
+        };
         const reportedOn = new Map(
-          [...perSymbolLastReport]
-            .filter(([, r]) => ISO_DATE.test(r.date))
-            .map(([sym, r]) => [sym.toUpperCase(), r.date] as const),
+          [...perSymbolLastReport].map(([sym, r]) => [sym.toUpperCase(), normalizeReportDate(r.date)] as const),
         );
-        // A name printing THIS MORNING has already gapped but is in neither past-report map, and the
-        // cron runs 10:30 ET on a live price — the largest-divergence day. Fold it in, but only if
-        // it has ALREADY printed: an after-close reporter has not moved yet, so its pre-print EPS
-        // still matches its pre-print price and suppressing it discards a good P/E.
         for (const [sym, date] of perSymbolEarnings) {
-          if (ISO_DATE.test(date) && hasPrintedBySession(date, perSymbolEarningsHour.get(sym), today)) {
-            reportedOn.set(sym.toUpperCase(), date);
+          const norm = normalizeReportDate(date);
+          // An unreadable date folds in rather than being skipped: on the largest-divergence day,
+          // "not sure whether it printed" must resolve to withholding the P/E, not to showing one.
+          if (!ISO_DATE.test(norm) || hasPrintedBySession(norm, perSymbolEarningsHour.get(sym), today)) {
+            reportedOn.set(sym.toUpperCase(), norm);
           }
         }
         const { valuations, notes } = await getValuations(valSymbols, (sym) => priceMap.get(sym), valCtrl.signal, { reportedOn });

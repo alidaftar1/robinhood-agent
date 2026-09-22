@@ -452,32 +452,42 @@ describe("a truncated read must not be cached as a complete one", () => {
   // an abort PARTWAY returns a non-empty series that is missing the tag the sweep exists to prefer.
   // Aborting before the call cannot exercise this; the loop returns earlier. Abort DURING it.
   const priceOf = () => 100;
+  // NOT a real ticker. The success path reaches cachePoints, which SETs valuation:eps:<symbol> for
+  // 7 days — with real Upstash credentials a fabricated fixture under "AAPL" would serve a made-up
+  // TTM EPS into the live trade prompt for a week.
+  const SYM = "ZZTEST";
+
+  // Derived from today, not hardcoded: buildValuation drops anything older than MAX_STALENESS_DAYS,
+  // so fixed dates quietly rot into "headline: none" and the assertions start passing for the
+  // wrong reason — the vacuity this block exists to avoid.
+  const qEnd = (quartersAgo: number) => {
+    const d = new Date();
+    d.setUTCDate(1);
+    d.setUTCMonth(d.getUTCMonth() - 3 * quartersAgo);
+    return d.toISOString().slice(0, 10);
+  };
+  const quarter = (n: number, val: number) => ({
+    start: qEnd(n + 1), end: qEnd(n), val, form: "10-Q", fy: 2026, fp: `Q${(n % 4) + 1}`, filed: qEnd(n),
+  });
 
   test("points returned by a sweep that aborted mid-flight are discarded, not valued", async () => {
     const ctrl = new AbortController();
-    const truncated = [
-      { start: "2025-01-01", end: "2025-03-31", val: 1, form: "10-Q", fy: 2025, fp: "Q1", filed: "2025-04-20" },
-    ];
-    const { valuations, notes } = await getValuations(["AAPL"], priceOf, ctrl.signal, {
-      fetchPoints: async () => { ctrl.abort(); return truncated; },   // non-empty AND aborted
+    const { valuations, notes } = await getValuations([SYM], priceOf, ctrl.signal, {
+      fetchPoints: async () => { ctrl.abort(); return [quarter(0, 1)]; },   // non-empty AND aborted
     });
-    expect(valuations.has("AAPL")).toBe(false);
+    expect(valuations.has(SYM)).toBe(false);
     expect(notes.join(" ")).toMatch(/time budget/i);
   });
 
-  test("the SAME points from a sweep that completed are valued normally", async () => {
-    // The control. Without it the test above passes for the wrong reason — e.g. if the points were
-    // simply unusable — and would keep passing if the guard were replaced by a blanket discard.
+  test("the SAME four quarters from a sweep that COMPLETED are valued normally", async () => {
+    // The control, and it must be load-bearing: without it the test above could pass merely because
+    // the fixture was unusable, and would keep passing if the guard became a blanket discard.
     const ctrl = new AbortController();
-    const complete = [
-      { start: "2026-01-01", end: "2026-03-31", val: 2, form: "10-Q", fy: 2026, fp: "Q1", filed: "2026-04-20" },
-      { start: "2025-10-01", end: "2025-12-31", val: 2, form: "10-Q", fy: 2026, fp: "Q2", filed: "2026-01-20" },
-      { start: "2025-07-01", end: "2025-09-30", val: 2, form: "10-Q", fy: 2025, fp: "Q3", filed: "2025-10-20" },
-      { start: "2025-04-01", end: "2025-06-30", val: 2, form: "10-Q", fy: 2025, fp: "Q4", filed: "2025-07-20" },
-    ];
-    const { notes } = await getValuations(["AAPL"], priceOf, ctrl.signal, {
+    const complete = [quarter(0, 2), quarter(1, 2), quarter(2, 2), quarter(3, 2)];
+    const { valuations, notes } = await getValuations([SYM], priceOf, ctrl.signal, {
       fetchPoints: async () => complete,
     });
     expect(notes.join(" ")).not.toMatch(/time budget/i);
+    expect(valuations.has(SYM)).toBe(true);   // proves the fixture itself is valuable
   });
 });
