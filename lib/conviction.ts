@@ -35,11 +35,22 @@ export interface ConvictionPick {
   thesisRevised?: string;
 }
 
+export interface RejectedThesis { thesis: string; why: string }
+
+/** The macro picture BOTH halves of the research were reasoned from. Free-form on purpose — the
+ *  fields change as the regime does, and a fixed schema would quietly drop whatever was added. */
+export type MacroSnapshot = Record<string, unknown>;
+
 export interface ConvictionRun {
   runDate: string;
   horizonMonths?: number[];
   capitalCommitted?: number;
   picks: ConvictionPick[];
+  /** Themes the SAME research run examined and argued AGAINST. Not an afterthought: these are the
+   *  half that can only ever REDUCE buying, and the half the ranking most needs. */
+  rejectedTheses?: RejectedThesis[];
+  macroAsOf?: MacroSnapshot;
+  spyEntry?: number;
 }
 
 /** Past this, the theses were written against a macro picture that has moved on. The paper run's
@@ -53,6 +64,12 @@ const MAX_FIELD = 400;
 const MAX_FALSIFIERS = 6;
 /** Bound the block itself, not just each field. Per-field caps do nothing against a 50-pick file. */
 const MAX_PICKS = 8;
+const MAX_REJECTED = 8;
+const MAX_MACRO_ROWS = 12;
+/** Macro ages far faster than a company thesis. "The Fed hiked last week" is useful; the same
+ *  sentence five months on is a false present tense. Picks outlive it — they have a 3-6 month
+ *  horizon — so the macro block drops out on its own while the theses stay. */
+export const MACRO_SHELF_LIFE_DAYS = 45;
 
 /** Flatten to a single prompt-safe line: no newlines (so a field cannot fake a section break or a
  *  role marker), no backticks, bounded length. */
@@ -157,8 +174,51 @@ block has no check behind it but your own judgement, so treat each of these as c
    slot, and does NOT make a holding "high-conviction" for riding it through earnings. Those rules
    key on the same word this block uses; the word here means "an analyst argued for it", not
    "the evidence is strong".
+${formatMacro(run.macroAsOf, run.runDate, age)}${rows.join("\n")}${formatRejected(run.rejectedTheses)}
+`;
+}
+
+/** The macro backdrop both halves were reasoned from. Shown so the model can judge the reasoning
+ *  rather than just the conclusions — and so it can notice when the world has moved. */
+function formatMacro(macro: MacroSnapshot | undefined, runDate: string, age: number): string {
+  if (!macro || typeof macro !== "object" || Array.isArray(macro)) return "";
+  if (age > MACRO_SHELF_LIFE_DAYS) return "";
+  const rows = Object.entries(macro)
+    .slice(0, MAX_MACRO_ROWS)
+    .map(([k, v]) => `  ${safeText(k, 32)}: ${safeText(v, 260)}`)
+    .filter(r => r.trim().length > 2);
+  if (!rows.length) return "";
+  return `
+MACRO AS OF ${runDate} (${age}d ago — a SNAPSHOT, not a live feed; verify anything you lean on):
+This is the backdrop both the picks and the rejections were reasoned from. It is here so you can
+judge the REASONING, not just the conclusions — and so you can notice when it has gone stale. If
+today's market data contradicts a line here, today's data wins.
 ${rows.join("\n")}
 `;
+}
+
+/** The half of the research that argues AGAINST buying something.
+ *
+ *  Worth more than the picks here, and shipped later than it should have been. The shortlist sorts
+ *  by 12-month momentum, so a sector that has already run is exactly what floats to the TOP of the
+ *  buy list — which is the moment a "this has already happened" argument is most useful and least
+ *  likely to be reached by any other input the model gets. Momentum cannot tell a durable trend
+ *  from a spike that already peaked; that is what this is for. */
+function formatRejected(rejected: RejectedThesis[] | undefined): string {
+  if (!Array.isArray(rejected) || !rejected.length) return "";
+  const rows = rejected
+    .filter(r => r && typeof r.thesis === "string" && typeof r.why === "string")
+    .slice(0, MAX_REJECTED)
+    .map(r => `  AGAINST ${safeText(r.thesis, 120)} — ${safeText(r.why, 300)}`);
+  if (!rows.length) return "";
+  return `
+ARGUED AGAINST by the same research run — themes examined and REJECTED:
+Read these the same way as the picks: an opinion with reasons, no track record. They matter most
+where the shortlist and this list disagree, which is the normal case, not a conflict to explain
+away — a name ranks on 12-month momentum, and "it has already run" is a reason the ranking cannot
+express. Treat a rejection as a reason to PREFER ANOTHER shortlist name, never as a reason to sell
+or trim something you hold.
+${rows.join("\n")}`;
 }
 
 /** One-line audit trail of what research the model was actually shown. */
@@ -188,10 +248,14 @@ export function loadConvictionRun(): ConvictionRun | null {
       // field" rather than throwing and silently dropping the entire block.
       .map(p => ({ ...p, falsifiers: Array.isArray(p.falsifiers) ? p.falsifiers.filter(f => typeof f === "string") : undefined }));
     if (!picks.length) return null;
+    const rejectedTheses = Array.isArray(raw.rejectedTheses)
+      ? raw.rejectedTheses.filter((r): r is RejectedThesis =>
+          !!r && typeof r.thesis === "string" && typeof r.why === "string")
+      : undefined;
     // capitalCommitted reaches the prompt: keep it a number or drop it. Everything else the
     // renderer touches goes through safeText.
     const capitalCommitted = Number.isFinite(raw.capitalCommitted as number) ? (raw.capitalCommitted as number) : 0;
-    return { ...raw, runDate: raw.runDate, capitalCommitted, picks };
+    return { ...raw, runDate: raw.runDate, capitalCommitted, picks, rejectedTheses };
   } catch {
     return null;
   }
