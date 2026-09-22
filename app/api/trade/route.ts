@@ -21,7 +21,7 @@ import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow
 import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
 import { getValuations, formatValuations } from "@/lib/valuation";
-import { formatConviction, loadConvictionRun } from "@/lib/conviction";
+import { formatConviction, convictionAuditNote, loadConvictionRun } from "@/lib/conviction";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
@@ -567,9 +567,16 @@ export async function GET(request: Request) {
     // allowlist, so a pick is labelled "usable" only when a buy for it would actually survive; the
     // block can never nudge the model toward a buy that code will drop.
     let convictionSection = "";
+    const convictionNotes: string[] = [];
     try {
-      const buyable = new Set<string>([...v1ShortlistSet, ...influencerCandidateSet].map(x => x.toUpperCase()));
-      convictionSection = formatConviction(loadConvictionRun(), today, buyable);
+      // The cadence gate, not just the off-rails filter: outside the weekly window EVERY main-book
+      // buy is dropped, so a pick labelled "usable" would contradict the BUY: CLOSED line in the
+      // same prompt on 3 of 5 weekdays.
+      const convictionRun = loadConvictionRun();
+      const convictionCtx = { mainShortlist: v1ShortlistSet, influencerCandidates: influencerCandidateSet, isRebalanceDay };
+      convictionSection = formatConviction(convictionRun, today, convictionCtx);
+      const auditNote = convictionAuditNote(convictionRun, today, convictionCtx);
+      if (auditNote) convictionNotes.push(auditNote);   // so the run records WHAT research it saw
     } catch (e) {
       // Fail-safe: research is a nice-to-have, never a reason to skip a trading run.
       console.warn("CONVICTION_LOAD_FAILED — continuing without it", e instanceof Error ? e.message : String(e));
@@ -685,7 +692,7 @@ export async function GET(request: Request) {
     // reviewer flagged "decided buy absent, no explanation" (registry #19). Every drop belongs here.
     // Seeded with earnings-release coverage gaps gathered above, so a per-run cap or an EDGAR
     // miss is visible on the stored run. Prefixed CONTEXT — these are not dropped orders.
-    let buySizingAdjustments: string[] = [...releaseNotes, ...contextWarnings, ...valuationNotes];
+    let buySizingAdjustments: string[] = [...releaseNotes, ...contextWarnings, ...valuationNotes, ...convictionNotes];
     if (decisionParseNote) buySizingAdjustments.push(decisionParseNote);
     // Influencer-sleeve guard drops (position cap, downtrend screen). Collected separately because
     // those guards run before buySizingAdjustments' own guards, then merged in below.
