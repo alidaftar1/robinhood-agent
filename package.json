@@ -11,7 +11,7 @@
     "eval:braintrust": "bun --env-file=.env.local evals/braintrust.eval.ts",
     "eval:braintrust:reviewer": "EVAL_LLM=1 EVAL_LLM_MAX_CALLS=50 bun --env-file=.env.local evals/braintrust-reviewer.eval.ts",
     "eval:integration": "bun test evals/integration.test.ts --timeout 15000",
-    "test:unit": "bun test evals/dashboard-labels.test.ts evals/dashboard-auth.test.ts evals/stop-thresholds.test.ts evals/earnings-release.test.ts evals/rebalance-cadence.test.ts evals/run-store-retention.test.ts evals/valuation.test.ts"
+    "test:unit": "bun test evals/dashboard-labels.test.ts evals/dashboard-auth.test.ts evals/stop-thresholds.test.ts evals/earnings-release.test.ts evals/rebalance-cadence.test.ts evals/run-store-retention.test.ts evals/valuation.test.ts evals/fail-closed.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.55.0",

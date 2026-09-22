@@ -103,6 +103,24 @@ export interface RecentEarnings { date: string; daysAgo: number }
 // ONE call per symbol over a window [today-lookback, today+days] yields BOTH the nearest UPCOMING
 // date (⚠EARN) AND the most-recent PAST report (📊REPORTED) — so we never fetch the same symbol
 // twice. Batched to respect the free-tier rate limit. Fail-safe: a symbol that errors is just absent.
+/** Normalise a third-party report date for use as a SUPPRESSION key.
+ *
+ *  Fail-CLOSED by construction, and the direction is the whole point: downstream,
+ *  `pointsIncludeReport(points, undefined)` returns TRUE and PUBLISHES the multiple, so dropping a
+ *  date we cannot read does not suppress the name — it un-suppresses it. Anything unreadable must
+ *  therefore come back NON-FALSY, so it survives to fail Date.parse and withhold the P/E.
+ *
+ *  Also bounded: the result is interpolated into the live-money prompt, so an unbounded vendor
+ *  string must never reach it. Returns either a 10-char ISO date or the literal "unparseable".
+ *
+ *  I got this backwards twice in one session, in both directions, while believing each version was
+ *  the safety fix. If you are about to change it, the invariant is: NEVER return something falsy,
+ *  and never return something Date.parse can read unless it is genuinely the report date. */
+export function normalizeReportDate(raw: unknown): string {
+  const trimmed = String(raw ?? "").slice(0, 10);   // "2026-09-15T00:00:00" -> "2026-09-15"
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : "unparseable";
+}
+
 /** How recent a print must be to earn the 📊REPORTED flag — independent of how far back we LOOK. */
 export const RECENT_FLAG_DAYS = 7;
 

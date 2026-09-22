@@ -21,7 +21,7 @@ import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow
 import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
 import { getValuations, formatValuations } from "@/lib/valuation";
-import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
+import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -536,16 +536,6 @@ export async function GET(request: Request) {
         // against a gapped post-print price. Carrying an unreadable date through is the safe
         // choice, because pointsIncludeReport fails safe on a date it cannot parse and withholds.
         const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-        const normalizeReportDate = (raw: string) => {
-          const trimmed = String(raw).slice(0, 10);          // "2026-09-15T00:00:00" -> "2026-09-15"
-          if (ISO_DATE.test(trimmed)) return trimmed;
-          // Unreadable: return a BOUNDED, NON-FALSY sentinel rather than the raw value. Non-falsy
-          // matters — pointsIncludeReport's first line is `if (!reportDate) return true`, so a
-          // falsy passthrough publishes the multiple, the same fail-open this replaced. Bounded
-          // matters because this string is interpolated into the live-money prompt. The sentinel
-          // fails Date.parse, so it still suppresses, and reads honestly in the note.
-          return trimmed || "unparseable";
-        };
         const reportedOn = new Map(
           [...perSymbolLastReport].map(([sym, r]) => [sym.toUpperCase(), normalizeReportDate(r.date)] as const),
         );

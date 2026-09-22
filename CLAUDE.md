@@ -225,6 +225,34 @@ Live-money code, edited by both humans AND the autopilot. These are HARD constra
 `CRON_SECRET` auth) plus a whole-repo security audit (2026-08). If a change would break one, STOP and
 flag it to the owner. A green test run is not proof of safety.
 
+### Data integrity — which way a check fails is the whole check
+
+Added 2026-09-22, after shipping the SAME defect three times in one session while believing each
+version was the safety fix. Every one passed its tests. The gate caught all three; nothing else did.
+
+- **When a guard cannot establish that a number is sound, it must WITHHOLD the number, not publish
+  it.** The two outcomes are not symmetric: withholding costs a missed opportunity, publishing puts
+  real money into a name for a reason that is not true. Never relax a withholding rule to make a
+  feature more "useful".
+- **Dropping a bad input is usually the fail-OPEN branch.** The canonical trap here:
+  `pointsIncludeReport(points, undefined)` returns `true`, so deleting an unreadable report date
+  does not suppress a name — it PUBLISHES it. Sanitising input by discarding it is the dangerous
+  move whenever "absent" means "no constraint". Return a non-falsy sentinel instead; see
+  `normalizeReportDate` in `lib/earnings.ts`.
+- **A guard must outlast the thing it guards.** A suppression window shorter than the lag it covers
+  (7-day flag vs a 23-38 day filing lag) expires before the condition clears and silently stops
+  guarding. State the lag and the window in the same comment so the mismatch is visible.
+- **An abort is not a result.** A swallowed `AbortError` returns partial data that looks complete. A
+  timeout is a fact about US, never a fact about the company — never report one as the other, and
+  never cache a truncated read.
+- **Prefer deleting a mechanism to patching it a fourth time.** Three of four defects in the
+  valuation work lived in one "helpful" refresh path; removing it fixed them all at the cost of
+  detection latency that fails in the safe direction.
+- **A passing test proves nothing about a direction bug.** Tests written alongside the code inherit
+  its blind spot, and several here passed while being provably vacuous. Before trusting a test that
+  guards a direction, BREAK the guard and confirm the test fails. `evals/fail-closed.test.ts` holds
+  these invariants and is mutation-verified; add to it rather than writing a new happy-path case.
+
 ### Trade execution
 - **A reasoning/decision LLM must NEVER hold the Robinhood MCP trade token.** The model that ingests
   untrusted input (headlines, transcripts, market data) and makes judgments runs with NO `mcp_servers`.
