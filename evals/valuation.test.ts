@@ -279,8 +279,8 @@ describe("the block cannot be read as a sell reason", () => {
   });
 });
 
-import { pointsIncludeReport, epsCacheTtlSeconds } from "@/lib/valuation";
-import { hasPrintedBySession } from "@/lib/earnings";
+import { pointsIncludeReport } from "@/lib/valuation";
+import { hasPrintedBySession, selectPastReport, RECENT_FLAG_DAYS } from "@/lib/earnings";
 
 describe("a P/E must never mix a post-print price with pre-print earnings", () => {
   const pt = (end: string, filed: string): XbrlPoint =>
@@ -348,22 +348,50 @@ describe("a P/E must never mix a post-print price with pre-print earnings", () =
   });
 });
 
-describe("a suppressed name must not stay dark for the whole TTL", () => {
-  const pt = (end: string, filed: string): XbrlPoint =>
-    ({ start: "2026-01-01", end, val: 1, form: "10-Q", fy: 2026, fp: "Q2", filed });
+describe("widening the valuation window must NOT widen the 📊REPORTED flag", () => {
+  // The two horizons were one number until the P/E guard needed 60 days while the display flag had
+  // to stay at 7. Nothing pinned the split, and it is invisible if it breaks: a six-week-old print
+  // would silently start rendering as "just reported" on the shortlist, influencer, and held tables.
+  const today = "2026-09-21";
+  const cutoff = "2026-09-14";   // today - RECENT_FLAG_DAYS
+  const row = (date: string, hour?: string) => ({ symbol: "XYZ", date, hour });
 
-  test("a blob that does not carry a just-announced print expires within a day", () => {
-    // The failure this guards: name reports Monday, we cache pre-print points for 7 days, the 10-Q
-    // lands Wednesday — and the P/E stays suppressed through the following Monday because a cache
-    // HIT is the one path that never refetches. The blob must lapse before the next daily run.
-    const ttl = epsCacheTtlSeconds([pt("2026-06-30", "2026-07-20")], "2026-09-15");
-    expect(ttl).toBeLessThanOrEqual(24 * 60 * 60);
+  test("a print exactly at the cutoff is still 'recent' — the boundary is inclusive both sides", () => {
+    const got = selectPastReport([row("2026-09-14")], "XYZ", today, cutoff);
+    expect(got.recent?.date).toBe("2026-09-14");
+    expect(got.last?.date).toBe("2026-09-14");
   });
 
-  test("a blob that does carry the print keeps the full week — EPS only changes on a filing", () => {
-    expect(epsCacheTtlSeconds([pt("2026-09-30", "2026-09-22")], "2026-09-15")).toBe(7 * 24 * 60 * 60);
-    expect(epsCacheTtlSeconds([pt("2026-06-30", "2026-07-20")], undefined)).toBe(7 * 24 * 60 * 60);
+  test("a print one day past the cutoff drives suppression but NOT the flag", () => {
+    const got = selectPastReport([row("2026-09-13")], "XYZ", today, cutoff);
+    expect(got.recent).toBeUndefined();          // would have over-claimed "just reported"
+    expect(got.last?.date).toBe("2026-09-13");   // but the P/E guard still needs it
   });
+
+  test("a six-week-old print reaches suppression only — the case the split exists for", () => {
+    const got = selectPastReport([row("2026-08-10")], "XYZ", today, cutoff);
+    expect(got.recent).toBeUndefined();
+    expect(got.last?.date).toBe("2026-08-10");
+  });
+
+  test("the amc shift still applies to daysAgo, and is NOT applied to the cutoff", () => {
+    const got = selectPastReport([row("2026-09-14", "amc")], "XYZ", today, cutoff);
+    expect(got.recent?.daysAgo).toBe(6);         // reacted 09-15, not 09-14
+    expect(got.last?.hour).toBe("amc");
+  });
+
+  test("the most recent past print wins, and today's print is not a PAST one", () => {
+    const got = selectPastReport([row("2026-08-10"), row("2026-09-16"), row(today)], "XYZ", today, cutoff);
+    expect(got.last?.date).toBe("2026-09-16");
+    expect(got.recent?.date).toBe("2026-09-16");
+  });
+
+  test("rows for other symbols are ignored", () => {
+    const got = selectPastReport([{ symbol: "OTHER", date: "2026-09-16" }], "XYZ", today, cutoff);
+    expect(got.last).toBeUndefined();
+  });
+
+  test("the flag horizon is 7 days", () => expect(RECENT_FLAG_DAYS).toBe(7));
 });
 
 describe("only a name that has ALREADY printed may suppress its P/E", () => {

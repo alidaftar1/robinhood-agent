@@ -104,7 +104,29 @@ export interface RecentEarnings { date: string; daysAgo: number }
 // date (⚠EARN) AND the most-recent PAST report (📊REPORTED) — so we never fetch the same symbol
 // twice. Batched to respect the free-tier rate limit. Fail-safe: a symbol that errors is just absent.
 /** How recent a print must be to earn the 📊REPORTED flag — independent of how far back we LOOK. */
-const RECENT_FLAG_DAYS = 7;
+export const RECENT_FLAG_DAYS = 7;
+
+/** Split the most-recent PAST report into its two horizons. Pure and exported because these two
+ *  were one number until the valuation guard needed a 60-day window while 📊REPORTED had to stay a
+ *  7-day flag: `last` drives P/E suppression (the 10-Q lands 23-38 days after the press release, so
+ *  a 7-day guard expires weeks before the filing that resolves it), `recent` drives the display
+ *  flag on the shortlist, influencer, and held tables. Widening the fetch window must never widen
+ *  `recent` — that is the regression this function exists to pin. */
+export function selectPastReport(
+  rows: FinnhubEarningsRow[], symbol: string, today: string, recentCutoff: string,
+): { last?: { date: string; hour?: string }; recent?: RecentEarnings } {
+  let best: string | null = null, bestHour: string | undefined; // most-recent PAST report (< today)
+  for (const row of rows) {
+    if (row.symbol !== symbol || !row.date) continue;
+    if (row.date < today && (!best || row.date > best)) { best = row.date; bestHour = row.hour; }
+  }
+  if (!best) return {};
+  const out: { last?: { date: string; hour?: string }; recent?: RecentEarnings } = {
+    last: { date: best, hour: bestHour },
+  };
+  if (best >= recentCutoff) out.recent = { date: best, daysAgo: earningsDaysAgo(best, bestHour, today) };
+  return out;
+}
 
 export async function fetchEarningsForSymbols(symbols: string[], days = 30, lookbackDays = 60): Promise<{ upcoming: Map<string, string>; upcomingHour: Map<string, string | undefined>; recent: Map<string, RecentEarnings>; lastReport: Map<string, { date: string; hour?: string }> }> {
   const upcoming = new Map<string, string>();
@@ -135,18 +157,13 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30, look
         );
         if (!res.ok) return;
         const data = await res.json() as { earningsCalendar?: FinnhubEarningsRow[] };
-        let best: string | null = null, bestHour: string | undefined; // most-recent PAST report (< today)
         for (const row of data.earningsCalendar ?? []) {
           if (row.symbol !== sym || !row.date) continue;
           addNearest(upcoming, row.symbol, row.date, today, upcomingHour, row.hour); // nearest date >= today
-          if (row.date < today && (!best || row.date > best)) { best = row.date; bestHour = row.hour; }
         }
-        if (best) {
-          lastReport.set(sym, { date: best, hour: bestHour });
-          // 📊REPORTED stays a SHORT-horizon flag; widening the fetch window must not silently
-          // start labelling 6-week-old prints as "just reported" on every surface that renders it.
-          if (best >= recentCutoff) recent.set(sym, { date: best, daysAgo: earningsDaysAgo(best, bestHour, today) });
-        }
+        const past = selectPastReport(data.earningsCalendar ?? [], sym, today, recentCutoff);
+        if (past.last) lastReport.set(sym, past.last);
+        if (past.recent) recent.set(sym, past.recent);
       } catch { /* fail-safe per symbol */ }
     }));
   }

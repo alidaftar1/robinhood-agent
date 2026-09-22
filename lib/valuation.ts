@@ -244,13 +244,14 @@ const EPS_TTL_SECONDS = 7 * 24 * 60 * 60;   // EPS only changes on a filing
 // lands days after the press release, and with a 7-day TTL the name would stay suppressed for the
 // entire window in which it is flagged 📊REPORTED — silent for exactly the name that needs pricing.
 // Short enough that the next daily run refetches and picks the filing up the day it appears.
-const PRE_PRINT_TTL_SECONDS = 12 * 60 * 60;
-
-/** How long a freshly-read EPS blob may be trusted. Split out so the "do not let a pre-print blob
- *  sit for a week" invariant is testable rather than an inline ternary at one call site. */
-export function epsCacheTtlSeconds(points: XbrlPoint[], reportDate: string | undefined): number {
-  return pointsIncludeReport(points, reportDate) ? EPS_TTL_SECONDS : PRE_PRINT_TTL_SECONDS;
-}
+// A pre-print blob deliberately keeps the FULL TTL. Shortening it looks like the obvious way to
+// notice the 10-Q the day it lands, but a sub-day TTL on a daily cron is expired at every single
+// run, so the name takes the cache-MISS path (3 sequential SEC calls) daily for the whole 23-38 day
+// lag — and in earnings season, when reporting clusters into ~3 weeks, that is most of the book at
+// once: ~90 serial requests against a 20s budget, truncating the P/E block exactly when it matters.
+// Detection is the bounded refresh branch's job instead; it costs at most MAX_PRE_PRINT_REFRESH
+// fetches per run no matter how many names are waiting on a filing.
+const MAX_PRE_PRINT_REFRESH = 6;
 
 interface CachedEps { v: 1; points: XbrlPoint[]; cachedAt: string }
 
@@ -315,12 +316,18 @@ export async function getValuations(
   const staleUnchecked: string[] = [];
   const today = new Date().toISOString().split("T")[0];
 
-  // Deliberately NOT sorted just-reported-first. That ordering made sense while a reported name
-  // cost one Redis GET, but it now costs a full SEC refetch that usually comes back still
-  // pre-print (the 10-Q lags 23-38 days) — so it spent the binding 20s budget on the names least
-  // likely to produce a P/E and pushed usable names into the timeout tail. Suppression is the safe
-  // outcome for a reported name; a missing P/E for an unreported one is pure lost coverage.
-  for (const symbol of [...new Set(symbols)]) {
+  const uniqueSymbols = [...new Set(symbols)].sort((a, b) => {
+    // Oldest print first among reported names: those are the ones whose 10-Q is most likely to have
+    // landed, so the capped refresh budget resolves the most suppressions. Unreported names keep
+    // their original order and are unaffected (they never enter the refresh branch).
+    const ra = opts.reportedOn?.get(a.toUpperCase()), rb = opts.reportedOn?.get(b.toUpperCase());
+    if (!ra && !rb) return 0;
+    if (!ra) return 1;
+    if (!rb) return -1;
+    return ra < rb ? -1 : ra > rb ? 1 : 0;
+  });
+  let refreshed = 0;
+  for (const symbol of uniqueSymbols) {
     const price = priceOf(symbol);
     if (!price || price <= 0) continue;          // no price, no P/E — nothing to say
     const key = `${EPS_CACHE_PREFIX}${symbol.toUpperCase()}`;   // match the uppercase CIK lookup
@@ -348,8 +355,7 @@ export async function getValuations(
         // ~45KB EPS blob blows past (~75KB encoded) — and it does not check res.ok, so the failure
         // was invisible. Same reason lib/influencer-signals caches transcripts this way.
         const payload: CachedEps = { v: 1, points: pts.map(slimPoint), cachedAt: new Date().toISOString() };
-        const ttl = epsCacheTtlSeconds(pts, reportDate);
-        await redisPost("pipeline", [["SET", key, JSON.stringify(payload), "EX", ttl]]);
+        await redisPost("pipeline", [["SET", key, JSON.stringify(payload), "EX", EPS_TTL_SECONDS]]);
       } catch (e) {
         console.warn("VALUATION_EPS_CACHE_WRITE_FAILED", { symbol, error: e instanceof Error ? e.message : String(e) });
       }
@@ -373,13 +379,16 @@ export async function getValuations(
       // 10-Q may have been filed since we cached. Skip it when reportDate is TODAY: a 10-Q is
       // essentially never filed the same morning as the press release (even AAPL files T+1), so
       // that fetch cannot succeed and would only burn budget.
-      if (reportDate && reportDate < today && fresh < maxFresh && !signal.aborted) {
-        fresh++;
-        askedSec = true;
-        const refreshed = await fetchEpsPoints(symbol, signal);
-        if (refreshed.length > 0) {   // keep the old blob on an empty/aborted read rather than blanking
-          points = refreshed;
+      if (reportDate && reportDate < today && refreshed < MAX_PRE_PRINT_REFRESH && fresh < maxFresh && !signal.aborted) {
+        fresh++; refreshed++;
+        const fresher = await fetchEpsPoints(symbol, signal);
+        if (fresher.length > 0) {   // keep the old blob on an empty/aborted read rather than blanking
+          askedSec = true;          // only a read that RETURNED tells us anything about EDGAR
+          points = fresher;
           await cachePoints(points);
+        } else if (signal.aborted) {
+          timedOut.push(symbol);
+          continue;
         }
       }
     }
@@ -391,7 +400,8 @@ export async function getValuations(
       // refetch was blocked by the cap or a live abort, all we know is that our own copy is stale —
       // asserting anything about EDGAR's state there is the same unearned-certainty class as the
       // timeout/no-data conflation this file already fixed once.
-      (askedSec ? prePrint : staleUnchecked).push(symbol);
+      const sameDay = reportDate === today;
+      (askedSec || sameDay ? prePrint : staleUnchecked).push(symbol);
       continue;
     }
     const v = buildValuation(symbol, price, points);
@@ -409,11 +419,15 @@ export async function getValuations(
     // miss, a filer with no us-gaap EPS tag, or a 403/429. Previously dropped with no trace at all.
     notes.push(`CONTEXT — no SEC EPS data for: ${noData.join(", ")}. Absent from the valuation block; this does NOT mean cheap. No order was affected.`);
   }
+  const labelWithDate = (sym: string) => {
+    const d = opts.reportedOn?.get(sym.toUpperCase());
+    return d ? `${sym} (reported ${d})` : sym;
+  };
   if (staleUnchecked.length) {
-    notes.push(`CONTEXT — P/E withheld for: ${staleUnchecked.join(", ")} — these reported recently and our CACHED filing data predates the print, but the refetch did not run this cycle (per-run fetch cap or time budget), so SEC was not consulted. Withheld to avoid dividing a post-print price by pre-print earnings. Says nothing about the companies. No order was affected.`);
+    notes.push(`CONTEXT — P/E withheld for: ${staleUnchecked.map(x => labelWithDate(x)).join(", ")} — each reported on the date shown and our CACHED filing data predates that print, but the refetch did not run this cycle (per-run fetch cap or time budget), so SEC was not consulted. Withheld to avoid dividing a post-print price by pre-print earnings. Says nothing about the companies. No order was affected.`);
   }
   if (prePrint.length) {
-    notes.push(`CONTEXT — P/E SUPPRESSED for: ${prePrint.join(", ")} — these reported recently and SEC filings do not yet carry the print, so any multiple would divide a post-print price by pre-print earnings. Absent from the valuation block; this does NOT mean cheap or expensive. No order was affected.`);
+    notes.push(`CONTEXT — P/E SUPPRESSED for: ${prePrint.map(x => labelWithDate(x)).join(", ")} — each reported on the date shown and SEC filings do not yet carry that print, so any multiple would divide a post-print price by pre-print earnings. Absent from the valuation block; this does NOT mean cheap or expensive. No order was affected.`);
   }
   if (symbols.length > 0 && (opts.reportedOn?.size ?? 0) === 0) {
     // Ambiguous ON PURPOSE: upstream fails safe PER SYMBOL, so an empty map means either a quiet
