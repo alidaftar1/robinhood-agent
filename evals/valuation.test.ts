@@ -455,7 +455,10 @@ describe("a truncated read must not be cached as a complete one", () => {
   // NOT a real ticker. The success path reaches cachePoints, which SETs valuation:eps:<symbol> for
   // 7 days — with real Upstash credentials a fabricated fixture under "AAPL" would serve a made-up
   // TTM EPS into the live trade prompt for a week.
-  const SYM = "ZZTEST";
+  // Per-run suffix: the control's success path writes valuation:eps:<SYM> with a 7-day TTL, so a
+  // fixed name would be served from cache on the NEXT run with creds loaded — the abort test would
+  // then skip the fetch path entirely and pass without exercising anything.
+  const SYM = `ZZTEST${process.pid}`;
 
   // Derived from today, not hardcoded: buildValuation drops anything older than MAX_STALENESS_DAYS,
   // so fixed dates quietly rot into "headline: none" and the assertions start passing for the
@@ -473,7 +476,10 @@ describe("a truncated read must not be cached as a complete one", () => {
   test("points returned by a sweep that aborted mid-flight are discarded, not valued", async () => {
     const ctrl = new AbortController();
     const { valuations, notes } = await getValuations([SYM], priceOf, ctrl.signal, {
-      fetchPoints: async () => { ctrl.abort(); return [quarter(0, 1)]; },   // non-empty AND aborted
+      // The SAME four quarters the control values successfully. With a single quarter the
+      // withheld-assertion below was vacuous — stitchTtmEps returns null for one, so no valuation
+      // appears whether or not the guard runs: exactly the wrong-reason pass the control rules out.
+      fetchPoints: async () => { ctrl.abort(); return [quarter(0, 2), quarter(1, 2), quarter(2, 2), quarter(3, 2)]; },
     });
     expect(valuations.has(SYM)).toBe(false);
     expect(notes.join(" ")).toMatch(/time budget/i);
