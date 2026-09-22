@@ -257,7 +257,7 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     // rationalisation step from being routed around. Name the triggers, as the picks half does.
     const withRejects: ConvictionRun = { ...run, rejectedTheses: [{ thesis: "Energy", why: "post-peak" }] };
     const out = formatConviction(withRejects, "2026-09-22", ctx());
-    expect(out).toMatch(/NOT: a bearish/);
+    expect(out).toMatch(/a bearish ⚡NEWS↓ material event/);
     expect(out).toMatch(/sector-cap\s+trim/);
     expect(out).toMatch(/FALLEN OFF the shortlist/);
     expect(out).toMatch(/this block changes nothing about that position/);
@@ -270,7 +270,74 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     const withMacro: ConvictionRun = { ...run, macroAsOf: { equityRiskPremium: "0.02%" } };
     const out = formatConviction(withMacro, "2026-09-22", ctx());
     expect(out).toMatch(/NOT a de-risking instruction/);
-    expect(out).toMatch(/no cash or hedge action/);
+    expect(out).toMatch(/no cash or\s+hedge action/);
     expect(out).toMatch(/not a reason to raise cash, hedge, sit out/);
+  });
+
+  test("the ⚠CONCEN full-exit is closed — the sell with the least protection anywhere", () => {
+    // strategy.ts: you cannot KEEP a ⚠CONCEN name over the cap, and if you judge "its thesis has
+    // WEAKENED" you full-exit it yourself. Code only trims to the cap — the full exit is entirely
+    // the model's, so a sector rejection reading as "thesis weakened" is the highest-leverage
+    // unguarded path in the system.
+    const withRejects: ConvictionRun = { ...run, rejectedTheses: [{ thesis: "Energy", why: "post-peak" }] };
+    const out = formatConviction(withRejects, "2026-09-22", ctx());
+    expect(out).toMatch(/⚠CONCEN holding's "thesis has WEAKENED"/);
+    expect(out).toMatch(/nothing here may push you from a TRIM to a FULL exit/);
+    expect(out).toMatch(/may supply NEITHER half/);   // the free-a-slot conjunct
+  });
+
+  test("macro cannot de-risk via SIZE, the strategy's own conviction lever", () => {
+    // Undersizing every buy leaves the book in cash just as surely as sitting out, while violating
+    // no stated line — and size is exactly where conviction is meant to be expressed.
+    const withMacro: ConvictionRun = { ...run, macroAsOf: { equityRiskPremium: "0.02%" } };
+    const out = formatConviction(withMacro, "2026-09-22", ctx());
+    expect(out).toMatch(/Nor is it a reason to SIZE THEM SMALLER/);
+    expect(out).toMatch(/ends the rebalance in cash just as surely/);
+  });
+
+  test("macro does not promise a verification the model cannot perform", () => {
+    // The analysis call runs with no tools and no live macro feed, so "verify anything you lean on"
+    // was an escape hatch that could never fire — which quietly made the snapshot present-tense.
+    const withMacro: ConvictionRun = { ...run, macroAsOf: { fedFunds: "3.75%" } };
+    const out = formatConviction(withMacro, "2026-09-22", ctx());
+    expect(out).toMatch(/NO live feed for most of these numbers/);
+    expect(out).not.toMatch(/verify anything you lean on/);
+  });
+
+  test("truncation is reported, never silent — especially for the rejections", () => {
+    const many: ConvictionRun = {
+      ...run,
+      rejectedTheses: Array.from({ length: 15 }, (_, i) => ({ thesis: `T${i}`, why: "w" })),
+      macroAsOf: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, `v${i}`])),
+    };
+    const out = formatConviction(many, "2026-09-22", ctx());
+    expect(out).toMatch(/further rejections not shown/);
+    expect(out).toMatch(/more not shown/);
+  });
+
+  test("a macro row with an empty or non-scalar value is dropped, not rendered bare", () => {
+    const messy: ConvictionRun = {
+      ...run,
+      macroAsOf: { brent: "", ratePath: { dec: 4.2 }, fedFunds: "3.75%", n: 42 },
+    };
+    const out = formatConviction(messy, "2026-09-22", ctx());
+    expect(out).not.toContain("brent:");          // empty value => no bare assertion
+    expect(out).not.toContain("[object Object]");
+    expect(out).toContain("fedFunds: 3.75%");
+    expect(out).toContain("n: 42");               // numbers are fine
+  });
+
+  test("the audit note records the WHOLE block, including the macro expiry", () => {
+    const full: ConvictionRun = { ...run, rejectedTheses: [{ thesis: "T", why: "W" }], macroAsOf: { a: "b" } };
+    expect(convictionAuditNote(full, "2026-09-22", ctx())).toMatch(/1 rejected theme\(s\); macro shown/);
+    const old = new Date(Date.parse("2026-09-21") + (MACRO_SHELF_LIFE_DAYS + 5) * 86_400_000).toISOString().slice(0, 10);
+    expect(convictionAuditNote(full, old, ctx())).toMatch(/macro DROPPED/);
+  });
+
+  test("the picks have their own header so they cannot read as macro rows", () => {
+    const withMacro: ConvictionRun = { ...run, macroAsOf: { fedFunds: "3.75%" } };
+    const out = formatConviction(withMacro, "2026-09-22", ctx());
+    const lines = out.split("\n");
+    expect(lines.findIndex(l => l.startsWith("PICKS —"))).toBeGreaterThan(lines.findIndex(l => l.includes("fedFunds:")));
   });
 });

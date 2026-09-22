@@ -174,7 +174,9 @@ block has no check behind it but your own judgement, so treat each of these as c
    slot, and does NOT make a holding "high-conviction" for riding it through earnings. Those rules
    key on the same word this block uses; the word here means "an analyst argued for it", not
    "the evidence is strong".
-${formatMacro(run.macroAsOf, run.runDate, age)}${rows.join("\n")}${formatRejected(run.rejectedTheses)}
+${formatMacro(run.macroAsOf, run.runDate, age)}
+PICKS — names argued FOR (the constraints above govern these):
+${rows.join("\n")}${formatRejected(run.rejectedTheses)}
 `;
 }
 
@@ -183,20 +185,26 @@ ${formatMacro(run.macroAsOf, run.runDate, age)}${rows.join("\n")}${formatRejecte
 function formatMacro(macro: MacroSnapshot | undefined, runDate: string, age: number): string {
   if (!macro || typeof macro !== "object" || Array.isArray(macro)) return "";
   if (age > MACRO_SHELF_LIFE_DAYS) return "";
-  const rows = Object.entries(macro)
-    .slice(0, MAX_MACRO_ROWS)
-    .map(([k, v]) => `  ${safeText(k, 32)}: ${safeText(v, 260)}`)
-    .filter(r => r.trim().length > 2);
+  // Only string/number values: the type is deliberately open so new regime fields survive, but an
+  // object or array would stringify to "[object Object]" in a live-money prompt. And an EMPTY value
+  // must drop the whole row — "brent:" with nothing after it is a bare assertion, not data.
+  const entries = Object.entries(macro)
+    .filter(([k, v]) => safeText(k, 32) && (typeof v === "string" || typeof v === "number") && safeText(v, 260));
+  const rows = entries.slice(0, MAX_MACRO_ROWS).map(([k, v]) => `  ${safeText(k, 32)}: ${safeText(v, 260)}`);
   if (!rows.length) return "";
+  const omitted = entries.length > rows.length ? ` (+${entries.length - rows.length} more not shown)` : "";
   return `
-MACRO AS OF ${runDate} (${age}d ago — a SNAPSHOT, not a live feed; verify anything you lean on):
-This is the backdrop both the picks and the rejections were reasoned from. It is here so you can
-judge the REASONING, not just the conclusions — and so you can notice when it has gone stale. If
-today's market data contradicts a line here, today's data wins.
+MACRO AS OF ${runDate}${omitted} (${age}d ago — a SNAPSHOT that was already ${age}d stale when you read it):
+This is the backdrop both the picks and the rejections were reasoned from, here so you can judge the
+REASONING and not only the conclusions. You have NO live feed for most of these numbers and no way
+to check them — so treat every line as possibly superseded, and do not lean on any of them as a
+current fact. Where a line overlaps something you CAN see in today's data, today's data wins.
 This is NOT a de-risking instruction. A hawkish rate path or a thin risk premium is context for
 choosing AMONG the buys you were going to make; it is not a reason to raise cash, hedge, sit out
-the rebalance, or trim the book. This strategy has no cash or hedge action — de-risking happens
-through the per-name stops, and nothing here overrides that.
+the rebalance, or trim the book. Nor is it a reason to SIZE THEM SMALLER — conviction goes into
+size here, so systematically undersizing on a macro read is the same portfolio-level de-risk by
+another route, and it ends the rebalance in cash just as surely. This strategy has no cash or
+hedge action — de-risking happens through the per-name stops, and nothing here overrides that.
 ${rows.join("\n")}
 `;
 }
@@ -210,22 +218,31 @@ ${rows.join("\n")}
  *  from a spike that already peaked; that is what this is for. */
 function formatRejected(rejected: RejectedThesis[] | undefined): string {
   if (!Array.isArray(rejected) || !rejected.length) return "";
-  const rows = rejected
-    .filter(r => r && typeof r.thesis === "string" && typeof r.why === "string")
-    .slice(0, MAX_REJECTED)
-    .map(r => `  AGAINST ${safeText(r.thesis, 120)} — ${safeText(r.why, 300)}`);
+  const valid = rejected.filter(r => r && typeof r.thesis === "string" && typeof r.why === "string");
+  const rows = valid.slice(0, MAX_REJECTED).map(r => `  AGAINST ${safeText(r.thesis, 120)} — ${safeText(r.why, 300)}`);
   if (!rows.length) return "";
+  // Say what was dropped. This half's whole purpose is to REDUCE buying, so a silent cap is the
+  // fail-open direction for it — the picks half already reports its own omissions.
+  const omitted = valid.length > rows.length ? ` (${valid.length - rows.length} further rejections not shown)` : "";
   return `
-ARGUED AGAINST by the same research run — themes examined and REJECTED:
+ARGUED AGAINST by the same research run — themes examined and REJECTED${omitted}:
 Read these the same way as the picks: an opinion with reasons, no track record. They matter most
 where the shortlist and this list disagree, which is the normal case, not a conflict to explain
 away — a name ranks on 12-month momentum, and "it has already run" is a reason the ranking cannot
 express. Treat a rejection as a reason to PREFER ANOTHER shortlist name when choosing what to BUY.
-It is never a reason to sell or trim something you hold, and specifically it is NOT: a bearish
-⚡NEWS↓ material event (this is a months-old thematic view, not news on a name), NOT a "sector-cap
-trim" (that is mechanical, computed from position sizes, not from an opinion about a sector), and
-NOT evidence a name has "FALLEN OFF the shortlist" (that is momentum and quality eligibility, also
-computed). If you hold a name in a rejected theme, this block changes nothing about that position.
+It is never a reason to sell or trim something you hold, and specifically it is NOT:
+  · a bearish ⚡NEWS↓ material event — this is a months-old thematic view, not news on a name;
+  · a "sector-cap trim" — that is mechanical, computed from position sizes, not from an opinion;
+  · evidence a name has "FALLEN OFF the shortlist" — that is momentum and quality eligibility,
+    also computed;
+  · evidence that a ⚠CONCEN holding's "thesis has WEAKENED" — when you must reduce an over-cap
+    position, nothing here may push you from a TRIM to a FULL exit. Code trims to the cap; a full
+    exit is entirely yours, so this is the sell with the least protection in the whole system;
+  · evidence that a holding is "the weakest holding" when freeing a slot. That trigger needs BOTH
+    a higher-conviction new name AND a weakest holding — this block may supply NEITHER half.
+If you hold a name in a rejected theme, this block changes nothing about that position.
+A rejection MAY, however, argue against a PICK in this block whose thesis leans on the same theme —
+that is a buy-side judgment worth making, and the falsifiers are where to look.
 ${rows.join("\n")}`;
 }
 
@@ -235,7 +252,14 @@ export function convictionAuditNote(run: ConvictionRun | null, today: string, ct
   // Same sort-then-slice as the renderer: slicing the RAW order would let the note name a
   // different set of picks than the model actually saw.
   const shown = run.picks.slice().sort((a, b) => a.rank - b.rank).slice(0, MAX_PICKS);
-  return `CONTEXT — conviction research shown to the model: ${run.runDate} (${daysSince(run.runDate, today)}d old), picks ${shown.map(p => safeText(p.symbol, 12)).join(", ")}. Advisory only; it confers no eligibility and every buy still passed the code gates. It CAN influence which of the already-eligible names was chosen and at what size — that is its purpose, so treat a buy citing it as conviction-driven.`;
+  const age = daysSince(run.runDate, today);
+  const rejected = Array.isArray(run.rejectedTheses) ? run.rejectedTheses.length : 0;
+  // Record the WHOLE block, not just the picks — the rejections and the macro are most of it, and
+  // the macro's day-46 expiry would otherwise change the prompt with no trace in any stored run.
+  const macroState = !run.macroAsOf ? "no macro"
+    : (age != null && age > MACRO_SHELF_LIFE_DAYS) ? "macro DROPPED (past its 45d shelf life)"
+    : "macro shown";
+  return `CONTEXT — conviction research shown to the model: ${run.runDate} (${age}d old), picks ${shown.map(p => safeText(p.symbol, 12)).join(", ")}; ${rejected} rejected theme(s); ${macroState}. Advisory only; it confers no eligibility and every buy still passed the code gates. It CAN influence which of the already-eligible names was chosen and at what size — that is its purpose, so treat a buy citing it as conviction-driven.`;
 }
 
 /** Load the recorded paper run. Returns null on anything unexpected — a research file edited into
