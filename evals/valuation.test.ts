@@ -279,34 +279,42 @@ describe("the block cannot be read as a sell reason", () => {
   });
 });
 
-import { isCacheStaleAfterEarnings } from "@/lib/valuation";
+import { pointsIncludeReport } from "@/lib/valuation";
 
-describe("EPS cache must not survive an earnings print", () => {
-  // The TTL cannot solve this: buildValuation's staleness guard measures the newest XBRL period END
-  // against ~200 days, so an entry written the day before a 10-Q has a newest end ~90 days old and
-  // passes — while the price it is divided by is now post-print. A beat that gaps the stock +15%
-  // then renders as a suddenly expensive multiple, and the block's own guidance argues against the
-  // name that just beat. Worst on exactly the population the run flags 📊REPORTED.
-  test("a report AFTER the cache write invalidates it", () => {
-    expect(isCacheStaleAfterEarnings("2026-09-10T00:00:00Z", "2026-09-15")).toBe(true);
+describe("a P/E must never mix a post-print price with pre-print earnings", () => {
+  const pt = (end: string, filed: string): XbrlPoint =>
+    ({ start: "2026-01-01", end, val: 1, form: "10-Q", fy: 2026, fp: "Q2", filed });
+
+  test("keying on CACHE WRITE TIME does not work — the data is what matters", () => {
+    // The 10-Q lags the press release (weeks, for many filers). A refetch triggered by "cached
+    // before the print" returns the SAME pre-print points and re-stamps the timestamp, so two runs
+    // later the write-time test passes and serves pre-print EPS against a post-print price for the
+    // rest of the TTL — the failure reintroduced by its own fix.
+    const prePrint = [pt("2026-06-30", "2026-07-20")];
+    expect(pointsIncludeReport(prePrint, "2026-09-15")).toBe(false);   // refetching cannot change this
   });
 
-  test("a report on the SAME day invalidates it — the write may have preceded the print", () => {
-    expect(isCacheStaleAfterEarnings("2026-09-15T14:00:00Z", "2026-09-15")).toBe(true);
+  test("a filing at or after the report date carries the print", () => {
+    expect(pointsIncludeReport([pt("2026-09-30", "2026-09-22")], "2026-09-15")).toBe(true);
+    expect(pointsIncludeReport([pt("2026-09-30", "2026-09-15")], "2026-09-15")).toBe(true);  // same day
   });
 
-  test("a report BEFORE the cache write is fine — the cache already includes it", () => {
-    expect(isCacheStaleAfterEarnings("2026-09-20T00:00:00Z", "2026-09-15")).toBe(false);
+  test("no recent report means there is nothing to miss", () => {
+    expect(pointsIncludeReport([pt("2026-06-30", "2026-07-20")], undefined)).toBe(true);
   });
 
-  test("no recent report means the TTL governs, not this check", () => {
-    expect(isCacheStaleAfterEarnings("2026-09-10T00:00:00Z", undefined)).toBe(false);
+  test("an unparseable report date fails SAFE — assumed not covered", () => {
+    expect(pointsIncludeReport([pt("2026-09-30", "2026-09-22")], "garbage")).toBe(false);
   });
 
-  test("unknown or unparseable dates refetch rather than trust the cache", () => {
-    // Fail toward a fresh read: a wasted SEC call is cheap, a wrong P/E in the prompt is not.
-    expect(isCacheStaleAfterEarnings(undefined, "2026-09-15")).toBe(true);
-    expect(isCacheStaleAfterEarnings("not-a-date", "2026-09-15")).toBe(true);
-    expect(isCacheStaleAfterEarnings("2026-09-10T00:00:00Z", "garbage")).toBe(true);
+  test("points with no filed date cannot prove coverage", () => {
+    const noFiled = [{ start: "2026-04-01", end: "2026-06-30", val: 1, form: "10-Q", fy: 2026, fp: "Q2" }];
+    expect(pointsIncludeReport(noFiled, "2026-09-15")).toBe(false);
+  });
+
+  test("only ONE point needs to post-date the report", () => {
+    const mixed = [pt("2026-03-31", "2026-04-20"), pt("2026-09-30", "2026-09-22")];
+    expect(pointsIncludeReport(mixed, "2026-09-15")).toBe(true);
   });
 });
+

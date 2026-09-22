@@ -526,7 +526,14 @@ export async function GET(request: Request) {
         const valSymbols = [...v1Buy.map(s => s.symbol), ...heldMainSymbols];
         // recentEarnings is already in hand: pass it so EPS cached BEFORE a fresh print is discarded
         // rather than divided into a post-print price.
-        const reportedOn = new Map([...recentEarnings].map(([sym, r]) => [sym.toUpperCase(), r.date]));
+        // recentEarnings only carries rows dated strictly BEFORE today (lib/earnings), but the cron
+        // runs at 10:30 ET on a live price — so a name printing THIS MORNING has already gapped
+        // while having no entry here. That is the biggest-divergence day, so fold today's scheduled
+        // reporters in from perSymbolEarnings too.
+        const reportedOn = new Map([...recentEarnings].map(([sym, r]) => [sym.toUpperCase(), r.date] as const));
+        for (const [sym, date] of perSymbolEarnings) {
+          if (date === today) reportedOn.set(sym.toUpperCase(), today);
+        }
         const { valuations, notes } = await getValuations(valSymbols, (sym) => priceMap.get(sym), valCtrl.signal, { reportedOn });
         valuationSection = formatValuations(valuations);
         valuationNotes.push(...notes);
