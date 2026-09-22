@@ -544,6 +544,17 @@ export async function GET(request: Request) {
         }
         const { valuations, notes } = await getValuations(valSymbols, (sym) => priceMap.get(sym), valCtrl.signal, { reportedOn });
         valuationSection = formatValuations(valuations);
+        // The notes travel WITH the block into the prompt. They used to go only to
+        // buySizingAdjustments, which is recorded and emailed but never rendered to any model — so
+        // the one reader who acts on this saw a withheld name as silently absent, with no way to
+        // tell "we withheld this on purpose" from "this name has no P/E". Absence is exactly what
+        // the block warns must not be read as cheap, so the explanation has to reach the reader.
+        // Rendered even when the block itself is empty: that case is the most misleading of all.
+        if (notes.length) {
+          valuationSection += `${valuationSection ? "\n" : "\n\nVALUATION (P/E from SEC filings):\n"}`
+            + `Why some names carry no P/E this run — absence here is a GAP IN OUR DATA, never a verdict on the company:\n`
+            + notes.map(n => `  ${n}`).join("\n") + "\n";
+        }
         valuationNotes.push(...notes);
         console.log("VALUATION_SCOPE", { considered: valSymbols.length, priced: valuations.size, notes: notes.length });
       } finally { clearTimeout(valTimer); }

@@ -520,3 +520,39 @@ describe("a truncated read must not be cached as a complete one", () => {
     expect(valuations.has(SYM)).toBe(true);   // proves the fixture itself is valuable
   });
 });
+
+describe("a withheld P/E must explain itself to the model that decides", () => {
+  // The notes existed from the start but went only to buySizingAdjustments — recorded, emailed, and
+  // never rendered into any prompt. So the one reader who acts on this saw a withheld name as
+  // silently absent, indistinguishable from "no P/E exists", while the block header told it that
+  // absence must not be read as cheap. These assert the explanation reaches the prompt.
+  const priceOf = () => 100;
+  const SYM = `ZZEX${process.pid}`;
+  const q = (n: number) => {
+    const d = new Date(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - 3 * n);
+    const e = d.toISOString().slice(0, 10);
+    const s2 = new Date(d); s2.setUTCMonth(s2.getUTCMonth() - 3);
+    return { start: s2.toISOString().slice(0, 10), end: e, val: 2, form: "10-Q", fy: 2026, fp: "Q1", filed: e };
+  };
+
+  test("suppression produces a note naming the symbol and the reason", async () => {
+    const ctrl = new AbortController();
+    const { valuations, notes } = await getValuations([SYM], priceOf, ctrl.signal, {
+      reportedOn: new Map([[SYM, "2099-01-01"]]),
+      fetchPoints: async () => [q(0), q(1), q(2), q(3)],
+    });
+    expect(valuations.has(SYM)).toBe(false);          // withheld
+    const joined = notes.join(" ");
+    expect(joined).toContain(SYM);                     // the model can tell WHICH name
+    expect(joined).toMatch(/does NOT mean cheap/i);    // and must not read absence as cheap
+  });
+
+  test("a fully-priced run emits no explanation — the notes must not become constant noise", async () => {
+    const ctrl = new AbortController();
+    const { valuations, notes } = await getValuations([SYM], priceOf, ctrl.signal, {
+      fetchPoints: async () => [q(0), q(1), q(2), q(3)],
+    });
+    expect(valuations.has(SYM)).toBe(true);
+    expect(notes).toHaveLength(0);
+  });
+});
