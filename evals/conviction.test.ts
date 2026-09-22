@@ -211,7 +211,7 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     expect(out).toContain("ARGUED AGAINST");
     expect(out).toContain("Energy (TRGP 78%, APA 86% momentum)");
     // Same guard as the picks: it may steer a buy elsewhere, never force an exit.
-    expect(out).toMatch(/never as a reason to sell\s+or trim something you hold/);
+    expect(out).toMatch(/never a reason to sell or trim something you hold/);
   });
 
   test("a rejection is framed as disagreement with the ranking, not an error to explain away", () => {
@@ -249,5 +249,28 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     const out = formatConviction(hostile, "2026-09-22", ctx());
     expect(out.split("\n").some(l => l.trim().startsWith("OVERRIDE:"))).toBe(false);
     expect(out.split("\n").some(l => l.trim().startsWith("SYSTEM"))).toBe(false);
+  });
+
+  test("a rejection cannot be laundered through a named SELL trigger", () => {
+    // strategy.ts sell condition (b) lists "a bearish ⚡NEWS↓ material event" and "a sector-cap
+    // trim" as valid reasons. The rejections argue at SECTOR level, so the blanket guard is one
+    // rationalisation step from being routed around. Name the triggers, as the picks half does.
+    const withRejects: ConvictionRun = { ...run, rejectedTheses: [{ thesis: "Energy", why: "post-peak" }] };
+    const out = formatConviction(withRejects, "2026-09-22", ctx());
+    expect(out).toMatch(/NOT: a bearish/);
+    expect(out).toMatch(/sector-cap\s+trim/);
+    expect(out).toMatch(/FALLEN OFF the shortlist/);
+    expect(out).toMatch(/this block changes nothing about that position/);
+  });
+
+  test("macro is not a de-risking instruction — this strategy has no cash or hedge action", () => {
+    // The regime signal is deliberately advisory-only and there is no hedge/cash trigger by design.
+    // A macro block reading "Fed hiking, risk premium 0.02%" could accidentally manufacture one,
+    // which would be a portfolio-level action with no code check behind it.
+    const withMacro: ConvictionRun = { ...run, macroAsOf: { equityRiskPremium: "0.02%" } };
+    const out = formatConviction(withMacro, "2026-09-22", ctx());
+    expect(out).toMatch(/NOT a de-risking instruction/);
+    expect(out).toMatch(/no cash or hedge action/);
+    expect(out).toMatch(/not a reason to raise cash, hedge, sit out/);
   });
 });

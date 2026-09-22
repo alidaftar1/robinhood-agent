@@ -193,6 +193,10 @@ MACRO AS OF ${runDate} (${age}d ago — a SNAPSHOT, not a live feed; verify anyt
 This is the backdrop both the picks and the rejections were reasoned from. It is here so you can
 judge the REASONING, not just the conclusions — and so you can notice when it has gone stale. If
 today's market data contradicts a line here, today's data wins.
+This is NOT a de-risking instruction. A hawkish rate path or a thin risk premium is context for
+choosing AMONG the buys you were going to make; it is not a reason to raise cash, hedge, sit out
+the rebalance, or trim the book. This strategy has no cash or hedge action — de-risking happens
+through the per-name stops, and nothing here overrides that.
 ${rows.join("\n")}
 `;
 }
@@ -216,8 +220,12 @@ ARGUED AGAINST by the same research run — themes examined and REJECTED:
 Read these the same way as the picks: an opinion with reasons, no track record. They matter most
 where the shortlist and this list disagree, which is the normal case, not a conflict to explain
 away — a name ranks on 12-month momentum, and "it has already run" is a reason the ranking cannot
-express. Treat a rejection as a reason to PREFER ANOTHER shortlist name, never as a reason to sell
-or trim something you hold.
+express. Treat a rejection as a reason to PREFER ANOTHER shortlist name when choosing what to BUY.
+It is never a reason to sell or trim something you hold, and specifically it is NOT: a bearish
+⚡NEWS↓ material event (this is a months-old thematic view, not news on a name), NOT a "sector-cap
+trim" (that is mechanical, computed from position sizes, not from an opinion about a sector), and
+NOT evidence a name has "FALLEN OFF the shortlist" (that is momentum and quality eligibility, also
+computed). If you hold a name in a rejected theme, this block changes nothing about that position.
 ${rows.join("\n")}`;
 }
 
