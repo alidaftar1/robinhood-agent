@@ -21,7 +21,7 @@ import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow
 import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
 import { getValuations, formatValuations } from "@/lib/valuation";
-import { fetchEarningsForSymbols, fetchEarningsBeatHistory, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
+import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -400,8 +400,8 @@ export async function GET(request: Request) {
     // shortlist + held + influencer candidates. Influencer candidates were the blind spot: a fresh
     // post-earnings pop read as durable momentum (PLTR +28% 1d bought via the sleeve). Fail-safe.
     const earnSymbols = [...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld, ...influencerCandidateSet];
-    const { upcoming: perSymbolEarnings, recent: recentEarnings } = await fetchEarningsForSymbols(earnSymbols)
-      .catch(() => ({ upcoming: new Map<string, string>(), recent: new Map<string, RecentEarnings>() }));
+    const { upcoming: perSymbolEarnings, upcomingHour: perSymbolEarningsHour, recent: recentEarnings } = await fetchEarningsForSymbols(earnSymbols)
+      .catch(() => ({ upcoming: new Map<string, string>(), upcomingHour: new Map<string, string | undefined>(), recent: new Map<string, RecentEarnings>() }));
     for (const s of marketData.stocks) {
       const d = perSymbolEarnings.get(s.symbol);
       if (d && (!s.earningsDate || d < s.earningsDate)) s.earningsDate = d; // nearest upcoming wins
@@ -532,7 +532,12 @@ export async function GET(request: Request) {
         // reporters in from perSymbolEarnings too.
         const reportedOn = new Map([...recentEarnings].map(([sym, r]) => [sym.toUpperCase(), r.date] as const));
         for (const [sym, date] of perSymbolEarnings) {
-          if (date === today) reportedOn.set(sym.toUpperCase(), today);
+          // Only if it has ALREADY printed this session. An after-close reporter has not moved yet
+          // at 10:30 ET, so its pre-print EPS still matches its pre-print price — suppressing it
+          // there would discard a P/E that is perfectly good for another few hours.
+          if (hasPrintedBySession(date, perSymbolEarningsHour.get(sym), today)) {
+            reportedOn.set(sym.toUpperCase(), date);
+          }
         }
         const { valuations, notes } = await getValuations(valSymbols, (sym) => priceMap.get(sym), valCtrl.signal, { reportedOn });
         valuationSection = formatValuations(valuations);

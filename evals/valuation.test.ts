@@ -279,7 +279,8 @@ describe("the block cannot be read as a sell reason", () => {
   });
 });
 
-import { pointsIncludeReport } from "@/lib/valuation";
+import { pointsIncludeReport, epsCacheTtlSeconds } from "@/lib/valuation";
+import { hasPrintedBySession } from "@/lib/earnings";
 
 describe("a P/E must never mix a post-print price with pre-print earnings", () => {
   const pt = (end: string, filed: string): XbrlPoint =>
@@ -316,5 +317,71 @@ describe("a P/E must never mix a post-print price with pre-print earnings", () =
     const mixed = [pt("2026-03-31", "2026-04-20"), pt("2026-09-30", "2026-09-22")];
     expect(pointsIncludeReport(mixed, "2026-09-15")).toBe(true);
   });
+
+  test("a post-print filing carrying ONLY a year-ago comparative does not prove coverage", () => {
+    // Every 10-Q ships the fresh quarter AND its year-ago comparative under one accession, so this
+    // shape does not arise from a normal 10-Q. It arises from an amendment or an S-8 landing after
+    // the print: filed late, but the periods inside are stale. Post-date alone would say "covered".
+    const comparativeOnly = [pt("2025-09-30", "2026-09-22")];
+    expect(pointsIncludeReport(comparativeOnly, "2026-09-15")).toBe(false);
+  });
+
+  test("real SEC shapes: the 10-Q's own comparative does not rescue a pre-print cache", () => {
+    // AAPL 0000320193-26-000020, filed 2026-07-31, verified live: the accession carries BOTH
+    // end=2026-06-27 (lag 34d) and end=2025-06-28 (lag 398d). Whichever the cache happens to hold,
+    // only the fresh period may vouch for the print.
+    const fresh = { start: "2026-03-29", end: "2026-06-27", val: 2.02, form: "10-Q", fy: 2026, fp: "Q3", filed: "2026-07-31" };
+    const comparative = { start: "2025-03-30", end: "2025-06-28", val: 1.57, form: "10-Q", fy: 2026, fp: "Q3", filed: "2026-07-31" };
+    expect(pointsIncludeReport([fresh, comparative], "2026-07-30")).toBe(true);
+    expect(pointsIncludeReport([comparative], "2026-07-30")).toBe(false);
+  });
+
+  test("a late filer still passes — the window is ~4x the observed 23-38 day lag", () => {
+    // Guard against tightening REPORTED_PERIOD_MAX_AGE_DAYS into a check that suppresses every
+    // slow filer. A quarter ending 100 days before the print is unusual but legitimate.
+    expect(pointsIncludeReport([pt("2026-06-07", "2026-09-16")], "2026-09-15")).toBe(true);
+  });
+
+  test("a point with no period end cannot vouch for the print", () => {
+    const noEnd = [{ start: "2026-07-01", val: 1, form: "10-Q", fy: 2026, fp: "Q3", filed: "2026-09-22" } as unknown as XbrlPoint];
+    expect(pointsIncludeReport(noEnd, "2026-09-15")).toBe(false);
+  });
 });
 
+describe("a suppressed name must not stay dark for the whole TTL", () => {
+  const pt = (end: string, filed: string): XbrlPoint =>
+    ({ start: "2026-01-01", end, val: 1, form: "10-Q", fy: 2026, fp: "Q2", filed });
+
+  test("a blob that does not carry a just-announced print expires within a day", () => {
+    // The failure this guards: name reports Monday, we cache pre-print points for 7 days, the 10-Q
+    // lands Wednesday — and the P/E stays suppressed through the following Monday because a cache
+    // HIT is the one path that never refetches. The blob must lapse before the next daily run.
+    const ttl = epsCacheTtlSeconds([pt("2026-06-30", "2026-07-20")], "2026-09-15");
+    expect(ttl).toBeLessThanOrEqual(24 * 60 * 60);
+  });
+
+  test("a blob that does carry the print keeps the full week — EPS only changes on a filing", () => {
+    expect(epsCacheTtlSeconds([pt("2026-09-30", "2026-09-22")], "2026-09-15")).toBe(7 * 24 * 60 * 60);
+    expect(epsCacheTtlSeconds([pt("2026-06-30", "2026-07-20")], undefined)).toBe(7 * 24 * 60 * 60);
+  });
+});
+
+describe("only a name that has ALREADY printed may suppress its P/E", () => {
+  test("an after-close reporter has not printed when the 10:30 ET run happens", () => {
+    // Roughly half of S&P reporters are amc. At 10:30 ET its price has not gapped, so its pre-print
+    // EPS is still the right denominator — suppressing it discards a correct P/E and tells the
+    // model something false about the name.
+    expect(hasPrintedBySession("2026-09-21", "amc", "2026-09-21")).toBe(false);
+  });
+
+  test("before-open and unspecified have printed by mid-session", () => {
+    expect(hasPrintedBySession("2026-09-21", "bmo", "2026-09-21")).toBe(true);
+    expect(hasPrintedBySession("2026-09-21", undefined, "2026-09-21")).toBe(true);
+    expect(hasPrintedBySession("2026-09-21", "dmh", "2026-09-21")).toBe(true);
+  });
+
+  test("yesterday's amc report HAS printed; tomorrow's has not", () => {
+    expect(hasPrintedBySession("2026-09-18", "amc", "2026-09-21")).toBe(true);
+    expect(hasPrintedBySession("2026-09-22", "bmo", "2026-09-21")).toBe(false);
+  });
+});

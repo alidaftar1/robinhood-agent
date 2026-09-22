@@ -213,13 +213,6 @@ export async function fetchEpsPoints(symbol: string, signal?: AbortSignal): Prom
   } catch { return []; }
 }
 
-/** Fetch + compute for one symbol. Fail-safe: returns null rather than throwing. */
-export async function fetchValuation(symbol: string, price: number, signal?: AbortSignal): Promise<Valuation | null> {
-  const points = await fetchEpsPoints(symbol, signal);
-  if (points.length === 0) return null;
-  const v = buildValuation(symbol, price, points);
-  return v.headline === "none" ? null : v;
-}
 
 /** One-line rendering that can never quote a distorted figure on its own. */
 export function formatValuation(v: Valuation): string {
@@ -247,6 +240,17 @@ export function formatValuation(v: Valuation): string {
 
 const EPS_CACHE_PREFIX = "valuation:eps:";
 const EPS_TTL_SECONDS = 7 * 24 * 60 * 60;   // EPS only changes on a filing
+// A blob that does NOT yet carry a just-announced print must NOT sit for the full week: the 10-Q
+// lands days after the press release, and with a 7-day TTL the name would stay suppressed for the
+// entire window in which it is flagged 📊REPORTED — silent for exactly the name that needs pricing.
+// Short enough that the next daily run refetches and picks the filing up the day it appears.
+const PRE_PRINT_TTL_SECONDS = 12 * 60 * 60;
+
+/** How long a freshly-read EPS blob may be trusted. Split out so the "do not let a pre-print blob
+ *  sit for a week" invariant is testable rather than an inline ternary at one call site. */
+export function epsCacheTtlSeconds(points: XbrlPoint[], reportDate: string | undefined): number {
+  return pointsIncludeReport(points, reportDate) ? EPS_TTL_SECONDS : PRE_PRINT_TTL_SECONDS;
+}
 
 interface CachedEps { v: 1; points: XbrlPoint[]; cachedAt: string }
 
@@ -267,15 +271,26 @@ const slimPoint = (p: XbrlPoint): XbrlPoint =>
  *
  * So ask the data, not the clock: has anything been FILED on or after the report date?
  */
+// A 10-Q always ships the fresh quarter AND its year-ago comparative under one accession — verified
+// against AAPL/MRK/ROST/GOOGL/NVDA, where current-period points carry an end->filed lag of 23-38 days
+// and the comparatives 388-403. So "something was filed after the print" is nearly always the 10-Q,
+// but an amendment or an S-8 could land carrying only stale periods and would otherwise claim a
+// coverage it does not have. Require the filing to also carry a period that ENDS near the print.
+export const REPORTED_PERIOD_MAX_AGE_DAYS = 120;      // ~4x the observed lag, ~3x clear of a comparative
+
 export function pointsIncludeReport(points: XbrlPoint[], reportDate: string | undefined): boolean {
   if (!reportDate) return true;                       // nothing reported in the window — nothing to miss
   const r = Date.parse(reportDate);
   if (!Number.isFinite(r)) return false;              // unparseable — assume NOT covered, fail safe
   const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
   const target = day(r);
+  const oldestUsefulEnd = day(r - REPORTED_PERIOD_MAX_AGE_DAYS * 86_400_000);
   return points.some(p => {
     const f = Date.parse(p.filed ?? "");
-    return Number.isFinite(f) && day(f) >= target;    // a filing at/after the print carries it
+    if (!Number.isFinite(f) || day(f) < target) return false;   // filed before the print — can't carry it
+    const e = Date.parse(p.end ?? "");
+    if (!Number.isFinite(e)) return false;                      // no period — can't confirm freshness
+    return day(e) >= oldestUsefulEnd;                           // a period ending near the print
   });
 }
 
@@ -319,8 +334,26 @@ export async function getValuations(
       }
     } catch { /* cache unavailable or unparseable — fall through to a live read */ }
 
+    const reportDate = opts.reportedOn?.get(symbol.toUpperCase());
+
+    // Write with a TTL that depends on whether the blob covers a just-announced print. Shared by
+    // the first fetch and the refresh below so the two paths cannot drift apart.
+    const cachePoints = async (pts: XbrlPoint[]) => {
+      try {
+        // POST/pipeline, NOT redisCommand: that helper encodes the value into the URL PATH, which a
+        // ~45KB EPS blob blows past (~75KB encoded) — and it does not check res.ok, so the failure
+        // was invisible. Same reason lib/influencer-signals caches transcripts this way.
+        const payload: CachedEps = { v: 1, points: pts.map(slimPoint), cachedAt: new Date().toISOString() };
+        const ttl = epsCacheTtlSeconds(pts, reportDate);
+        await redisPost("pipeline", [["SET", key, JSON.stringify(payload), "EX", ttl]]);
+      } catch (e) {
+        console.warn("VALUATION_EPS_CACHE_WRITE_FAILED", { symbol, error: e instanceof Error ? e.message : String(e) });
+      }
+    };
+
     if (points === null) {   // explicit: an empty ARRAY is truthy and must not count as a hit
       if (fresh >= maxFresh) { skipped.push(symbol); continue; }
+      if (signal.aborted) { timedOut.push(symbol); continue; }   // definitely us, not them
       fresh++;
       points = await fetchEpsPoints(symbol, signal);
       if (points.length === 0) {
@@ -329,22 +362,26 @@ export async function getValuations(
         (signal.aborted ? timedOut : noData).push(symbol);
         continue;
       }
-      try {
-        // POST/pipeline, NOT redisCommand: that helper encodes the value into the URL PATH, which a
-        // ~45KB EPS blob blows past (~75KB encoded) — and it does not check res.ok, so the failure
-        // was invisible. Same reason lib/influencer-signals caches transcripts this way.
-        const payload: CachedEps = { v: 1, points: points.map(slimPoint), cachedAt: new Date().toISOString() };
-        await redisPost("pipeline", [["SET", key, JSON.stringify(payload), "EX", EPS_TTL_SECONDS]]);
-      } catch (e) {
-        console.warn("VALUATION_EPS_CACHE_WRITE_FAILED", { symbol, error: e instanceof Error ? e.message : String(e) });
+      await cachePoints(points);
+    } else if (!pointsIncludeReport(points, reportDate)) {
+      // The CACHED blob predates the print — but this is the one case where a refetch IS
+      // productive: the 10-Q may have been filed since we cached. Without this, the only fetch
+      // trigger is a cache MISS, so a name that reported Monday and filed Wednesday would stay
+      // suppressed until the blob expired — dark for the whole window it is flagged 📊REPORTED.
+      if (fresh < maxFresh && !signal.aborted) {
+        fresh++;
+        const refreshed = await fetchEpsPoints(symbol, signal);
+        if (refreshed.length > 0) {   // keep the old blob on an empty/aborted read rather than blanking
+          points = refreshed;
+          await cachePoints(points);
+        }
       }
     }
 
-    // SUPPRESS rather than mislead: if this name has reported and the filings do not yet carry the
-    // print, any P/E divides a POST-print price by PRE-print earnings. Refetching cannot fix that —
-    // the 10-Q simply is not filed yet — so show nothing and say so. Decided from the points
-    // themselves, so it costs no extra fetch and cannot be re-stamped away by a rewrite.
-    if (!pointsIncludeReport(points, opts.reportedOn?.get(symbol.toUpperCase()))) {
+    // SUPPRESS rather than mislead: if this name has reported and the filings STILL do not carry the
+    // print, any P/E divides a POST-print price by PRE-print earnings. Nothing further can fix that
+    // this run — the 10-Q is not filed yet — so show nothing and say so.
+    if (!pointsIncludeReport(points, reportDate)) {
       prePrint.push(symbol);
       continue;
     }
@@ -356,7 +393,7 @@ export async function getValuations(
     notes.push(`CONTEXT — P/E not fetched this run for: ${skipped.join(", ")} (hit the ${maxFresh}-per-run cap, or the run's valuation time budget expired). No order was affected.`);
   }
   if (timedOut.length) {
-    notes.push(`CONTEXT — P/E lookup timed out for: ${timedOut.join(", ")} (valuation time budget expired; the trade run takes priority). Absent from the block; says nothing about the companies. No order was affected.`);
+    notes.push(`CONTEXT — P/E lookup timed out for: ${timedOut.join(", ")} (valuation time budget expired; the trade run takes priority). A name here returned nothing WHILE the budget was expiring — a timeout and a genuine data gap are not distinguished on that path. Absent from the block; do NOT read it as a fact about the company. No order was affected.`);
   }
   if (noData.length) {
     // Distinct from the cap: these were ATTEMPTED and SEC returned nothing usable — a non-S&P CIK
@@ -367,10 +404,11 @@ export async function getValuations(
     notes.push(`CONTEXT — P/E SUPPRESSED for: ${prePrint.join(", ")} — these reported recently and SEC filings do not yet carry the print, so any multiple would divide a post-print price by pre-print earnings. Absent from the valuation block; this does NOT mean cheap or expensive. No order was affected.`);
   }
   if (symbols.length > 0 && (opts.reportedOn?.size ?? 0) === 0) {
-    // The earnings map is fail-safe upstream (a missing key or a 403 yields an empty map), so with
-    // no entries EVERY name looks "not recently reported" and pre-print suppression silently never
-    // runs. Say so rather than letting the check fail open without a trace.
-    console.warn("VALUATION_NO_EARNINGS_MAP — pre-print suppression inactive this run", { considered: symbols.length });
+    // Ambiguous ON PURPOSE: upstream fails safe PER SYMBOL, so an empty map means either a quiet
+    // non-earnings week (correct, common) or a wholesale Finnhub failure (pre-print suppression
+    // silently inert). This cannot tell them apart — it records coverage so the two are separable
+    // across runs, and deliberately does not assert breakage.
+    console.warn("VALUATION_NO_EARNINGS_MAP — no name reported in the lookback; suppression had nothing to act on", { considered: symbols.length, reportedOn: 0 });
   }
   if (valuations.size === 0 && symbols.length > 0) {
     // Whole-block failure (empty CIK map, SEC outage) renders an EMPTY STRING into the prompt,
