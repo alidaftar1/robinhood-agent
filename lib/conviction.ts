@@ -47,6 +47,18 @@ export interface ConvictionRun {
  *  serving stale conviction. */
 export const CONVICTION_SHELF_LIFE_DAYS = 185;
 
+/** Per-field cap. These strings reach a live-money system prompt verbatim, and the file is editable
+ *  by anything that can open a PR. A bound is not injection DEFENCE — it is a blast radius. */
+const MAX_FIELD = 400;
+const MAX_FALSIFIERS = 6;
+
+/** Flatten to a single prompt-safe line: no newlines (so a field cannot fake a section break or a
+ *  role marker), no backticks, bounded length. */
+function safeText(raw: unknown, max = MAX_FIELD): string {
+  const flat = String(raw ?? "").replace(/[\r\n`]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…[truncated]` : flat;
+}
+
 export function daysSince(runDate: string, today: string): number | null {
   const a = Date.parse(runDate), b = Date.parse(today);
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
@@ -72,9 +84,11 @@ export function formatConviction(
     .map(p => {
       const on = buyable.has(p.symbol.toUpperCase());
       const tag = on ? "ON the shortlist — usable this run" : "NOT on the shortlist — cannot be bought";
-      const parts = [`  ${p.symbol} (rank ${p.rank}, ${tag})`, `    thesis: ${p.thesis}`];
-      if (p.knownWeakness) parts.push(`    known weakness: ${p.knownWeakness}`);
-      if (p.falsifiers?.length) parts.push(`    would be WRONG if: ${p.falsifiers.join("; ")}`);
+      const parts = [`  ${safeText(p.symbol, 12)} (rank ${p.rank}, ${tag})`, `    thesis: ${safeText(p.thesis)}`];
+      if (p.knownWeakness) parts.push(`    known weakness: ${safeText(p.knownWeakness)}`);
+      if (p.falsifiers?.length) {
+        parts.push(`    would be WRONG if: ${p.falsifiers.slice(0, MAX_FALSIFIERS).map(f => safeText(f, 200)).join("; ")}`);
+      }
       return parts.join("\n");
     });
 
@@ -89,8 +103,12 @@ validated edge. Weigh it as an opinion with reasons attached, not as evidence.
 Appearing here grants a name NO eligibility: a buy for any name not on the quality-momentum
 shortlist or influencer set is dropped in code. Use this ONLY to discriminate among names you can
 already buy${anyUsable ? "" : " — and NONE of these names is buyable this run, so it is context only"}.
-The falsifiers are the most useful part: if one has come true, that is a reason AGAINST the name,
-and it outranks the thesis.
+The falsifiers are the most useful part: if one has come true, that is a reason AGAINST BUYING the
+name, and it outranks the thesis.
+BUY-SIDE ONLY. Never sell, trim, or exit a holding because of anything in this block. A thesis here
+is not a thesis you hold, and its falsifier firing is not a thesis break in the position — the
+code's off-rails filter guards BUYS only, so on the sell side this text has no check behind it but
+your own judgement. Sell decisions come from the position's own stop, target, and momentum.
 ${rows.join("\n")}
 `;
 }
