@@ -21,6 +21,7 @@ import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow
 import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
 import { getValuations, formatValuations } from "@/lib/valuation";
+import { formatConviction, loadConvictionRun } from "@/lib/conviction";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
@@ -562,6 +563,18 @@ export async function GET(request: Request) {
       console.warn("VALUATION_FAILED — continuing without it", e instanceof Error ? e.message : String(e));
     }
 
+    // CONVICTION RESEARCH — advisory only. The buyable set is exactly the off-rails filter's own
+    // allowlist, so a pick is labelled "usable" only when a buy for it would actually survive; the
+    // block can never nudge the model toward a buy that code will drop.
+    let convictionSection = "";
+    try {
+      const buyable = new Set<string>([...v1ShortlistSet, ...influencerCandidateSet].map(x => x.toUpperCase()));
+      convictionSection = formatConviction(loadConvictionRun(), today, buyable);
+    } catch (e) {
+      // Fail-safe: research is a nice-to-have, never a reason to skip a trading run.
+      console.warn("CONVICTION_LOAD_FAILED — continuing without it", e instanceof Error ? e.message : String(e));
+    }
+
     const runTimestamp = new Date().toISOString();
     let textContent = "";
     let trades: TradeSnapshot[] = [];
@@ -589,7 +602,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, isRebalanceDay, valuationSection),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, isRebalanceDay, valuationSection + convictionSection),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
