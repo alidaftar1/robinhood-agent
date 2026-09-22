@@ -211,7 +211,7 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     expect(out).toContain("ARGUED AGAINST");
     expect(out).toContain("Energy (TRGP 78%, APA 86% momentum)");
     // Same guard as the picks: it may steer a buy elsewhere, never force an exit.
-    expect(out).toMatch(/never a reason to sell or trim something you hold/);
+    expect(out).toMatch(/never a reason to sell or trim\s+something you hold/);
   });
 
   test("a rejection is framed as disagreement with the ranking, not an error to explain away", () => {
@@ -283,7 +283,7 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     const out = formatConviction(withRejects, "2026-09-22", ctx());
     expect(out).toMatch(/⚠CONCEN holding's "thesis has WEAKENED"/);
     expect(out).toMatch(/nothing here may push you from a TRIM to a FULL exit/);
-    expect(out).toMatch(/may supply NEITHER half/);   // the free-a-slot conjunct
+    expect(out).toMatch(/supplies NEITHER half/);   // the free-a-slot conjunct
   });
 
   test("macro cannot de-risk via SIZE, the strategy's own conviction lever", () => {
@@ -344,5 +344,47 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     const out = formatConviction(withMacro, "2026-09-22", ctx());
     const lines = out.split("\n");
     expect(lines.findIndex(l => l.startsWith("PICKS —"))).toBeGreaterThan(lines.findIndex(l => l.includes("fedFunds:")));
+  });
+
+  test("the rejection section ENDS on the guard, not on the permission", () => {
+    // EXPD's own weakness says it is correlated with energy, and the Energy rejection is live — so
+    // "a rejection may argue against a PICK" invites exactly that inference about a HELD name whose
+    // only available action is trim/exit. The preceding guard keys on a name being IN a rejected
+    // theme, which does not cover a pick that merely LEANS ON one.
+    const withRejects: ConvictionRun = { ...run, rejectedTheses: [{ thesis: "Energy", why: "post-peak" }] };
+    const out = formatConviction(withRejects, "2026-09-22", ctx());
+    expect(out).toMatch(/BUY-side comparison only/);
+    expect(out).toMatch(/including a pick that is itself a holding/);
+  });
+
+  test("the prompt does not tell the model which guardrail is weakest", () => {
+    // A rationale written for humans leaked into model-facing text: naming the sell action with no
+    // code enforcement behind it hands any creative reading the least-checked lever.
+    const withRejects: ConvictionRun = { ...run, rejectedTheses: [{ thesis: "T", why: "W" }] };
+    const out = formatConviction(withRejects, "2026-09-22", ctx());
+    expect(out).not.toMatch(/least protection/);
+    expect(out).toMatch(/a full\s+exit is yours alone, and nothing here may cause one/);
+  });
+
+  test("the free-a-slot bullet only appears on days that trigger exists", () => {
+    // strategy.ts gates the trigger on isRebalanceDay and tells the model NOT to sell to free a
+    // slot otherwise — so naming it on the other three days is the one place this list would add
+    // vocabulary rather than mirror the prompt.
+    const r: ConvictionRun = { ...run, rejectedTheses: [{ thesis: "T", why: "W" }] };
+    expect(formatConviction(r, "2026-09-22", ctx({ isRebalanceDay: true }))).toMatch(/the weakest holding/);
+    expect(formatConviction(r, "2026-09-22", ctx({ isRebalanceDay: false }))).not.toMatch(/the weakest holding/);
+  });
+
+  test("the audit note reports macro from the RENDER, not from a guess", () => {
+    // formatMacro returns "" for an array, an all-non-scalar snapshot, or an all-empty one. Each
+    // previously logged "macro shown" while the prompt contained none.
+    for (const macroAsOf of [{ ratePath: { dec: 4.2 } } as never, { brent: "", fed: "  " }, [1, 2] as never]) {
+      const r: ConvictionRun = { ...run, macroAsOf };
+      expect(formatConviction(r, "2026-09-22", ctx())).not.toContain("MACRO AS OF");
+      expect(convictionAuditNote(r, "2026-09-22", ctx())).not.toMatch(/macro shown/);
+    }
+    // A boolean IS renderable and must not vanish.
+    const withBool: ConvictionRun = { ...run, macroAsOf: { recessionCalled: true } };
+    expect(formatConviction(withBool, "2026-09-22", ctx())).toContain("recessionCalled: true");
   });
 });

@@ -176,7 +176,7 @@ block has no check behind it but your own judgement, so treat each of these as c
    "the evidence is strong".
 ${formatMacro(run.macroAsOf, run.runDate, age)}
 PICKS — names argued FOR (the constraints above govern these):
-${rows.join("\n")}${formatRejected(run.rejectedTheses)}
+${rows.join("\n")}${formatRejected(run.rejectedTheses, ctx.isRebalanceDay)}
 `;
 }
 
@@ -188,13 +188,17 @@ function formatMacro(macro: MacroSnapshot | undefined, runDate: string, age: num
   // Only string/number values: the type is deliberately open so new regime fields survive, but an
   // object or array would stringify to "[object Object]" in a live-money prompt. And an EMPTY value
   // must drop the whole row — "brent:" with nothing after it is a bare assertion, not data.
-  const entries = Object.entries(macro)
-    .filter(([k, v]) => safeText(k, 32) && (typeof v === "string" || typeof v === "number") && safeText(v, 260));
+  const all = Object.entries(macro);
+  const entries = all.filter(([k, v]) =>
+    safeText(k, 32) && (typeof v === "string" || typeof v === "number" || typeof v === "boolean") && safeText(v, 260));
   const rows = entries.slice(0, MAX_MACRO_ROWS).map(([k, v]) => `  ${safeText(k, 32)}: ${safeText(v, 260)}`);
   if (!rows.length) return "";
-  const omitted = entries.length > rows.length ? ` (+${entries.length - rows.length} more not shown)` : "";
+  // Count BOTH kinds of loss — over the cap, and filtered for an unrenderable value. The type is
+  // deliberately open so new regime fields survive; a field vanishing with no trace defeats that.
+  const dropped = all.length - rows.length;
+  const omitted = dropped > 0 ? ` (+${dropped} more not shown)` : "";
   return `
-MACRO AS OF ${runDate}${omitted} (${age}d ago — a SNAPSHOT that was already ${age}d stale when you read it):
+MACRO AS OF ${runDate} (${age}d ago — a SNAPSHOT that was already ${age}d stale when you read it)${omitted}:
 This is the backdrop both the picks and the rejections were reasoned from, here so you can judge the
 REASONING and not only the conclusions. You have NO live feed for most of these numbers and no way
 to check them — so treat every line as possibly superseded, and do not lean on any of them as a
@@ -218,7 +222,7 @@ ${rows.join("\n")}
  *  buy list — which is the moment a "this has already happened" argument is most useful and least
  *  likely to be reached by any other input the model gets. Momentum cannot tell a durable trend
  *  from a spike that already peaked; that is what this is for. */
-function formatRejected(rejected: RejectedThesis[] | undefined): string {
+function formatRejected(rejected: RejectedThesis[] | undefined, isRebalanceDay: boolean): string {
   if (!Array.isArray(rejected) || !rejected.length) return "";
   const valid = rejected.filter(r => r && typeof r.thesis === "string" && typeof r.why === "string");
   const rows = valid.slice(0, MAX_REJECTED).map(r => `  AGAINST ${safeText(r.thesis, 120)} — ${safeText(r.why, 300)}`);
@@ -227,6 +231,7 @@ function formatRejected(rejected: RejectedThesis[] | undefined): string {
   // fail-open direction for it — the picks half already reports its own omissions.
   const omitted = valid.length > rows.length ? ` (${valid.length - rows.length} further rejections not shown)` : "";
   return `
+
 ARGUED AGAINST by the same research run — themes examined and REJECTED${omitted}:
 Read these the same way as the picks: an opinion with reasons, no track record. They matter most
 where the shortlist and this list disagree, which is the normal case, not a conflict to explain
@@ -239,18 +244,21 @@ It is never a reason to sell or trim something you hold, and specifically it is 
     also computed;
   · evidence that a ⚠CONCEN holding's "thesis has WEAKENED" — when you must reduce an over-cap
     position, nothing here may push you from a TRIM to a FULL exit. Code trims to the cap; a full
-    exit is entirely yours, so this is the sell with the least protection in the whole system;
-  · evidence that a holding is "the weakest holding" when freeing a slot. That trigger needs BOTH
-    a higher-conviction new name AND a weakest holding — this block may supply NEITHER half.
+    exit is yours alone, and nothing here may cause one;
+${isRebalanceDay ? `  · evidence that a holding is "the weakest holding" when freeing a slot. That trigger needs BOTH
+    a higher-conviction new name AND a weakest holding — this block supplies NEITHER half.
+` : ""}
 If you hold a name in a rejected theme, this block changes nothing about that position.
-A rejection MAY, however, argue against a PICK in this block whose thesis leans on the same theme —
-that is a buy-side judgment worth making, and the falsifiers are where to look.
+A rejection MAY argue against a PICK above whose thesis leans on the same theme — the falsifiers are
+where to look. That is a BUY-side comparison only: it can move a name down your buy ranking, and it
+is never a reason to sell or trim one you already hold, including a pick that is itself a holding.
 ${rows.join("\n")}`;
 }
 
 /** One-line audit trail of what research the model was actually shown. */
 export function convictionAuditNote(run: ConvictionRun | null, today: string, ctx: ConvictionContext): string | null {
-  if (!run || !formatConviction(run, today, ctx)) return null;
+  const rendered = run ? formatConviction(run, today, ctx) : "";
+  if (!run || !rendered) return null;
   // Same sort-then-slice as the renderer: slicing the RAW order would let the note name a
   // different set of picks than the model actually saw.
   const shown = run.picks.slice().sort((a, b) => a.rank - b.rank).slice(0, MAX_PICKS);
@@ -258,9 +266,13 @@ export function convictionAuditNote(run: ConvictionRun | null, today: string, ct
   const rejected = Array.isArray(run.rejectedTheses) ? run.rejectedTheses.length : 0;
   // Record the WHOLE block, not just the picks — the rejections and the macro are most of it, and
   // the macro's day-46 expiry would otherwise change the prompt with no trace in any stored run.
-  const macroState = !run.macroAsOf ? "no macro"
+  // Derived from the ACTUAL render, not re-guessed: formatMacro also returns "" for an array, a
+  // snapshot whose values are all non-scalar, or one that is entirely empty — each of which
+  // previously logged "macro shown" while the prompt carried no macro at all.
+  const macroState = rendered.includes("MACRO AS OF") ? "macro shown"
+    : !run.macroAsOf ? "no macro"
     : (age != null && age > MACRO_SHELF_LIFE_DAYS) ? "macro DROPPED (past its 45d shelf life)"
-    : "macro shown";
+    : "macro present but not rendered (no usable rows)";
   return `CONTEXT — conviction research shown to the model: ${run.runDate} (${age}d old), picks ${shown.map(p => safeText(p.symbol, 12)).join(", ")}; ${rejected} rejected theme(s); ${macroState}. Advisory only; it confers no eligibility and every buy still passed the code gates. It CAN influence which of the already-eligible names was chosen and at what size — that is its purpose, so treat a buy citing it as conviction-driven.`;
 }
 
