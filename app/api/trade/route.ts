@@ -400,8 +400,8 @@ export async function GET(request: Request) {
     // shortlist + held + influencer candidates. Influencer candidates were the blind spot: a fresh
     // post-earnings pop read as durable momentum (PLTR +28% 1d bought via the sleeve). Fail-safe.
     const earnSymbols = [...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld, ...influencerCandidateSet];
-    const { upcoming: perSymbolEarnings, upcomingHour: perSymbolEarningsHour, recent: recentEarnings } = await fetchEarningsForSymbols(earnSymbols)
-      .catch(() => ({ upcoming: new Map<string, string>(), upcomingHour: new Map<string, string | undefined>(), recent: new Map<string, RecentEarnings>() }));
+    const { upcoming: perSymbolEarnings, upcomingHour: perSymbolEarningsHour, recent: recentEarnings, lastReport: perSymbolLastReport } = await fetchEarningsForSymbols(earnSymbols)
+      .catch(() => ({ upcoming: new Map<string, string>(), upcomingHour: new Map<string, string | undefined>(), recent: new Map<string, RecentEarnings>(), lastReport: new Map<string, { date: string; hour?: string }>() }));
     for (const s of marketData.stocks) {
       const d = perSymbolEarnings.get(s.symbol);
       if (d && (!s.earningsDate || d < s.earningsDate)) s.earningsDate = d; // nearest upcoming wins
@@ -526,15 +526,15 @@ export async function GET(request: Request) {
         const valSymbols = [...v1Buy.map(s => s.symbol), ...heldMainSymbols];
         // recentEarnings is already in hand: pass it so EPS cached BEFORE a fresh print is discarded
         // rather than divided into a post-print price.
-        // recentEarnings only carries rows dated strictly BEFORE today (lib/earnings), but the cron
-        // runs at 10:30 ET on a live price — so a name printing THIS MORNING has already gapped
-        // while having no entry here. That is the biggest-divergence day, so fold today's scheduled
-        // reporters in from perSymbolEarnings too.
-        const reportedOn = new Map([...recentEarnings].map(([sym, r]) => [sym.toUpperCase(), r.date] as const));
+        // Built from lastReport, NOT recentEarnings: 📊REPORTED is a 7-day flag, but the filing
+        // that makes a post-print P/E safe lands 23-38 days after the press release. Keying
+        // suppression to the 7-day flag stops guarding weeks before the fix arrives.
+        const reportedOn = new Map([...perSymbolLastReport].map(([sym, r]) => [sym.toUpperCase(), r.date] as const));
+        // A name printing THIS MORNING has already gapped but is in neither past-report map, and the
+        // cron runs 10:30 ET on a live price — the largest-divergence day. Fold it in, but only if
+        // it has ALREADY printed: an after-close reporter has not moved yet, so its pre-print EPS
+        // still matches its pre-print price and suppressing it discards a good P/E.
         for (const [sym, date] of perSymbolEarnings) {
-          // Only if it has ALREADY printed this session. An after-close reporter has not moved yet
-          // at 10:30 ET, so its pre-print EPS still matches its pre-print price — suppressing it
-          // there would discard a P/E that is perfectly good for another few hours.
           if (hasPrintedBySession(date, perSymbolEarningsHour.get(sym), today)) {
             reportedOn.set(sym.toUpperCase(), date);
           }

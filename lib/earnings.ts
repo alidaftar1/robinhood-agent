@@ -16,18 +16,22 @@ interface FinnhubEarningsRow { symbol: string; date: string; hour?: string }
 // session, so "how fresh" should count from the reaction day (date+1), not the announcement day; BMO
 // (before-open) and unspecified are same-day. (Weekend edge deliberately ignored — a rough freshness
 // indicator for an advisory flag.) e.g. PLTR reported 08-03 amc, reacted 08-04 → 2d ago on 08-06, not 3.
-/** Has a name scheduled for `date` already printed as of a mid-session run on `today`?
- *  BMO and unspecified print before/at the open; "amc" lands after the close, so on the day itself
- *  the price has NOT yet moved and the pre-print figures are still the right ones to show. */
+export function earningsDaysAgo(date: string, hour: string | undefined, today: string): number {
+  const effectiveMs = Date.parse(date) + (hour === "amc" ? 86_400_000 : 0);
+  return Math.round((Date.parse(today) - effectiveMs) / 86_400_000);
+}
+
+/** Has a name scheduled for `date` already printed, as of a mid-session run on `today`?
+ *  Only "amc" is treated as not-yet-printed: it lands after the close, so on the day itself the
+ *  price has not moved and the pre-print figures are still the right ones to show. "dmh" (during
+ *  market hours) is deliberately counted as PRINTED even though a 13:00 ET print has not happened
+ *  at a 10:30 ET run — the two errors are not symmetric. Calling a printed name unprinted serves a
+ *  post-print price over pre-print earnings (a confident wrong number); calling an unprinted name
+ *  printed merely suppresses a P/E for a few hours. dmh is rare; take the lossy side. */
 export function hasPrintedBySession(date: string, hour: string | undefined, today: string): boolean {
   if (date < today) return true;
   if (date > today) return false;
   return hour !== "amc";
-}
-
-export function earningsDaysAgo(date: string, hour: string | undefined, today: string): number {
-  const effectiveMs = Date.parse(date) + (hour === "amc" ? 86_400_000 : 0);
-  return Math.round((Date.parse(today) - effectiveMs) / 86_400_000);
 }
 
 function windowDates(days: number): { from: string; to: string } {
@@ -41,7 +45,11 @@ function windowDates(days: number): { from: string; to: string } {
 function addNearest(out: Map<string, string>, symbol: string, date: string, from: string, hours?: Map<string, string | undefined>, hour?: string) {
   if (!symbol || !date || date < from) return; // upcoming only
   const prev = out.get(symbol);
-  if (!prev || date < prev) { out.set(symbol, date); hours?.set(symbol, hour); }
+  if (!prev || date < prev) { out.set(symbol, date); hours?.set(symbol, hour); return; }
+  // Same date seen twice (Finnhub emits an estimate row AND a confirmed row). Let a later row fill
+  // in an hour the first one left blank — otherwise a blank-then-"amc" pair reads as already
+  // printed and suppresses a P/E that is still correct until the close.
+  if (date === prev && hour && !hours?.get(symbol)) hours?.set(symbol, hour);
 }
 
 // Finnhub earnings calendar — whole market in one call. Never throws.
@@ -95,19 +103,28 @@ export interface RecentEarnings { date: string; daysAgo: number }
 // ONE call per symbol over a window [today-lookback, today+days] yields BOTH the nearest UPCOMING
 // date (⚠EARN) AND the most-recent PAST report (📊REPORTED) — so we never fetch the same symbol
 // twice. Batched to respect the free-tier rate limit. Fail-safe: a symbol that errors is just absent.
-export async function fetchEarningsForSymbols(symbols: string[], days = 30, lookbackDays = 7): Promise<{ upcoming: Map<string, string>; upcomingHour: Map<string, string | undefined>; recent: Map<string, RecentEarnings> }> {
+/** How recent a print must be to earn the 📊REPORTED flag — independent of how far back we LOOK. */
+const RECENT_FLAG_DAYS = 7;
+
+export async function fetchEarningsForSymbols(symbols: string[], days = 30, lookbackDays = 60): Promise<{ upcoming: Map<string, string>; upcomingHour: Map<string, string | undefined>; recent: Map<string, RecentEarnings>; lastReport: Map<string, { date: string; hour?: string }> }> {
   const upcoming = new Map<string, string>();
   // Session timing for the nearest upcoming date. A name printing TODAY has only gapped if it
   // printed BEFORE the open — an "amc" name has not reported yet when the 10:30 ET cron runs, so
   // its pre-print EPS still matches its pre-print price. Same amc convention as earningsDaysAgo.
   const upcomingHour = new Map<string, string | undefined>();
+  // The most recent PAST report over the WHOLE lookback, which is now much wider than the 7-day
+  // 📊REPORTED flag. Valuation needs the wide one: the 10-Q lands 23-38 days after the press
+  // release, so a 7-day window stops suppressing a pre-print P/E weeks before the filing that
+  // would fix it — the guard expiring reintroduces exactly the failure it exists to prevent.
+  const lastReport = new Map<string, { date: string; hour?: string }>();
   const recent = new Map<string, RecentEarnings>();
   const key = process.env.FINNHUB_API_KEY;
   const uniq = [...new Set(symbols)].filter(Boolean);
-  if (!key || uniq.length === 0) return { upcoming, upcomingHour, recent };
+  if (!key || uniq.length === 0) return { upcoming, upcomingHour, recent, lastReport };
   const today = new Date().toISOString().split("T")[0];
   const from = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().split("T")[0];
   const to = new Date(Date.now() + days * 86_400_000).toISOString().split("T")[0];
+  const recentCutoff = new Date(Date.now() - RECENT_FLAG_DAYS * 86_400_000).toISOString().split("T")[0];
   const BATCH = 10; // well under Finnhub's 60/min
   for (let i = 0; i < uniq.length; i += BATCH) {
     await Promise.all(uniq.slice(i, i + BATCH).map(async sym => {
@@ -124,11 +141,16 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30, look
           addNearest(upcoming, row.symbol, row.date, today, upcomingHour, row.hour); // nearest date >= today
           if (row.date < today && (!best || row.date > best)) { best = row.date; bestHour = row.hour; }
         }
-        if (best) recent.set(sym, { date: best, daysAgo: earningsDaysAgo(best, bestHour, today) });
+        if (best) {
+          lastReport.set(sym, { date: best, hour: bestHour });
+          // 📊REPORTED stays a SHORT-horizon flag; widening the fetch window must not silently
+          // start labelling 6-week-old prints as "just reported" on every surface that renders it.
+          if (best >= recentCutoff) recent.set(sym, { date: best, daysAgo: earningsDaysAgo(best, bestHour, today) });
+        }
       } catch { /* fail-safe per symbol */ }
     }));
   }
-  return { upcoming, upcomingHour, recent };
+  return { upcoming, upcomingHour, recent, lastReport };
 }
 
 // Shared render for the "just reported" flag, used on the shortlist, influencer, and held surfaces.

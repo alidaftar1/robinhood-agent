@@ -312,12 +312,15 @@ export async function getValuations(
   const noData: string[] = [];
   const prePrint: string[] = [];
   const timedOut: string[] = [];
+  const staleUnchecked: string[] = [];
+  const today = new Date().toISOString().split("T")[0];
 
-  // Order matters under a time budget: names that just reported are the ones whose cached figure is
-  // unusable, so give them the fetch slots before names that already have a good cached value.
-  const ordered = [...new Set(symbols)].sort((a, b) =>
-    Number(!!opts.reportedOn?.get(b.toUpperCase())) - Number(!!opts.reportedOn?.get(a.toUpperCase())));
-  for (const symbol of ordered) {
+  // Deliberately NOT sorted just-reported-first. That ordering made sense while a reported name
+  // cost one Redis GET, but it now costs a full SEC refetch that usually comes back still
+  // pre-print (the 10-Q lags 23-38 days) — so it spent the binding 20s budget on the names least
+  // likely to produce a P/E and pushed usable names into the timeout tail. Suppression is the safe
+  // outcome for a reported name; a missing P/E for an unreported one is pure lost coverage.
+  for (const symbol of [...new Set(symbols)]) {
     const price = priceOf(symbol);
     if (!price || price <= 0) continue;          // no price, no P/E — nothing to say
     const key = `${EPS_CACHE_PREFIX}${symbol.toUpperCase()}`;   // match the uppercase CIK lookup
@@ -335,6 +338,7 @@ export async function getValuations(
     } catch { /* cache unavailable or unparseable — fall through to a live read */ }
 
     const reportDate = opts.reportedOn?.get(symbol.toUpperCase());
+    let askedSec = false;   // did we actually consult SEC for this name this run?
 
     // Write with a TTL that depends on whether the blob covers a just-announced print. Shared by
     // the first fetch and the refresh below so the two paths cannot drift apart.
@@ -355,6 +359,7 @@ export async function getValuations(
       if (fresh >= maxFresh) { skipped.push(symbol); continue; }
       if (signal.aborted) { timedOut.push(symbol); continue; }   // definitely us, not them
       fresh++;
+      askedSec = true;
       points = await fetchEpsPoints(symbol, signal);
       if (points.length === 0) {
         // fetchEpsPoints swallows AbortError and returns [], so a blown time budget is otherwise
@@ -364,12 +369,13 @@ export async function getValuations(
       }
       await cachePoints(points);
     } else if (!pointsIncludeReport(points, reportDate)) {
-      // The CACHED blob predates the print — but this is the one case where a refetch IS
-      // productive: the 10-Q may have been filed since we cached. Without this, the only fetch
-      // trigger is a cache MISS, so a name that reported Monday and filed Wednesday would stay
-      // suppressed until the blob expired — dark for the whole window it is flagged 📊REPORTED.
-      if (fresh < maxFresh && !signal.aborted) {
+      // The CACHED blob predates the print — the one case where a refetch IS productive, since the
+      // 10-Q may have been filed since we cached. Skip it when reportDate is TODAY: a 10-Q is
+      // essentially never filed the same morning as the press release (even AAPL files T+1), so
+      // that fetch cannot succeed and would only burn budget.
+      if (reportDate && reportDate < today && fresh < maxFresh && !signal.aborted) {
         fresh++;
+        askedSec = true;
         const refreshed = await fetchEpsPoints(symbol, signal);
         if (refreshed.length > 0) {   // keep the old blob on an empty/aborted read rather than blanking
           points = refreshed;
@@ -379,10 +385,13 @@ export async function getValuations(
     }
 
     // SUPPRESS rather than mislead: if this name has reported and the filings STILL do not carry the
-    // print, any P/E divides a POST-print price by PRE-print earnings. Nothing further can fix that
-    // this run — the 10-Q is not filed yet — so show nothing and say so.
+    // print, any P/E divides a POST-print price by PRE-print earnings.
     if (!pointsIncludeReport(points, reportDate)) {
-      prePrint.push(symbol);
+      // Only claim SEC has not filed it if we actually ASKED SEC this run. On a cache hit whose
+      // refetch was blocked by the cap or a live abort, all we know is that our own copy is stale —
+      // asserting anything about EDGAR's state there is the same unearned-certainty class as the
+      // timeout/no-data conflation this file already fixed once.
+      (askedSec ? prePrint : staleUnchecked).push(symbol);
       continue;
     }
     const v = buildValuation(symbol, price, points);
@@ -399,6 +408,9 @@ export async function getValuations(
     // Distinct from the cap: these were ATTEMPTED and SEC returned nothing usable — a non-S&P CIK
     // miss, a filer with no us-gaap EPS tag, or a 403/429. Previously dropped with no trace at all.
     notes.push(`CONTEXT — no SEC EPS data for: ${noData.join(", ")}. Absent from the valuation block; this does NOT mean cheap. No order was affected.`);
+  }
+  if (staleUnchecked.length) {
+    notes.push(`CONTEXT — P/E withheld for: ${staleUnchecked.join(", ")} — these reported recently and our CACHED filing data predates the print, but the refetch did not run this cycle (per-run fetch cap or time budget), so SEC was not consulted. Withheld to avoid dividing a post-print price by pre-print earnings. Says nothing about the companies. No order was affected.`);
   }
   if (prePrint.length) {
     notes.push(`CONTEXT — P/E SUPPRESSED for: ${prePrint.join(", ")} — these reported recently and SEC filings do not yet carry the print, so any multiple would divide a post-print price by pre-print earnings. Absent from the valuation block; this does NOT mean cheap or expensive. No order was affected.`);
