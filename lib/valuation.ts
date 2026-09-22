@@ -306,6 +306,11 @@ export async function getValuations(
     maxFresh?: number;
     /** symbol -> most recent earnings report date. Cached EPS predating a report is discarded. */
     reportedOn?: Map<string, string>;
+    /** Seam for tests ONLY. The defect this exists to pin — a mid-sweep abort returning truncated
+     *  but non-empty points — cannot be reached with a pre-aborted signal, because the loop returns
+     *  before fetching. Tests that abort BEFORE the call therefore pass whether or not the guard is
+     *  present, which is how the guard went missing in the first place. */
+    fetchPoints?: (symbol: string, signal: AbortSignal) => Promise<XbrlPoint[]>;
   } = {},
 ): Promise<{ valuations: Map<string, Valuation>; notes: string[] }> {
   const maxFresh = opts.maxFresh ?? 25;
@@ -318,6 +323,7 @@ export async function getValuations(
   const timedOut: string[] = [];
   const staleUnchecked: string[] = [];
   const today = new Date().toISOString().split("T")[0];
+  const fetchPoints = opts.fetchPoints ?? fetchEpsPoints;
 
   // Natural order. An earlier revision sorted reported names first to feed a refresh budget; with
   // no refresh path that only spent the binding time budget on the names LEAST likely to yield a
@@ -361,7 +367,7 @@ export async function getValuations(
       if (signal.aborted) { timedOut.push(symbol); continue; }   // definitely us, not them
       fresh++;
       askedSec = true;
-      points = await fetchEpsPoints(symbol, signal);
+      points = await fetchPoints(symbol, signal);
       if (signal.aborted) {
         // A truncated read is NOT a short one. fetchEpsPoints sweeps three EPS tags and keeps the
         // one with the most recent data; concept() swallows AbortError per tag, so an abort partway
