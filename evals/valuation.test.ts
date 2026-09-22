@@ -279,7 +279,7 @@ describe("the block cannot be read as a sell reason", () => {
   });
 });
 
-import { pointsIncludeReport } from "@/lib/valuation";
+import { pointsIncludeReport, getValuations } from "@/lib/valuation";
 import { hasPrintedBySession, selectPastReport, RECENT_FLAG_DAYS } from "@/lib/earnings";
 
 describe("a P/E must never mix a post-print price with pre-print earnings", () => {
@@ -411,5 +411,37 @@ describe("only a name that has ALREADY printed may suppress its P/E", () => {
   test("yesterday's amc report HAS printed; tomorrow's has not", () => {
     expect(hasPrintedBySession("2026-09-18", "amc", "2026-09-21")).toBe(true);
     expect(hasPrintedBySession("2026-09-22", "bmo", "2026-09-21")).toBe(false);
+  });
+});
+
+describe("an expired time budget must never become a fact about a company", () => {
+  // Round 4 found the one path in this feature that could put a WRONG number in front of the
+  // model rather than withholding one, and it hinged entirely on abort handling. These pin the
+  // observable half without a network: with an already-aborted signal nothing may be fetched, no
+  // valuation may be produced, and the note must blame the budget, not the filer.
+  const priceOf = () => 100;
+
+  test("an already-expired budget yields no valuations and blames itself", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const { valuations, notes } = await getValuations(["AAPL", "MSFT"], priceOf, ctrl.signal, {
+      reportedOn: new Map([["AAPL", "2026-09-15"]]),
+    });
+    expect(valuations.size).toBe(0);
+    const joined = notes.join(" ");
+    expect(joined).toMatch(/time budget/i);
+    // The dangerous misread: absence rendered as a statement about the business.
+    expect(joined).not.toMatch(/no SEC EPS data/i);
+    expect(joined).toMatch(/do NOT read it as a fact about the company/i);
+  });
+
+  test("an aborted run never claims SEC has not filed", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const { notes } = await getValuations(["AAPL"], priceOf, ctrl.signal, {
+      reportedOn: new Map([["AAPL", "2026-09-15"]]),
+    });
+    // prePrint asserts EDGAR's state. We never reached EDGAR, so that claim must not appear.
+    expect(notes.join(" ")).not.toMatch(/filings do not yet carry/i);
   });
 });

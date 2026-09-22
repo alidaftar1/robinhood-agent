@@ -240,18 +240,21 @@ export function formatValuation(v: Valuation): string {
 
 const EPS_CACHE_PREFIX = "valuation:eps:";
 const EPS_TTL_SECONDS = 7 * 24 * 60 * 60;   // EPS only changes on a filing
-// A blob that does NOT yet carry a just-announced print must NOT sit for the full week: the 10-Q
-// lands days after the press release, and with a 7-day TTL the name would stay suppressed for the
-// entire window in which it is flagged 📊REPORTED — silent for exactly the name that needs pricing.
-// Short enough that the next daily run refetches and picks the filing up the day it appears.
-// A pre-print blob deliberately keeps the FULL TTL. Shortening it looks like the obvious way to
-// notice the 10-Q the day it lands, but a sub-day TTL on a daily cron is expired at every single
-// run, so the name takes the cache-MISS path (3 sequential SEC calls) daily for the whole 23-38 day
-// lag — and in earnings season, when reporting clusters into ~3 weeks, that is most of the book at
-// once: ~90 serial requests against a 20s budget, truncating the P/E block exactly when it matters.
-// Detection is the bounded refresh branch's job instead; it costs at most MAX_PRE_PRINT_REFRESH
-// fetches per run no matter how many names are waiting on a filing.
-const MAX_PRE_PRINT_REFRESH = 6;
+// A pre-print blob keeps the FULL TTL, and the TTL is the ONLY mechanism that re-checks it.
+//
+// Two rejected alternatives, recorded because each looked obviously right and each was worse:
+//   - Shortening the TTL for a pre-print blob. On a daily cron a sub-day TTL is expired at every
+//     run, so the name takes the cache-MISS path (3 sequential SEC calls) daily for the whole
+//     23-38 day filing lag. In earnings season that is most of the book at once — ~90 serial
+//     requests against a 20s budget, truncating the P/E block exactly when it matters most.
+//   - Refreshing stale blobs inline under a per-run cap. The cap bounded the cost but not the
+//     selection: names that CANNOT resolve (a delinquent filer, a name whose data is not under the
+//     EPS tags) hold the oldest print date forever, so they won every slot every run while names
+//     that could resolve starved behind them.
+//
+// So: no refresh path. A landed 10-Q is picked up when the blob lapses — up to 7 days late. That
+// is a deliberate accuracy-for-simplicity trade, and it is safe in the only direction that counts:
+// while suppressed the P/E is WITHHELD, never wrong. Do not "fix" this with a shorter TTL.
 
 interface CachedEps { v: 1; points: XbrlPoint[]; cachedAt: string }
 
@@ -316,18 +319,10 @@ export async function getValuations(
   const staleUnchecked: string[] = [];
   const today = new Date().toISOString().split("T")[0];
 
-  const uniqueSymbols = [...new Set(symbols)].sort((a, b) => {
-    // Oldest print first among reported names: those are the ones whose 10-Q is most likely to have
-    // landed, so the capped refresh budget resolves the most suppressions. Unreported names keep
-    // their original order and are unaffected (they never enter the refresh branch).
-    const ra = opts.reportedOn?.get(a.toUpperCase()), rb = opts.reportedOn?.get(b.toUpperCase());
-    if (!ra && !rb) return 0;
-    if (!ra) return 1;
-    if (!rb) return -1;
-    return ra < rb ? -1 : ra > rb ? 1 : 0;
-  });
-  let refreshed = 0;
-  for (const symbol of uniqueSymbols) {
+  // Natural order. An earlier revision sorted reported names first to feed a refresh budget; with
+  // no refresh path that only spent the binding time budget on the names LEAST likely to yield a
+  // P/E (a reported name is usually still pre-print) and pushed usable ones into the timeout tail.
+  for (const symbol of [...new Set(symbols)]) {
     const price = priceOf(symbol);
     if (!price || price <= 0) continue;          // no price, no P/E — nothing to say
     const key = `${EPS_CACHE_PREFIX}${symbol.toUpperCase()}`;   // match the uppercase CIK lookup
@@ -367,39 +362,34 @@ export async function getValuations(
       fresh++;
       askedSec = true;
       points = await fetchEpsPoints(symbol, signal);
+      if (signal.aborted) {
+        // A truncated read is NOT a short one. fetchEpsPoints sweeps three EPS tags and keeps the
+        // one with the most recent data; concept() swallows AbortError per tag, so an abort partway
+        // returns whatever the earlier tags produced — non-empty, but missing the very tag the
+        // sweep exists to prefer. Caching that would pin an abandoned series for a full week, and
+        // if it happened to satisfy pointsIncludeReport the model would get a WRONG P/E rather than
+        // a withheld one. Treat it as the timeout it is.
+        timedOut.push(symbol);
+        continue;
+      }
       if (points.length === 0) {
         // fetchEpsPoints swallows AbortError and returns [], so a blown time budget is otherwise
         // indistinguishable from "this company has no EPS" — one is about us, the other about them.
-        (signal.aborted ? timedOut : noData).push(symbol);
+        noData.push(symbol);   // aborts already returned above
         continue;
       }
       await cachePoints(points);
-    } else if (!pointsIncludeReport(points, reportDate)) {
-      // The CACHED blob predates the print — the one case where a refetch IS productive, since the
-      // 10-Q may have been filed since we cached. Skip it when reportDate is TODAY: a 10-Q is
-      // essentially never filed the same morning as the press release (even AAPL files T+1), so
-      // that fetch cannot succeed and would only burn budget.
-      if (reportDate && reportDate < today && refreshed < MAX_PRE_PRINT_REFRESH && fresh < maxFresh && !signal.aborted) {
-        fresh++; refreshed++;
-        const fresher = await fetchEpsPoints(symbol, signal);
-        if (fresher.length > 0) {   // keep the old blob on an empty/aborted read rather than blanking
-          askedSec = true;          // only a read that RETURNED tells us anything about EDGAR
-          points = fresher;
-          await cachePoints(points);
-        } else if (signal.aborted) {
-          timedOut.push(symbol);
-          continue;
-        }
-      }
     }
 
     // SUPPRESS rather than mislead: if this name has reported and the filings STILL do not carry the
     // print, any P/E divides a POST-print price by PRE-print earnings.
     if (!pointsIncludeReport(points, reportDate)) {
-      // Only claim SEC has not filed it if we actually ASKED SEC this run. On a cache hit whose
-      // refetch was blocked by the cap or a live abort, all we know is that our own copy is stale —
-      // asserting anything about EDGAR's state there is the same unearned-certainty class as the
-      // timeout/no-data conflation this file already fixed once.
+      // Two different facts, kept apart. "SEC has not filed it" may only be claimed when we
+      // actually READ SEC this run (askedSec) — on a live cache hit all we know is that OUR copy is
+      // stale, and asserting EDGAR's state there is the same unearned certainty as the
+      // timeout/no-data conflation this file already fixed once. The one exception is a name that
+      // printed TODAY: a 10-Q is never filed the morning of the press release (even AAPL files
+      // T+1), so there the absence of a filing is certain without asking.
       const sameDay = reportDate === today;
       (askedSec || sameDay ? prePrint : staleUnchecked).push(symbol);
       continue;
@@ -424,7 +414,7 @@ export async function getValuations(
     return d ? `${sym} (reported ${d})` : sym;
   };
   if (staleUnchecked.length) {
-    notes.push(`CONTEXT — P/E withheld for: ${staleUnchecked.map(x => labelWithDate(x)).join(", ")} — each reported on the date shown and our CACHED filing data predates that print, but the refetch did not run this cycle (per-run fetch cap or time budget), so SEC was not consulted. Withheld to avoid dividing a post-print price by pre-print earnings. Says nothing about the companies. No order was affected.`);
+    notes.push(`CONTEXT — P/E withheld for: ${staleUnchecked.map(x => labelWithDate(x)).join(", ")} — each reported on the date shown and our CACHED filing data predates that print, and SEC was not consulted this cycle (the cached copy had not yet lapsed). Withheld to avoid dividing a post-print price by pre-print earnings — this says our copy is stale, NOT that the filing is missing. Says nothing about the companies. No order was affected.`);
   }
   if (prePrint.length) {
     notes.push(`CONTEXT — P/E SUPPRESSED for: ${prePrint.map(x => labelWithDate(x)).join(", ")} — each reported on the date shown and SEC filings do not yet carry that print, so any multiple would divide a post-print price by pre-print earnings. Absent from the valuation block; this does NOT mean cheap or expensive. No order was affected.`);

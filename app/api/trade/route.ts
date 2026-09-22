@@ -529,13 +529,21 @@ export async function GET(request: Request) {
         // Built from lastReport, NOT recentEarnings: 📊REPORTED is a 7-day flag, but the filing
         // that makes a post-print P/E safe lands 23-38 days after the press release. Keying
         // suppression to the 7-day flag stops guarding weeks before the fix arrives.
-        const reportedOn = new Map([...perSymbolLastReport].map(([sym, r]) => [sym.toUpperCase(), r.date] as const));
+        // Validate the shape: these dates come straight from Finnhub and are interpolated into the
+        // live-money prompt. An unparseable one also suppresses that name's P/E indefinitely, since
+        // pointsIncludeReport fails safe on a date it cannot read — so drop it rather than carry it.
+        const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+        const reportedOn = new Map(
+          [...perSymbolLastReport]
+            .filter(([, r]) => ISO_DATE.test(r.date))
+            .map(([sym, r]) => [sym.toUpperCase(), r.date] as const),
+        );
         // A name printing THIS MORNING has already gapped but is in neither past-report map, and the
         // cron runs 10:30 ET on a live price — the largest-divergence day. Fold it in, but only if
         // it has ALREADY printed: an after-close reporter has not moved yet, so its pre-print EPS
         // still matches its pre-print price and suppressing it discards a good P/E.
         for (const [sym, date] of perSymbolEarnings) {
-          if (hasPrintedBySession(date, perSymbolEarningsHour.get(sym), today)) {
+          if (ISO_DATE.test(date) && hasPrintedBySession(date, perSymbolEarningsHour.get(sym), today)) {
             reportedOn.set(sym.toUpperCase(), date);
           }
         }
