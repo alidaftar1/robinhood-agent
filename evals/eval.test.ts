@@ -453,16 +453,29 @@ describe("per-stock news: material-event flag renders in the shortlist", () => {
 describe("staleness time-stop: flat holdings flagged ⏳STALE (main + influencer clocks)", () => {
   const { buildV1AnalysisPrompt } = require("@/lib/strategy");
   const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
-    { symbol: "PLTR", quantity: "2", avgCost: "120", price: "123", heldDays: 12 }, // infl 12d/+2.5% → stale (≥10d, <8%)
+    { symbol: "PLTR", quantity: "2", avgCost: "120", price: "117", heldDays: 12 }, // infl 12d/−2.5% → stale on the FAST clock (≥10d AND down)
     { symbol: "BTC",  quantity: "1", avgCost: "27",  price: "40",  heldDays: 20 }, // infl +48% → caught a move → not stale
+    { symbol: "CAKE", quantity: "5", avgCost: "100", price: "102.4", heldDays: 12 }, // infl 12d/+2.4% → UP inside the slow clock → deliberately NOT stale
+    { symbol: "ZOMB", quantity: "5", avgCost: "100", price: "101",  heldDays: 30 }, // infl 30d/+1% → slow clock → stale ("no move")
     { symbol: "ROST", quantity: "3", avgCost: "240", price: "242", heldDays: STALE_DAYS + 1 }, // main, flat past the clock → stale
     { symbol: "GE",   quantity: "1", avgCost: "300", price: "300", heldDays: STALE_DAYS - 1 },  // main, flat but inside the clock → not yet
   ]};
-  const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR", "BTC"], [], [], {});
+  const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR", "BTC", "CAKE", "ZOMB"], [], [], {});
   const lineFor = (s: string) => prompt.split("\n").find((l: string) => l.trim().startsWith(s)) ?? "";
 
-  it("flags a flat influencer holding on the 2-week clock", () => {
+  it("flags a DOWN influencer holding on the fast 2-week clock", () => {
     expect(lineFor("PLTR")).toMatch(/⏳STALE/);
+    expect(lineFor("PLTR")).toContain("— down");
+  });
+  it("does NOT flag an influencer winner mid-consolidation (the 2026-09-25 loosening)", () => {
+    // +2.4% at day 12 was a forced rotate under the old single +8% bar. That is the eviction the
+    // two-tier clock exists to stop; it must stay un-flagged until the slow clock.
+    expect(lineFor("CAKE")).not.toMatch(/⏳STALE/);
+  });
+  it("flags a ZOMBIE — up, but going nowhere past the slow clock", () => {
+    // The hole a bare 0 bar opened: at +1% forever it would read "do not sell here" indefinitely.
+    expect(lineFor("ZOMB")).toMatch(/⏳STALE/);
+    expect(lineFor("ZOMB")).toContain("— no move");
   });
   it("does NOT flag an influencer holding that caught a big move", () => {
     expect(lineFor("BTC")).not.toMatch(/⏳STALE/);
@@ -507,7 +520,7 @@ describe("earnings hold-judgment: held names flagged, rules present (main + infl
 describe("earnings-beat record: serial-beater base rate on a held name into earnings", () => {
   const { buildV1AnalysisPrompt } = require("@/lib/strategy");
   const ctx = { buyingPower: "$500", totalValue: "$2500", positions: [
-    { symbol: "PLTR", quantity: "2", avgCost: "120", price: "121", heldDays: 23 }, // stale + imminent earnings + serial beater
+    { symbol: "PLTR", quantity: "2", avgCost: "120", price: "117", heldDays: 23 }, // stale (down, fast clock) + imminent earnings + serial beater
     { symbol: "ROST", quantity: "3", avgCost: "231", price: "254", heldDays: 9 },   // earnings 12d out (>10d, no ⚠EARN) — still a 3/4 beater
     { symbol: "APA",  quantity: "17", avgCost: "33", price: "36" },                 // far-off earnings (47d) → no record shown
   ]};

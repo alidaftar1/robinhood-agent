@@ -1,60 +1,99 @@
 import { describe, test, expect } from "bun:test";
 import {
-  buildV1AnalysisPrompt, INFLUENCER_STALE_DAYS, INFLUENCER_STALE_RETURN_PCT,
+  buildV1AnalysisPrompt, staleReasonOf,
+  INFLUENCER_STALE_DAYS, INFLUENCER_STALE_RETURN_PCT,
+  INFLUENCER_ZOMBIE_DAYS, INFLUENCER_ZOMBIE_RETURN_PCT,
   STALE_DAYS, STALE_RETURN_PCT,
 } from "@/lib/strategy";
 
-// The influencer time-stop's return bar was +8% until 2026-09-25. That was incoherent with the
-// sleeve's own geometry: +8% inside 10 trading days is ~a 600% annualised pace, so with a −10% stop
-// and a +40% take-profit it force-rotated an 18-point band — a name up a real +7% after two weeks
-// counted as "dead weight". At 0 the rule means what dead money actually means: held two weeks and
-// underwater. These pin the semantics, since the threshold is read by the prompt AND by the
-// skeptical reviewer's daily checks, which previously hardcoded it.
-const pos = (symbol: string, heldDays: number, avgCost: number, price: number) =>
-  ({ symbol, quantity: "10", avgCost: String(avgCost), heldDays, price });
-
-// The POSITION LINE only. The word ⏳STALE also appears in the strategy RULES of every prompt, so
-// scanning the whole string matches unconditionally — an assertion that can never fail.
-const positionLine = (heldDays: number, avgCost: number, price: number, influencer = true) => {
-  const prompt = buildV1AnalysisPrompt(
-    "2026-09-25", "", { cash: 1000, positions: [pos("TEST", heldDays, avgCost, price)] } as never,
-    undefined, undefined, influencer ? ["TEST"] : [],
-  );
-  return prompt.split("\n").find(l => l.includes("TEST ×")) ?? "";
-};
-
-describe("influencer time-stop fires on UNDERWATER, not on 'not up enough'", () => {
-  test("a name UP after the clock is NOT stale — the whole point of the loosening", () => {
-    // CAKE's real case: +2.4% at day 10. Under the old +8% bar this was a forced rotate.
-    expect(positionLine(INFLUENCER_STALE_DAYS, 100, 102.4)).not.toContain("⏳STALE");
-    // And the case that motivated it: a genuine winner mid-consolidation.
-    expect(positionLine(INFLUENCER_STALE_DAYS, 100, 107)).not.toContain("⏳STALE");
+// The influencer time-stop was a single +8%-at-10-days bar until 2026-09-25. That evicted winners
+// mid-consolidation (+8% in 10 trading days is ~a 600% annualised pace). Dropping the bar to 0
+// fixed that and opened the opposite hole: at +0.1% a name flips back to "do not sell here", so
+// the whole [0%, +40%) band became unrotatable in a 2-slot sleeve. Two clocks express both shapes.
+describe("influencer staleness has two clocks, and each catches a different failure", () => {
+  test("FAST clock: down after ~2 weeks is stale", () => {
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, -3)).toBe("down");
   });
 
-  test("a name DOWN after the clock IS stale", () => {
-    const line = positionLine(INFLUENCER_STALE_DAYS, 100, 97);
-    expect(line).toContain("⏳STALE");
-    expect(line).toContain("down");       // not "flat" — the tag must describe what it shows
+  test("SLOW clock: up but going nowhere after ~5 weeks is stale", () => {
+    expect(staleReasonOf(true, INFLUENCER_ZOMBIE_DAYS, 1)).toBe("nomove");
+    // The zombie this tier exists for: permanently un-exitable under a bare 0 bar.
+    expect(staleReasonOf(true, 200, 0.1)).toBe("nomove");
   });
 
-  test("the clock still gates it — a fresh loser is not stale", () => {
-    expect(positionLine(INFLUENCER_STALE_DAYS - 1, 100, 97)).not.toContain("⏳STALE");
+  test("THE POINT: a winner mid-consolidation is left alone", () => {
+    // CAKE's real case (+2.4% at day 10) and a genuine +7% — both forced rotates under the old bar.
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, 2.4)).toBeNull();
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, 7)).toBeNull();
+    expect(staleReasonOf(true, INFLUENCER_ZOMBIE_DAYS - 1, 7)).toBeNull();
+  });
+
+  test("the dead-band stops daily flip-flop around the entry price", () => {
+    // A bare sign test sits exactly where "going nowhere" names cluster, so -0.2% Monday would
+    // force a rotate and +0.2% Tuesday would say do-not-sell.
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, -0.2)).toBeNull();
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, -0.6)).toBe("down");
+  });
+
+  test("the clocks gate: a fresh loser is not yet stale", () => {
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS - 1, -5)).toBeNull();
+  });
+
+  test("missing price or age never asserts staleness", () => {
+    expect(staleReasonOf(true, null, -5)).toBeNull();
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, null)).toBeNull();
+    expect(staleReasonOf(true, undefined, undefined)).toBeNull();
+  });
+
+  test("the MAIN book keeps its own single clock and is not swept along", () => {
+    expect(staleReasonOf(false, STALE_DAYS, 1)).toBe("nomove");
+    expect(staleReasonOf(false, STALE_DAYS, 4)).toBeNull();
+    expect(staleReasonOf(false, INFLUENCER_ZOMBIE_DAYS, -10)).toBeNull();   // main clock is 60d
+    expect(STALE_DAYS).toBe(60);
+    expect(STALE_RETURN_PCT).toBe(3);
   });
 
   test("the constants are what the prompt and the reviewer both read", () => {
-    expect(INFLUENCER_STALE_RETURN_PCT).toBe(0);
     expect(INFLUENCER_STALE_DAYS).toBe(10);
-    // The main book is deliberately different and must not be swept along.
-    expect(STALE_RETURN_PCT).toBe(3);
-    expect(STALE_DAYS).toBe(60);
+    expect(INFLUENCER_STALE_RETURN_PCT).toBe(-0.5);
+    expect(INFLUENCER_ZOMBIE_DAYS).toBe(25);
+    expect(INFLUENCER_ZOMBIE_RETURN_PCT).toBe(8);
   });
+});
 
-  test("the prompt phrases a 0 bar as DOWN, not as 'up less than +0%'", () => {
+describe("the rendered position line tells the model WHICH clock fired", () => {
+  const pos = (heldDays: number, avgCost: number, price: number) =>
+    ({ symbol: "TEST", quantity: "10", avgCost: String(avgCost), heldDays, price });
+
+  const lineFor = (heldDays: number, avgCost: number, price: number) => {
     const prompt = buildV1AnalysisPrompt(
-      "2026-09-25", "", { cash: 1000, positions: [pos("TEST", INFLUENCER_STALE_DAYS, 100, 97)] } as never,
+      "2026-09-25", "", { cash: 1000, positions: [pos(heldDays, avgCost, price)] } as never,
       undefined, undefined, ["TEST"],
     );
-    expect(prompt).toContain("still DOWN since entry");
-    expect(prompt).not.toContain("up less than +0%");
+    const line = prompt.split("\n").find(l => l.includes("TEST ×"));
+    // NOT `?? ""` — a missing line would silently satisfy every .not.toContain assertion below,
+    // which is exactly the vacuity this file exists to avoid.
+    if (!line) throw new Error("position line not rendered — fixture or prompt shape changed");
+    return line;
+  };
+
+  test("a broken name reads 'down' and loses its do-not-sell protection", () => {
+    const line = lineFor(INFLUENCER_STALE_DAYS, 100, 96);
+    expect(line).toContain("⏳STALE");
+    expect(line).toContain("— down");
+    expect(line).toContain("NOT protected → ROTATE");
+  });
+
+  test("a zombie reads 'no move', not 'down' — it never lost money, it just never worked", () => {
+    const line = lineFor(INFLUENCER_ZOMBIE_DAYS, 100, 101);
+    expect(line).toContain("⏳STALE");
+    expect(line).toContain("— no move");
+    expect(line).not.toContain("— down");
+  });
+
+  test("a consolidating winner keeps its protection", () => {
+    const line = lineFor(INFLUENCER_STALE_DAYS, 100, 107);
+    expect(line).not.toContain("⏳STALE");
+    expect(line).toContain("do not sell here");
   });
 });

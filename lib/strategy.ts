@@ -135,19 +135,51 @@ export function isMainRebalanceDay(date: string, isHoliday: (d: string) => boole
 }
 
 export const STALE_RETURN_PCT = 3;   // "flat" = up less than this since entry
-// Influencer sleeve is on a TIGHTER CLOCK than the main book — only 2 slots (scarce), and it
-// exists to catch BIG moves, so a name going nowhere for ~2 weeks blocks a fresher pick.
+// Influencer sleeve: only 2 slots (scarce), and it exists to catch BIG moves — so a holding that
+// is not working blocks a fresher pick. TWO CLOCKS, because "not working" has two shapes and one
+// threshold cannot express both.
 //
-// The RETURN bar was +8% until 2026-09-25 and is now 0. The old bar was incoherent with the rest
-// of the sleeve: +8% inside 10 trading days is ~0.77%/day compounded, roughly a 600% annualised
-// pace, so it evicted anything not on track for a 6x year. With the stop at −10% and the
-// take-profit at +40%, that force-rotated an 18-point band — a name up a genuine +7% after two
-// weeks was "dead weight" — and momentum names reach +40% through consolidation, which is exactly
-// what an +8%/10d screen throws away. At 0 the rule says what "dead money" actually means: held
-// two weeks and UNDERWATER. The −10% stop still handles real losers; this covers the gap between
-// them, which nothing else does.
-export const INFLUENCER_STALE_DAYS = 10;       // ~2 trading weeks
-export const INFLUENCER_STALE_RETURN_PCT = 0;  // below this since entry = never caught a move
+// It was a single bar of +8% at 10 days until 2026-09-25. That was incoherent with the rest of the
+// sleeve: +8% inside 10 trading days is ~0.77%/day compounded, roughly a 600% annualised pace, so
+// with the stop at −10% and the take-profit at +40% it force-rotated an 18-point band — a name up
+// a genuine +7% after two weeks counted as dead weight — and momentum names reach +40% through
+// consolidation, which is exactly the shape an +8%/10d screen discards.
+//
+// Dropping that bar to 0 fixed the eviction but opened the opposite hole: at +0.1% a name is not
+// merely un-rotated, it flips back to "[INFLUENCER SLEEVE — do not sell here]". The whole
+// [0%, +40%) band became permanently unrotatable, with the scarce 2-slot sleeve tolerating flat
+// names the 60-day unlimited-slot main book would still evict at <+3%.
+//
+// So: a FAST clock for failure, and a SLOW clock for zombies.
+//   · 10 days  and DOWN            -> it broke; rotate.
+//   · 25 days  and under +8%       -> it never caught a move; rotate.
+// A winner mid-consolidation (up, inside 25 days) is left alone, which is the point. The dead-band
+// on the fast clock keeps a name oscillating around its entry price from flipping between
+// "MUST ROTATE" and "do not sell" on ordinary daily noise — the sign test alone sits exactly where
+// these names cluster.
+export const INFLUENCER_STALE_DAYS = 10;            // fast clock: ~2 trading weeks
+export const INFLUENCER_STALE_RETURN_PCT = -0.5;    // ...and DOWN (dead-band, not a bare sign test)
+export const INFLUENCER_ZOMBIE_DAYS = 25;           // slow clock: ~5 trading weeks
+export const INFLUENCER_ZOMBIE_RETURN_PCT = 8;      // ...and never caught a move
+
+/** Why a holding is stale, or null if it is not. Exported and pure because two clocks cannot be
+ *  expressed as one threshold, and because the skeptical reviewer must ask the same question the
+ *  prompt asks — previously it hardcoded the bar and drifted. */
+export type StaleReason = "down" | "nomove";
+
+export function staleReasonOf(
+  isInfluencer: boolean,
+  heldDays: number | null | undefined,
+  ret: number | null | undefined,
+): StaleReason | null {
+  if (heldDays == null || ret == null) return null;   // no price / no age -> never assert staleness
+  if (!isInfluencer) {
+    return heldDays >= STALE_DAYS && ret < STALE_RETURN_PCT ? "nomove" : null;
+  }
+  if (heldDays >= INFLUENCER_STALE_DAYS && ret < INFLUENCER_STALE_RETURN_PCT) return "down";
+  if (heldDays >= INFLUENCER_ZOMBIE_DAYS && ret < INFLUENCER_ZOMBIE_RETURN_PCT) return "nomove";
+  return null;
+}
 
 // Per-position dollar cap: a $400 floor that scales to 20% of the portfolio as the
 // account grows, so larger deposits get larger positions instead of forcing dozens
@@ -328,13 +360,12 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
         // (the stop covers the downside — main −5% same-day, influencer −10% from buy; this is the
         // flat middle). Influencer names are on a
         // tighter clock (scarce 2 slots, meant to catch BIG moves) than the steadier main book.
-        const staleDays = isInfl ? INFLUENCER_STALE_DAYS : STALE_DAYS;
-        const staleRet = isInfl ? INFLUENCER_STALE_RETURN_PCT : STALE_RETURN_PCT;
-        const isStale = p.heldDays != null && ret != null && p.heldDays >= staleDays && ret < staleRet;
-        // Describe what the number actually shows: with a 0 bar an influencer stale name is DOWN,
-        // and calling that "flat" understates it to the one reader deciding whether to rotate.
-        const staleWord = ret! < 0 ? "down" : "flat";
-        const staleTag = isStale ? `  ⏳STALE (held ${p.heldDays}d, ${ret >= 0 ? "+" : ""}${ret!.toFixed(1)}% — ${staleWord})` : "";
+        const staleReason = staleReasonOf(isInfl, p.heldDays, ret);
+        const isStale = staleReason != null;
+        // Name the SHAPE of the failure, not just the fact: "down" and "never moved" call for
+        // different judgments, and the old single word ("flat") described neither accurately.
+        const staleWord = staleReason === "down" ? "down" : "no move";
+        const staleTag = isStale ? `  ⏳STALE (held ${p.heldDays}d, ${ret! >= 0 ? "+" : ""}${ret!.toFixed(1)}% — ${staleWord})` : "";
         // Influencer holdings are normally "do not sell here" — BUT a ⏳STALE one is NOT protected;
         // it MUST rotate (the tag would otherwise contradict the ⏳STALE flag on the same line).
         const tag = isInfl ? (isStale ? "  [INFLUENCER SLEEVE — ⏳STALE, NOT protected → ROTATE per the time-stop]" : "  [INFLUENCER SLEEVE — do not sell here]") : "";
@@ -409,7 +440,7 @@ ${isRebalanceDay ? `- BUY: pick up to 6 MAIN-book names from the shortlist above
 - LOSS DISCIPLINE (a materially-underwater holding must EARN its keep): the hysteresis above keeps a ◆HELD name for still RANKING — but that alone is NOT enough for a name meaningfully DOWN FROM COST. For any MAIN holding more than 10% below entry (see its "% since entry"), "it's still on the shortlist" or "the sector is leading" does NOT justify keeping it — 12-month momentum ranks on a year of trend that a recent breakdown barely moves, so a losing name can still rank. To KEEP a MAIN name down >10% from cost you MUST cite a NAME-SPECIFIC reason it recovers: a fresh catalyst ON THAT NAME (★INS / ⚡↑ / ⚡NEWS↑), a confirmed reversal (↑RECOVERING, or it now ranks near the TOP on fresh momentum), or specific evidence its own thesis is intact. Absent a name-specific reason, SELL it — a thin sector/thematic rationale on a name that is meaningfully underwater is the "held a broken name on a thin reason" trap. For any holding >10% below entry, your thesis MUST name the specific keep-reason or sell it.
 - TIME-STOP (staleness — DEFAULT IS ROTATE, keeping requires a justified exception): a MAIN holding tagged ⏳STALE (held ≥ ${STALE_DAYS} trading days and still up less than +${STALE_RETURN_PCT}% since entry) is dead money — the thesis has had months to work. You MUST rotate a ⏳STALE holding into a stronger shortlist name UNLESS you give a SPECIFIC, EVIDENCED reason to keep it: (i) it is genuinely RE-ACCELERATING — cite the concrete signal (it ranks high on the shortlist now / a fresh ↑RECOVERING or rising momentum), OR (ii) a fresh ★INS or ⚡↑ catalyst worth waiting on. A vague "it might move" / "I still like it" / "it hasn't lost money" is NOT a valid keep-reason — that is exactly the dead-money trap. If you KEEP a ⏳STALE holding, your thesis MUST state which specific exception (i/ii) applies, with the signal named.
 - INFLUENCER TIME-STOP (this applies to the sleeve TOO — do not skip it): a ⏳STALE INFLUENCER holding is on the SAME forced-default — its "[INFLUENCER SLEEVE]" do-not-sell protection does NOT apply while it's ⏳STALE (its line says so). You MUST rotate it out (into a qualifying higher-net influencer pick if one exists, ELSE TO CASH) unless it's re-accelerating with a named signal (rising 5d / ↑RECOVERING). "The sleeve is full (2/2)" or "buying power is low" is NOT a reason to keep a stale name — freeing the slot IS the action; a stale name held is worse than an empty slot. Review EVERY influencer holding for ⏳STALE the same way you review the main book, not just for earnings/news.
-- DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −10%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist. THREE EXCEPTIONS where you MAY trim/exit an influencer holding (tag the sell "strategy":"influencer"): (1) EARNINGS — if it shows ⚠⚠ IMMINENT EARNINGS (≤3 days), the earnings hold-judgment applies (these names gap ±10%+ on the print) — trim/exit, or let a high-conviction one ride. If it carries a strong 📈EARN-RECORD (beat most of its last quarters, positive avg surprise), that is a real reason to HOLD it through — even if it's ⏳STALE — since a serial beater's flat run tends to resolve UP on the print (this is exactly the PLTR case: sold as stale+earnings while a 4/4 beater, then +20% on the beat). Name the record in your thesis. (2) NEWS — if it shows a bearish ⚡NEWS↓ material event (lawsuit, cut guidance, deal collapse, regulatory action), that is a real reason to trim/exit — name the event in your thesis. (3) STALE (DEFAULT IS ROTATE) — if it's tagged ⏳STALE (held ≥ ${INFLUENCER_STALE_DAYS} trading days and ${INFLUENCER_STALE_RETURN_PCT === 0 ? "still DOWN since entry" : `still up less than +${INFLUENCER_STALE_RETURN_PCT}%`}), it has NOT caught a move: the sleeve exists to catch BIG momentum and has only 2 scarce slots, so a name going nowhere is dead weight blocking a fresher pick. You MUST ROTATE it out (into a qualifying higher-net influencer pick if one exists, else to cash) UNLESS it is genuinely RE-ACCELERATING — and you cite the signal (rising 5d momentum / ↑RECOVERING). "Might still pop" is NOT a valid keep-reason. If you keep a ⏳STALE influencer holding, your thesis MUST name the re-acceleration signal.
+- DO NOT SELL influencer-sleeve holdings (marked "[INFLUENCER SLEEVE]" in the positions list). They are a SEPARATE sleeve on their own YouTube signal and their own −10%/+40% stops — they are SUPPOSED to be absent from this shortlist. Leave them untouched here; never sell one just because it isn't on the shortlist. THREE EXCEPTIONS where you MAY trim/exit an influencer holding (tag the sell "strategy":"influencer"): (1) EARNINGS — if it shows ⚠⚠ IMMINENT EARNINGS (≤3 days), the earnings hold-judgment applies (these names gap ±10%+ on the print) — trim/exit, or let a high-conviction one ride. If it carries a strong 📈EARN-RECORD (beat most of its last quarters, positive avg surprise), that is a real reason to HOLD it through — even if it's ⏳STALE — since a serial beater's flat run tends to resolve UP on the print (this is exactly the PLTR case: sold as stale+earnings while a 4/4 beater, then +20% on the beat). Name the record in your thesis. (2) NEWS — if it shows a bearish ⚡NEWS↓ material event (lawsuit, cut guidance, deal collapse, regulatory action), that is a real reason to trim/exit — name the event in your thesis. (3) STALE (DEFAULT IS ROTATE) — the sleeve has only 2 scarce slots and exists to catch BIG momentum, so a holding that is not working blocks a fresher pick. TWO clocks, and the tag names which one fired: "— down" means held ≥ ${INFLUENCER_STALE_DAYS} trading days and DOWN since entry (it broke); "— no move" means held ≥ ${INFLUENCER_ZOMBIE_DAYS} trading days and still under +${INFLUENCER_ZOMBIE_RETURN_PCT}% (it never caught a move, and a sleeve slot is too scarce to keep waiting). Note what is DELIBERATELY not stale: a name that is UP but under +${INFLUENCER_ZOMBIE_RETURN_PCT}% inside ${INFLUENCER_ZOMBIE_DAYS} days is a winner mid-consolidation — leave it alone, that is the point of the slower clock. For either tag you MUST ROTATE it out (into a qualifying higher-net influencer pick if one exists, else to cash) UNLESS it is genuinely RE-ACCELERATING — and you cite the signal (rising 5d momentum / ↑RECOVERING). "Might still pop" is NOT a valid keep-reason. If you keep a ⏳STALE influencer holding, your thesis MUST name the re-acceleration signal.
 - The shortlist already limits NEW picks to ≤2 per sector. Still, if adding a name would push a sector (counting your CURRENT holdings) past ~40% of the book, prefer another shortlist name from a lighter sector.
 - CONCENTRATION CAP (ENFORCED IN CODE): no single MAIN holding may exceed the concentration cap (~25% of the book on a normally-sized account) — a winner that appreciates past it is automatically TRIMMED back to the per-position cap after your decision, regardless of momentum (a 28% single-name bet is what turned a −2% week into −4% when its sector sold off). A holding over the cap is marked ⚠CONCEN on its position line, showing its current value and %-of-book. You cannot KEEP a ⚠CONCEN name over the cap; your only choice is HOW to reduce it: if you believe its thesis has WEAKENED, FULL-exit it yourself (exit:"all") — a code trim only brings it to the cap, it does not exit a broken name. If the thesis is intact, do nothing: the code trims it to the cap for you and the winner keeps running at capped size.
 - Do NOT chase names that just spiked; the shortlist is already the right, evidence-backed set. Conviction goes into SIZE among these names.

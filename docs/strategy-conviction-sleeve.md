@@ -113,7 +113,7 @@ measurable.
 
 | Rule | Main book | Influencer | **Conviction** |
 |---|---|---|---|
-| STALE time-stop | 60d / <+3% | 10d / <+8% | **EXEMPT** — still worth stating explicitly, but far less load-bearing than when this was drafted: the main clock moved 15d → 60d on 2026-09-21, so a ~63-trading-day thesis now sits just past it rather than being evicted at 3 weeks. The exemption prevents an edge-case eviction, not a systematic one. |
+| STALE time-stop | 60d / <+3% | TWO clocks: 10d and DOWN, or 25d / <+8% | EXEMPT — a 3-6 month thesis outlives both clocks by design |
 | Stop-loss | −5% same-day | −10% from buy | **−25% from buy, as a circuit breaker only** |
 | Take-profit | none | +40% | **none** — capping a 6-month thesis at a price target defeats it |
 | Drop-check cadence | daily | 6×/day | **daily is enough** — a thesis holder does not need an hourly leash |
