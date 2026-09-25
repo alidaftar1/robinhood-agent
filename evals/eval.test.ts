@@ -470,6 +470,7 @@ describe("staleness time-stop: flat holdings flagged ⏳STALE (main + influencer
   it("does NOT flag an influencer winner mid-consolidation (the 2026-09-25 loosening)", () => {
     // +2.4% at day 12 was a forced rotate under the old single +8% bar. That is the eviction the
     // two-tier clock exists to stop; it must stay un-flagged until the slow clock.
+    expect(lineFor("CAKE")).toContain("+2.4% since entry");   // proves the line rendered at all
     expect(lineFor("CAKE")).not.toMatch(/⏳STALE/);
   });
   it("flags a ZOMBIE — up, but going nowhere past the slow clock", () => {

@@ -28,11 +28,22 @@ describe("influencer staleness has two clocks, and each catches a different fail
     expect(staleReasonOf(true, INFLUENCER_ZOMBIE_DAYS - 1, 7)).toBeNull();
   });
 
-  test("the dead-band stops daily flip-flop around the entry price", () => {
-    // A bare sign test sits exactly where "going nowhere" names cluster, so -0.2% Monday would
-    // force a rotate and +0.2% Tuesday would say do-not-sell.
-    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, -0.2)).toBeNull();
-    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, -0.6)).toBe("down");
+  test("the dead-band is wider than the noise it damps", () => {
+    // Single-name daily moves here routinely run 1-3%, so a narrow band would still flip a holding
+    // between MUST-ROTATE and do-not-sell run to run — and would call a name down 0.6% "broken",
+    // which is "not up enough" eviction in thinner disguise.
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, -0.6)).toBeNull();
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, -1.9)).toBeNull();
+    expect(staleReasonOf(true, INFLUENCER_STALE_DAYS, -2.1)).toBe("down");
+    // Nothing escapes: the slow clock still reaches it by day 25.
+    expect(staleReasonOf(true, INFLUENCER_ZOMBIE_DAYS, -1.9)).toBe("nomove");
+  });
+
+  test("a main holding that is DOWN is labelled down, not 'no move'", () => {
+    // The main book has one CLOCK but two failure shapes; calling a −22% holding "no move"
+    // understates it to the reader deciding whether to rotate.
+    expect(staleReasonOf(false, STALE_DAYS, -22)).toBe("down");
+    expect(staleReasonOf(false, STALE_DAYS, 1)).toBe("nomove");
   });
 
   test("the clocks gate: a fresh loser is not yet stale", () => {
@@ -55,7 +66,7 @@ describe("influencer staleness has two clocks, and each catches a different fail
 
   test("the constants are what the prompt and the reviewer both read", () => {
     expect(INFLUENCER_STALE_DAYS).toBe(10);
-    expect(INFLUENCER_STALE_RETURN_PCT).toBe(-0.5);
+    expect(INFLUENCER_STALE_RETURN_PCT).toBe(-2);
     expect(INFLUENCER_ZOMBIE_DAYS).toBe(25);
     expect(INFLUENCER_ZOMBIE_RETURN_PCT).toBe(8);
   });

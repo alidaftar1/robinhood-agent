@@ -153,12 +153,18 @@ export const STALE_RETURN_PCT = 3;   // "flat" = up less than this since entry
 // So: a FAST clock for failure, and a SLOW clock for zombies.
 //   · 10 days  and DOWN            -> it broke; rotate.
 //   · 25 days  and under +8%       -> it never caught a move; rotate.
-// A winner mid-consolidation (up, inside 25 days) is left alone, which is the point. The dead-band
-// on the fast clock keeps a name oscillating around its entry price from flipping between
-// "MUST ROTATE" and "do not sell" on ordinary daily noise — the sign test alone sits exactly where
-// these names cluster.
+// A winner mid-consolidation (up, inside 25 days) is left alone, which is the point.
+//
+// The fast clock's bar is −2%, not 0 and not −0.5%. A bare sign test sits exactly where
+// "going nowhere" names cluster, so it would flip a holding between "MUST ROTATE" and
+// "do not sell" on ordinary noise; and single-name daily moves here routinely run 1-3%, so a
+// −0.5% band is narrower than the noise it was meant to damp — it would still flip-flop AND it
+// would call a name down 0.6% "broken", which is "not up enough" eviction in thinner disguise.
+// −2% is wide enough to mean something happened. Anything worse than −10% is the code stop's job,
+// and anything under +8% is caught by the slow clock by day 25 regardless, so widening the band
+// lets nothing escape — it only delays a verdict that the slow clock still reaches.
 export const INFLUENCER_STALE_DAYS = 10;            // fast clock: ~2 trading weeks
-export const INFLUENCER_STALE_RETURN_PCT = -0.5;    // ...and DOWN (dead-band, not a bare sign test)
+export const INFLUENCER_STALE_RETURN_PCT = -2;      // ...and MATERIALLY down (see the dead-band note)
 export const INFLUENCER_ZOMBIE_DAYS = 25;           // slow clock: ~5 trading weeks
 export const INFLUENCER_ZOMBIE_RETURN_PCT = 8;      // ...and never caught a move
 
@@ -174,7 +180,11 @@ export function staleReasonOf(
 ): StaleReason | null {
   if (heldDays == null || ret == null) return null;   // no price / no age -> never assert staleness
   if (!isInfluencer) {
-    return heldDays >= STALE_DAYS && ret < STALE_RETURN_PCT ? "nomove" : null;
+    if (!(heldDays >= STALE_DAYS && ret < STALE_RETURN_PCT)) return null;
+    // A main holding can be stale while deeply UNDERWATER. Reporting that as "no move" understates
+    // it to the one reader deciding whether to rotate, which is how this label got written in the
+    // first place — the main book has one CLOCK, not one failure shape.
+    return ret < 0 ? "down" : "nomove";
   }
   if (heldDays >= INFLUENCER_STALE_DAYS && ret < INFLUENCER_STALE_RETURN_PCT) return "down";
   if (heldDays >= INFLUENCER_ZOMBIE_DAYS && ret < INFLUENCER_ZOMBIE_RETURN_PCT) return "nomove";
