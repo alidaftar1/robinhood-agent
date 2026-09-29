@@ -3,6 +3,7 @@ import {
   isValidDashboardKey,
   mintLoginToken,
   dashboardLoginUrl,
+  dashboardPublicUrl,
   EMAIL_LOGIN_TOKEN_TTL_SECONDS,
   redeemLoginToken,
   createSession,
@@ -259,5 +260,13 @@ describe("the emailed login link must work when the mail is actually read", () =
     for (const host of [null, undefined, ""]) {
       expect(dashboardLoginUrl("t", host).startsWith("https://robinhood-agent.vercel.app/")).toBe(true);
     }
+  });
+
+  it("a trailing slash on the host cannot produce a '//' pathname", () => {
+    // "//?token=" has pathname "//", which fails middleware's `pathname === "/"` guard — the link
+    // would render a login screen forever. Dormant while APP_URL is blank; one character to prevent.
+    const url = new URL(dashboardLoginUrl("t", "https://example.com/"));
+    expect(url.pathname).toBe("/");
+    expect(dashboardPublicUrl("https://example.com/")).toBe("https://example.com/public");
   });
 });

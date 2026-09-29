@@ -130,7 +130,15 @@ export async function isValidDashboardKey(candidate: string): Promise<boolean> {
 export async function mintLoginToken(ttlSeconds: number = LOGIN_TOKEN_TTL_SECONDS): Promise<string | null> {
   try {
     const token = randomToken();
-    await redisCommand("SET", `${LOGIN_TOKEN_PREFIX}${token}`, "1", "EX", ttlSeconds);
+    const stored = await redisCommand("SET", `${LOGIN_TOKEN_PREFIX}${token}`, "1", "EX", ttlSeconds);
+    // Verify the WRITE, not just the connection. redisCommand does not check res.ok, so an Upstash
+    // 429/401/500 resolves with an error envelope and undefined `result` — the catch below never
+    // fires and we would return a token that was never persisted. The documented null path is
+    // supposed to cover write failure, and without this it only covers connection failure.
+    if (stored !== "OK") {
+      console.warn("Dashboard login token not stored — omitting the one-click link", { stored: String(stored).slice(0, 40) });
+      return null;
+    }
     return token;
   } catch {
     console.warn("Upstash unavailable — dashboard login token not minted");
@@ -185,17 +193,6 @@ export async function touchSession(sessionId: string): Promise<boolean> {
 
 export const SESSION_COOKIE_MAX_AGE_SECONDS = SESSION_TTL_SECONDS;
 
-/**
- * Build a one-time dashboard login link for an outbound email, e.g.
- * `https://app.example.com/?token=...`. Falls back to the bare dashboard URL (no token) if
- * minting fails (Redis unreachable) — the human still gets a link, it just prompts for the
- * manual key instead of logging straight in, same degraded-but-safe pattern as other Redis
- * failures in this codebase (see mintLoginToken's own fallback).
- */
-export async function buildDashboardLoginUrl(host: string): Promise<string> {
-  const token = await mintLoginToken();
-  return token ? `${host}/?token=${token}` : `${host}/`;
-}
 
 /**
  * Public dashboard URL for outbound email links — the KEYLESS `/public` view (account number
@@ -204,9 +201,15 @@ export async function buildDashboardLoginUrl(host: string): Promise<string> {
  * and it always resolves (falls back to the prod alias if APP_URL is unset, so drop-check/earnings-exit
  * — which pass a possibly-empty APP_URL — never emit a broken relative link).
  */
+/** Trailing slashes are stripped: APP_URL="https://host/" would otherwise produce "//public" and
+ *  "//?token=", and a "//" pathname fails middleware's `pathname === "/"` guard — the link would
+ *  silently render a login screen forever. Dormant today (APP_URL is blank) and one character to
+ *  prevent. */
+const normaliseHost = (host?: string | null): string =>
+  (host && host.length > 0 ? host : "https://robinhood-agent.vercel.app").replace(/\/+$/, "");
+
 export function dashboardPublicUrl(host?: string | null): string {
-  const base = host && host.length > 0 ? host : "https://robinhood-agent.vercel.app";
-  return `${base}/public`;
+  return `${normaliseHost(host)}/public`;
 }
 
 /** One-click login URL for an outbound email. Always targets "/" — middleware redeems a token only
@@ -218,6 +221,5 @@ export function dashboardPublicUrl(host?: string | null): string {
  *  into the auth path to save a single click. The session cookie persists, so the reader lands on
  *  the dashboard and navigates from there. */
 export function dashboardLoginUrl(token: string, host?: string | null): string {
-  const base = host && host.length > 0 ? host : "https://robinhood-agent.vercel.app";
-  return `${base}/?token=${encodeURIComponent(token)}`;
+  return `${normaliseHost(host)}/?token=${encodeURIComponent(token)}`;
 }
