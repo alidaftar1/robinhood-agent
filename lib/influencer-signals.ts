@@ -45,6 +45,12 @@ export interface InfluencerCache {
   // nothing actionable" (videos>0, withTranscript>0, empty signals) from "the transcript source
   // is down/quota-exhausted" (videos>0, withTranscript=0) — otherwise both silently show nothing.
   transcriptCoverage?: { videos: number; withTranscript: number };
+  /** YouTube fetch health. Without it, a 403 quotaExceeded and "these creators posted nothing this
+   *  week" are the SAME observable: every channel returns [] and the sleeve quietly stops trading.
+   *  The autopilot could only ever say "verify the upstream fetch isn't failing" — a guess, when
+   *  the API tells us plainly. Shared-project quota makes this reachable: the daily ceiling can be
+   *  consumed by something else entirely (see the newsai/feed rebuild-storm analysis, 2026-09-29). */
+  youtubeHealth?: { channels: number; failed: number; quotaExceeded: boolean };
 }
 
 // ─── Redis ─────────────────────────────────────────────────────────────────────
@@ -103,16 +109,40 @@ interface YTVideoItem {
   statistics: { viewCount?: string };
 }
 
-async function getChannelVideos(channelId: string, since: Date): Promise<YTSearchItem[]> {
+/** Mutable per-run tally. Same shape as the Supadata `quota` breaker above, for the same reason. */
+export type YoutubeHealth = { channels: number; failed: number; quotaExceeded: boolean };
+
+async function getChannelVideos(channelId: string, since: Date, health?: YoutubeHealth): Promise<YTSearchItem[]> {
   const key = ytKey();
   if (!key) return [];
+  if (health) health.channels++;
   try {
     const url = `${YT_BASE}/search?part=snippet&channelId=${channelId}&type=video&order=date&publishedAfter=${since.toISOString()}&maxResults=10&key=${key}`;
     const res = await fetch(url);
-    if (!res.ok) return [];
+    if (!res.ok) {
+      if (health) health.failed++;
+      // Read the REASON, not just the status. YouTube returns 403 for both "quota exhausted" and
+      // "key restricted/forbidden"; only the first means we will recover on our own tomorrow.
+      if (res.status === 403) {
+        const body = await res.text().catch(() => "");
+        if (/quotaExceeded|dailyLimitExceeded|RATE_LIMIT_EXCEEDED/i.test(body)) {
+          if (health) health.quotaExceeded = true;
+          console.error("YOUTUBE_QUOTA_EXCEEDED — the daily API quota is spent; influencer signals will be EMPTY, which is NOT the same as creators naming no picks", { channelId });
+        } else {
+          console.error("YOUTUBE_FORBIDDEN — 403 that is not a quota error (key restriction/billing?)", { channelId, body: body.slice(0, 200) });
+        }
+      } else {
+        console.warn("YOUTUBE_FETCH_FAILED", { channelId, status: res.status });
+      }
+      return [];
+    }
     const data = await res.json() as { items?: YTSearchItem[] };
     return data.items ?? [];
-  } catch { return []; }
+  } catch (e) {
+    if (health) health.failed++;
+    console.warn("YOUTUBE_FETCH_THREW", { channelId, error: e instanceof Error ? e.message : String(e) });
+    return [];
+  }
 }
 
 async function getVideoViews(videoIds: string[]): Promise<Map<string, number>> {
@@ -440,9 +470,10 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // last 7 days — these channels post picks weekly, not daily
 
   // Fetch recent videos from all channels in parallel
+  const ytHealth: YoutubeHealth = { channels: 0, failed: 0, quotaExceeded: false };
   const channelResults = await Promise.allSettled(
     INFLUENCER_CHANNELS.map(async ch => {
-      const videos = await getChannelVideos(ch.channelId, since);
+      const videos = await getChannelVideos(ch.channelId, since, ytHealth);
       return { channel: ch, videos };
     })
   );
@@ -465,7 +496,9 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   );
 
   if (candidateVideos.length === 0) {
-    const empty: InfluencerCache = { refreshedAt: new Date().toISOString(), signals: [], tickerCounts: {}, transcriptCoverage: { videos: 0, withTranscript: 0 } };
+    // Carry the health through: an empty cache is exactly the case where the DIFFERENCE between
+    // "quota spent" and "nobody posted" decides whether a human needs to act.
+    const empty: InfluencerCache = { refreshedAt: new Date().toISOString(), signals: [], tickerCounts: {}, transcriptCoverage: { videos: 0, withTranscript: 0 }, youtubeHealth: ytHealth };
     await cacheSet(empty);
     return empty;
   }
@@ -574,6 +607,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
     tickerCounts,
     avoidCounts,
     transcriptCoverage: { videos: candidateVideos.length, withTranscript: transcriptHits },
+    youtubeHealth: ytHealth,
   };
   await cacheSet(cache);
   return cache;

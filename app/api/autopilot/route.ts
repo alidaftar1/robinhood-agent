@@ -504,13 +504,20 @@ export async function GET(request: Request) {
   // (transcripts on < half the videos — normally ~all, since Supadata auto-Whispers captionless ones)
   // = the transcript source is down or over quota, whether it fails from the start or trips mid-run.
   const cov = influencerCache?.transcriptCoverage;
+  const yt = influencerCache?.youtubeHealth;
   const influencerEmptyReason = !influencerCache
     ? "the weekly cache is unavailable — the 6am refresh may have failed"
-    : cov && cov.videos === 0
-      ? "no candidate videos were found this week — verify the upstream YouTube fetch isn't failing"
-      : cov && cov.withTranscript < cov.videos / 2
-        ? `low transcript coverage (${cov.withTranscript}/${cov.videos} videos) — the transcript source (Supadata) looks down or over its plan quota, so the sleeve ran mostly blind on titles only`
-        : "creators named no qualifying picks this week — an empty sleeve is a valid outcome";
+    : yt?.quotaExceeded
+      // Say what the API said, rather than asking a human to go and guess. Note the YouTube quota
+      // is per-GCP-PROJECT, so it can be spent by something other than this system.
+      ? `the YouTube Data API returned quotaExceeded on ${yt.failed}/${yt.channels} channels — the daily quota is SPENT, so an empty sleeve here says nothing about what creators posted. Recovers at the quota reset unless something is still consuming it.`
+      : yt && yt.channels > 0 && yt.failed === yt.channels
+        ? `every one of the ${yt.channels} YouTube channel fetches FAILED (non-quota) — treat this as an outage, not as a quiet week`
+        : cov && cov.videos === 0
+          ? "no candidate videos were found this week — verify the upstream YouTube fetch isn't failing"
+          : cov && cov.withTranscript < cov.videos / 2
+            ? `low transcript coverage (${cov.withTranscript}/${cov.videos} videos) — the transcript source (Supadata) looks down or over its plan quota, so the sleeve ran mostly blind on titles only`
+          : "creators named no qualifying picks this week — an empty sleeve is a valid outcome";
 
   // ─── Email ────────────────────────────────────────────────────────────────────
 
