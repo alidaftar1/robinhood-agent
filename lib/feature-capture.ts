@@ -146,3 +146,46 @@ export function storedLengthOf(res: unknown): number | null {
   const v = typeof last === "object" && last !== null ? (last as { result?: unknown }).result : last;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
+
+export interface CaptureStatus {
+  days: Array<{ date: string; bytes: number }>;
+  totalBytes: number;
+  lastCapture: string | null;
+  /** Trading days in the probe window with no key. Gaps are the ONLY symptom a stalled capture
+   *  shows — there is no error to notice later, just a thinner dataset than anyone expects. */
+  missingRecentWeekdays: string[];
+}
+
+/** Probe the last `days` calendar days by EXPLICIT key. Deliberately not KEYS/SCAN: a pattern sweep
+ *  on a shared Redis is the operation most likely to be slow or, worse, copied into something that
+ *  deletes. One pipeline of STRLEN calls answers the same question and can only read. */
+export async function getFeatureCaptureStatus(today: string, days = 30): Promise<CaptureStatus> {
+  const base = Date.parse(`${today}T00:00:00Z`);
+  if (!Number.isFinite(base)) return { days: [], totalBytes: 0, lastCapture: null, missingRecentWeekdays: [] };
+  const dates = Array.from({ length: days }, (_, i) =>
+    new Date(base - i * 86_400_000).toISOString().slice(0, 10));
+  const res = await redisPost(
+    "pipeline",
+    dates.map(d => ["STRLEN", `${CAPTURE_KEY_PREFIX}${d}`]),
+    AbortSignal.timeout(CAPTURE_WRITE_TIMEOUT_MS),
+  );
+  const lens = Array.isArray(res) ? res : [];
+  const present: Array<{ date: string; bytes: number }> = [];
+  const missing: string[] = [];
+  dates.forEach((date, i) => {
+    const raw = lens[i] as { result?: unknown } | number | undefined;
+    const n = typeof raw === "object" && raw !== null ? (raw as { result?: unknown }).result : raw;
+    const bytes = typeof n === "number" && Number.isFinite(n) ? n : 0;
+    if (bytes > 0) present.push({ date, bytes });
+    else {
+      const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
+      if (dow !== 0 && dow !== 6) missing.push(date);   // weekends are expected gaps, not failures
+    }
+  });
+  return {
+    days: present,
+    totalBytes: present.reduce((a, d) => a + d.bytes, 0),
+    lastCapture: present[0]?.date ?? null,
+    missingRecentWeekdays: missing,
+  };
+}

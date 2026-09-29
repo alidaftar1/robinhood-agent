@@ -136,3 +136,25 @@ describe("feature capture preserves what the run would otherwise throw away", ()
     expect(storedLengthOf([{ result: "OK" }, { result: null }])).toBeNull();
   });
 });
+
+describe("capture health must distinguish a stall from a weekend", () => {
+  // A stalled capture has no error and no alert — it just produces a thinner dataset than anyone
+  // expects months later. Weekday gaps are the only symptom, so they must not be drowned out by
+  // the weekends that are supposed to be empty.
+  const weekdayGapsIn = (dates: string[]) =>
+    dates.filter(d => { const dow = new Date(`${d}T00:00:00Z`).getUTCDay(); return dow !== 0 && dow !== 6; });
+
+  test("weekends are not counted as missing", () => {
+    // 2026-09-26 Sat, 2026-09-27 Sun.
+    expect(weekdayGapsIn(["2026-09-26", "2026-09-27"])).toEqual([]);
+  });
+
+  test("a missing weekday IS counted", () => {
+    // 2026-09-28 Mon, 2026-09-29 Tue.
+    expect(weekdayGapsIn(["2026-09-28", "2026-09-29"])).toEqual(["2026-09-28", "2026-09-29"]);
+  });
+
+  test("a weekend-only gap and a weekday gap are not the same signal", () => {
+    expect(weekdayGapsIn(["2026-09-25", "2026-09-26", "2026-09-27"])).toEqual(["2026-09-25"]);
+  });
+});
