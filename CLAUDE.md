@@ -248,6 +248,25 @@ version was the safety fix. Every one passed its tests. The gate caught all thre
 - **Prefer deleting a mechanism to patching it a fourth time.** Three of four defects in the
   valuation work lived in one "helpful" refresh path; removing it fixed them all at the cost of
   detection latency that fails in the safe direction.
+- **A cache turns a TRANSIENT failure into a PERSISTENT one.** Any code that degrades gracefully —
+  drops the item, returns an empty result, substitutes a neutral default — is self-healing only
+  until something stores that output. The question to ask at a cache WRITE is not "is this value
+  valid?" but "could this be the product of something going wrong, and would we notice?" Both
+  halves matter: 2026-09-29's signal cache stored a 429/timeout as a genuine "creator named
+  nothing" (structurally valid, so a shape guard could not catch it) and its log counted hits, not
+  empties, so nothing would have surfaced it. Mark failures distinctly at the source and refuse to
+  persist them — see `extracted` in lib/influencer-signals, and `if (!res.ok) return null; // don't
+  cache, retry next run` in fetchTranscript, which got this right one layer below and was not
+  inherited by the layer built on top of it.
+- **Caching a sampled judgement freezes one draw.** If a value was previously recomputed each run
+  at a non-zero temperature, caching it silently converts N independent draws into one — which
+  changes behaviour wherever a threshold is decisive (influencer `confidence` high=3 against a buy
+  floor of 3). Pin `temperature: 0` when caching model output, so the stored answer is the one
+  recomputation would have reproduced. A change like this is NOT a pure cost optimisation and must
+  not be described as one.
+- **Everything that changes the OUTPUT belongs in the cache key**, not just the prompt text: the
+  model id and any truncation caps too. Upgrading a model is exactly the edit made without touching
+  the prompt string, and it would serve old-model results for the whole TTL while looking inert.
 - **A passing test proves nothing about a direction bug.** Tests written alongside the code inherit
   its blind spot, and several here passed while being provably vacuous. Before trusting a test that
   guards a direction, BREAK the guard and confirm the test fails. `evals/fail-closed.test.ts` holds

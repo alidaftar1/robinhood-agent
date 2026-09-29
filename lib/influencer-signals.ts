@@ -50,7 +50,7 @@ export interface InfluencerCache {
    *  The autopilot could only ever say "verify the upstream fetch isn't failing" — a guess, when
    *  the API tells us plainly. Shared-project quota makes this reachable: the daily ceiling can be
    *  consumed by something else entirely (see the newsai/feed rebuild-storm analysis, 2026-09-29). */
-  youtubeHealth?: { channels: number; failed: number; quotaExceeded: boolean };
+  youtubeHealth?: YoutubeHealth;
 }
 
 // ─── Redis ─────────────────────────────────────────────────────────────────────
@@ -109,8 +109,16 @@ interface YTVideoItem {
   statistics: { viewCount?: string };
 }
 
-/** Mutable per-run tally. Same shape as the Supadata `quota` breaker above, for the same reason. */
-export type YoutubeHealth = { channels: number; failed: number; quotaExceeded: boolean };
+/** Mutable per-run tally. Same shape as the Supadata `quota` breaker above, for the same reason.
+ *  `quotaFailed` is counted separately from `failed` because a message that says "quotaExceeded on
+ *  N/M channels" must not include channels that failed for some other reason. */
+export type YoutubeHealth = { channels: number; failed: number; quotaFailed: number; quotaExceeded: boolean };
+
+/** Does a 403 body mean "this clears on its own"? Exported so the eval tests THIS, not a copy.
+ *  YouTube v3 uses camelCase reasons, so an underscored pattern can never match them. */
+export function isTransientYoutube403(body: string): boolean {
+  return /quotaExceeded|dailyLimitExceeded|rateLimitExceeded|RESOURCE_EXHAUSTED/i.test(body);
+}
 
 async function getChannelVideos(channelId: string, since: Date, health?: YoutubeHealth): Promise<YTSearchItem[]> {
   const key = ytKey();
@@ -125,11 +133,16 @@ async function getChannelVideos(channelId: string, since: Date, health?: Youtube
       // "key restricted/forbidden"; only the first means we will recover on our own tomorrow.
       if (res.status === 403) {
         const body = await res.text().catch(() => "");
-        if (/quotaExceeded|dailyLimitExceeded|RATE_LIMIT_EXCEEDED/i.test(body)) {
-          if (health) health.quotaExceeded = true;
-          console.error("YOUTUBE_QUOTA_EXCEEDED — the daily API quota is spent; influencer signals will be EMPTY, which is NOT the same as creators naming no picks", { channelId });
+        // userRateLimitExceeded / rateLimitExceeded are ALSO 403s and are transient like quota.
+        // Missing them here would send a human to check billing for something that self-clears.
+        if (isTransientYoutube403(body)) {
+          if (health) { health.quotaExceeded = true; health.quotaFailed++; }
+          console.error("YOUTUBE_QUOTA_EXCEEDED — quota or rate limit hit; influencer signals will be EMPTY, which is NOT the same as creators naming no picks. Self-clears at the quota reset.", { channelId });
         } else {
-          console.error("YOUTUBE_FORBIDDEN — 403 that is not a quota error (key restriction/billing?)", { channelId, body: body.slice(0, 200) });
+          // Deliberately quotes the body: a 403 that is NOT a quota/rate error does not self-heal,
+          // and the reason string is the only thing that says whether it is a key restriction,
+          // a disabled API, or billing. Guessing wastes the one signal we were given.
+          console.error("YOUTUBE_FORBIDDEN — a 403 that is NOT quota or rate limiting; this does NOT self-heal", { channelId, body: body.slice(0, 200) });
         }
       } else {
         console.warn("YOUTUBE_FETCH_FAILED", { channelId, status: res.status });
@@ -332,7 +345,8 @@ const SIGNAL_CACHE_TTL = 60 * 60 * 24 * 14; // 14d — matches the transcript ca
 // the Haiku model or widening a truncation cap would otherwise serve old-shaped signals for 14
 // days while the change looked inert — the exact staleness the version key exists to prevent.
 const SIGNAL_MODEL = "claude-haiku-4-5-20251001";
-const SIGNAL_PROMPT_VERSION = `v2-${SIGNAL_MODEL}-t8000-d1500`;
+const SIGNAL_TEMPERATURE = 0;
+const SIGNAL_PROMPT_VERSION = `v2-${SIGNAL_MODEL}-temp${SIGNAL_TEMPERATURE}-t8000-d1500`;
 
 /**
  * Signals are cached per video for the same reason transcripts are, one line above: the
@@ -437,7 +451,7 @@ export async function extractSignal(
       // window; previously each daily run re-rolled. Confidence is decisive (high=3 vs the
       // INFLUENCER_BUY_FLOOR of 3), so a lucky or unlucky first roll would persist for days.
       // At temperature 0 the frozen result is the one re-extraction would have reproduced.
-      temperature: 0,
+      temperature: SIGNAL_TEMPERATURE,
       max_tokens: 400,
       system: `You analyze a YouTube finance video to extract the creator's stock views.
 
@@ -488,7 +502,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // last 7 days — these channels post picks weekly, not daily
 
   // Fetch recent videos from all channels in parallel
-  const ytHealth: YoutubeHealth = { channels: 0, failed: 0, quotaExceeded: false };
+  const ytHealth: YoutubeHealth = { channels: 0, failed: 0, quotaFailed: 0, quotaExceeded: false };
   const channelResults = await Promise.allSettled(
     INFLUENCER_CHANNELS.map(async ch => {
       const videos = await getChannelVideos(ch.channelId, since, ytHealth);
@@ -562,6 +576,10 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
         if (result.extracted !== false) {
           await signalCacheSet(v.item.id.videoId, { ...result, fromTranscript: !!transcript });
         } else {
+          // NOTE: with temperature 0 a failure is DETERMINISTIC, so a video whose response reliably
+          // has no SIGNAL: line retries every run for the rest of its window instead of eventually
+          // rolling a success. Bounded (~7 calls) and deliberately visible — this is why
+          // extractFailures may sit at a non-zero floor rather than trending to zero.
           signalExtractFailures++;
         }
         return { v, result };

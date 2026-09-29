@@ -507,17 +507,21 @@ export async function GET(request: Request) {
   const yt = influencerCache?.youtubeHealth;
   const influencerEmptyReason = !influencerCache
     ? "the weekly cache is unavailable — the 6am refresh may have failed"
-    : yt?.quotaExceeded
-      // Say what the API said, rather than asking a human to go and guess. Note the YouTube quota
-      // is per-GCP-PROJECT, so it can be spent by something other than this system.
-      ? `the YouTube Data API returned quotaExceeded on ${yt.failed}/${yt.channels} channels — the daily quota is SPENT, so an empty sleeve here says nothing about what creators posted. Recovers at the quota reset unless something is still consuming it.`
-      : yt && yt.channels > 0 && yt.failed === yt.channels
-        ? `every one of the ${yt.channels} YouTube channel fetches FAILED (non-quota) — treat this as an outage, not as a quiet week`
+    // Only claim the emptiness is UNINFORMATIVE when the quota actually starved the run. A partial
+    // exhaustion (3 of 9 channels) can still leave 40 videos seen, in which case an empty sleeve
+    // really does say something about what creators posted.
+    : yt?.quotaExceeded && (cov?.videos === 0 || yt.failed === yt.channels)
+      // "quota or rate limit": the same 403 family covers a daily-quota burn and a seconds-long
+      // rate limit, and telling the owner their whole day is gone when it is not sends them to
+      // fix nothing. Both self-clear; that is the part they need.
+      ? `the YouTube Data API returned a quota/rate-limit 403 on ${yt.quotaFailed}/${yt.channels} channels and no videos were retrieved — an empty sleeve here says nothing about what creators posted. This self-clears (a short rate limit in seconds, a spent daily quota at the reset). NOTE the quota is per-GCP-project, so it can be consumed by something that is not this system.`
+      : yt && yt.channels > 0 && yt.failed > yt.channels / 2
+        ? `${yt.failed}/${yt.channels} YouTube channel fetches FAILED${yt.quotaFailed ? ` (${yt.quotaFailed} quota/rate-limit)` : " (non-quota)"} — treat this as an outage, not as a quiet week`
         : cov && cov.videos === 0
           ? "no candidate videos were found this week — verify the upstream YouTube fetch isn't failing"
           : cov && cov.withTranscript < cov.videos / 2
             ? `low transcript coverage (${cov.withTranscript}/${cov.videos} videos) — the transcript source (Supadata) looks down or over its plan quota, so the sleeve ran mostly blind on titles only`
-          : "creators named no qualifying picks this week — an empty sleeve is a valid outcome";
+            : "creators named no qualifying picks this week — an empty sleeve is a valid outcome";
 
   // ─── Email ────────────────────────────────────────────────────────────────────
 
