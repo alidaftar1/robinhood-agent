@@ -257,6 +257,12 @@ version was the safety fix. Every one passed its tests. The gate caught all thre
   handler kept the flag name `quotaExceeded` after it started matching rate limits too, so an email
   downstream went on asserting "the daily quota is SPENT" for a limit that clears in seconds. When
   a predicate's MEANING changes, re-read every consumer of it, not just the call site.
+  The dangerous kind is a predicate consumed by BOTH a machine decision and a human message:
+  widening it for the decision silently widens the CLAIM made to the reader. Keep those separate —
+  it costs one extra name and makes the next widening safe by construction. lib/valuation is the
+  worked example: the suppression DECISION is `!pointsIncludeReport(...)`, while WHICH claim gets
+  made (`prePrint` = "SEC has not filed it" vs `staleUnchecked` = "our copy is stale") is chosen by
+  a separate `askedSec` predicate, so changing when we suppress cannot change what we assert.
 - **A cache turns a TRANSIENT failure into a PERSISTENT one.** Any code that degrades gracefully —
   drops the item, returns an empty result, substitutes a neutral default — is self-healing only
   until something stores that output. The question to ask at a cache WRITE is not "is this value
