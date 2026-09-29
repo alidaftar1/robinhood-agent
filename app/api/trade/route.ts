@@ -17,6 +17,7 @@ import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, app
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
+import { buildFeatureRows, recordFeatureCapture } from "@/lib/feature-capture";
 import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow";
 import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
@@ -515,6 +516,10 @@ export async function GET(request: Request) {
     // cached (it changes only on a filing) while the P/E is recomputed from the live price.
     // Fail-safe: a failure yields no section rather than reaching the outer catch.
     let valuationSection = "";
+    // Hoisted only so the Phase-0 feature capture can record the P/E it already computed.
+    // NOTE it covers valSymbols (shortlist + held), not the universe, so most captured rows will
+    // have a null P/E — that is accurate, not a gap to paper over.
+    let valuationsForCapture: Map<string, import("@/lib/valuation").Valuation> | null = null;
     const valuationNotes: string[] = [];
     try {
       const valCtrl = new AbortController();
@@ -544,6 +549,7 @@ export async function GET(request: Request) {
           }
         }
         const { valuations, notes } = await getValuations(valSymbols, (sym) => priceMap.get(sym), valCtrl.signal, { reportedOn });
+        valuationsForCapture = valuations;
         valuationSection = formatValuations(valuations);
         // The notes travel WITH the block into the prompt. They used to go only to
         // buySizingAdjustments, which is recorded and emailed but never rendered to any model — so
@@ -1543,6 +1549,31 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
         const mrCands = screenMeanReversionCandidates(marketData.stocks, mrEligible, qualityOf, isBroken);
         const mrRec = await recordMeanRevShadow(mrCands, today);
         console.log("MEANREV_SHADOW", { candidates: mrCands.length, symbols: mrCands.map(c => c.symbol), logged: mrRec.logged, skipped: mrRec.skipped ?? false });
+      }
+      // FEATURE CAPTURE (Phase 0, docs/experiment-nori-tail-risk.md). Writes down the per-name
+      // feature vector this run already computed and would otherwise discard. Zero capital, zero
+      // new I/O, no model — and fail-safe: it can never affect the trade.
+      try {
+        const peOf = (sym: string) => {
+          const v = valuationsForCapture?.get(sym);
+          return { peTTM: v?.peTTM ?? null, peFY: v?.peFY ?? null };
+        };
+        const daysToEarningsOf = (sym: string) => {
+          const ed = earningsDatesMap[sym];
+          if (!ed) return null;
+          const d = Math.round((new Date(ed).getTime() - new Date(today).getTime()) / 86_400_000);
+          return Number.isFinite(d) ? d : null;
+        };
+        const rows = buildFeatureRows(
+          marketData.stocks,
+          (sym) => quality?.scores[sym]?.quality ?? null,
+          peOf,
+          daysToEarningsOf,
+        );
+        const cap = await recordFeatureCapture(rows, today);
+        console.log("FEATURE_CAPTURE", { rows: cap.written, bytes: cap.bytes, skipped: cap.skipped ?? false });
+      } catch (e) {
+        console.warn("FEATURE_CAPTURE_SKIP", e instanceof Error ? e.message : String(e));
       }
     } catch (e) {
       console.warn("MEANREV_SHADOW_SKIP", e);
