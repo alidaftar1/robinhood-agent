@@ -673,7 +673,7 @@ export async function GET(request: Request) {
     Sent by Vercel cron at 8am PT — no Mac required.<br/>
     ${privateUrl
       ? `<a href="${privateUrl}">Open private dashboard</a> &nbsp;·&nbsp; <a href="${dashboardUrl}">public view</a><br/>
-    <span style="color:#9ca3af">One-time login link — it works once and expires in 12 hours.</span>`
+    <span style="color:#9ca3af">One-time login link — works once, expires in 12 hours. If it shows a login screen, the link was already used (a mail scanner or preview fetch can consume it) — use your dashboard key that time.</span>`
       : `<a href="${dashboardUrl}">Open dashboard</a>`}
   </p>
 </div>`;
