@@ -15,7 +15,10 @@ import { getFeatureCaptureStatus, type CaptureStatus } from "@/lib/feature-captu
 // Server component on purpose. It calls the lib functions directly, so there is no new API route
 // and nothing new to authorise; the page is the authorisation boundary, exactly as `/` is.
 //
-// Nothing here writes. No capture, ledger, or run record is mutated by loading this page.
+// No CAPTURED DATA is mutated by loading this page — no shadow, ledger, or run record is written.
+// The one write that does happen is touchSession's EXPIRE, which refreshes the session TTL exactly
+// as the main dashboard does; that is session bookkeeping, not data mutation. Stating it precisely
+// because "nothing here writes" is the kind of claim that is easy to make and wrong.
 
 export const dynamic = "force-dynamic";
 
@@ -141,7 +144,7 @@ export default async function ObservabilityPage() {
       <Link href="/" style={{ color: "#58a6ff", fontSize: 13 }}>← Dashboard</Link>
       <h1 style={{ fontSize: 22, margin: "12px 0 4px" }}>Observability</h1>
       <p style={{ color: "#8b949e", fontSize: 13, marginTop: 0 }}>
-        Zero-capital captures. Nothing here trades, and nothing here is written by opening the page.
+        Zero-capital captures. Nothing here trades, and opening this page does not alter any capture.
       </p>
 
       <CaptureCard

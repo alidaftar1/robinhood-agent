@@ -451,14 +451,14 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
     <div style={s.page}>
       <style dangerouslySetInnerHTML={{ __html: TIP_CSS }} />
       <div style={s.header}>
-        <div style={s.title}>Robinhood Agent  {!isPublic && (
+        <div style={s.title}>Robinhood Agent</div>
+        {!isPublic && (
           <div style={{ marginTop: 8 }}>
             <a href="/observability" style={{ color: "#58a6ff", fontSize: 13, textDecoration: "none" }}>
-              Observability — shadow captures &amp; feature capture health →
+              Observability — shadow captures &amp; feature-capture health →
             </a>
           </div>
         )}
-        </div>
         {isPublic && (
           <div style={{ ...s.subtitle, marginTop: 6, maxWidth: 620 }}>
             A real-money experiment: an AI agent (Claude) autonomously trades a Robinhood account every weekday and benchmarks itself against the S&P 500.
