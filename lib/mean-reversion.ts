@@ -117,3 +117,10 @@ export async function recordMeanRevShadow(candidates: MeanRevCandidate[], today:
 export async function getMeanRevShadow(): Promise<ShadowDay[]> {
   return (await shadowGet()) ?? [];
 }
+
+/** Raw read. null means the READ FAILED — distinct from [] meaning "nothing captured yet". The
+ *  coercing getter above is right for callers that just want data; a health view needs the
+ *  difference, because an outage and an empty capture look identical once null becomes []. */
+export async function getMeanRevShadowOrNull(): Promise<ShadowDay[] | null> {
+  return shadowGet();
+}

@@ -95,6 +95,24 @@ export async function redisCommand(command: string, ...args: (string | number)[]
   return json.result;
 }
 
+/** Upstash's /pipeline endpoint answers with a TOP-LEVEL ARRAY ([{result:…},{result:…}]), not the
+ *  {result:…} envelope every other endpoint uses. redisPost unwraps `.result` and therefore returns
+ *  undefined for a pipeline — invisible to writers, which ignore the return, and wrong for anyone
+ *  who needs the results. Use this when you need them. */
+export async function redisPipeline(body: unknown, signal?: AbortSignal): Promise<unknown> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) throw new Error("Upstash not configured");
+  const res = await fetch(`${url}/pipeline`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) throw new Error(`Upstash pipeline ${res.status}`);
+  return res.json();   // the array, unwrapped by nobody
+}
+
 export async function redisPost(command: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;

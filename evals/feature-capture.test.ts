@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildFeatureRows, recordFeatureCapture, storedLengthOf, CAPTURE_COLUMNS, CAPTURE_KEY_PREFIX } from "@/lib/feature-capture";
+import { buildFeatureRows, recordFeatureCapture, storedLengthOf, missingCaptureWeekdays, CAPTURE_COLUMNS, CAPTURE_KEY_PREFIX } from "@/lib/feature-capture";
 import type { StockData } from "@/lib/market-data";
 
 // Phase 0 of docs/experiment-nori-tail-risk.md. The capture exists because the run computes these
@@ -137,24 +137,52 @@ describe("feature capture preserves what the run would otherwise throw away", ()
   });
 });
 
-describe("capture health must distinguish a stall from a weekend", () => {
-  // A stalled capture has no error and no alert — it just produces a thinner dataset than anyone
-  // expects months later. Weekday gaps are the only symptom, so they must not be drowned out by
-  // the weekends that are supposed to be empty.
-  const weekdayGapsIn = (dates: string[]) =>
-    dates.filter(d => { const dow = new Date(`${d}T00:00:00Z`).getUTCDay(); return dow !== 0 && dow !== 6; });
+describe("capture health must not cry wolf", () => {
+  // A stalled capture has no error and no alert — a thinner dataset months later is its only
+  // symptom. But a card that lights red on weekends, holidays, launch week, or every morning
+  // before the cron trains you to ignore the one signal that matters. These test the REAL
+  // function, not a re-implementation of its predicate.
+  const probe = (from: string, n = 14) =>
+    Array.from({ length: n }, (_, i) =>
+      new Date(Date.parse(`${from}T00:00:00Z`) - i * 86_400_000).toISOString().slice(0, 10));
 
-  test("weekends are not counted as missing", () => {
-    // 2026-09-26 Sat, 2026-09-27 Sun.
-    expect(weekdayGapsIn(["2026-09-26", "2026-09-27"])).toEqual([]);
+  test("a genuine weekday stall IS reported", () => {
+    // Captured Mon 09-28, nothing Tue 09-29 — and "today" is Wed 09-30, so Tuesday is a real gap.
+    const gaps = missingCaptureWeekdays(probe("2026-09-30"), new Set(["2026-09-28"]), "2026-09-30");
+    expect(gaps).toContain("2026-09-29");
   });
 
-  test("a missing weekday IS counted", () => {
-    // 2026-09-28 Mon, 2026-09-29 Tue.
-    expect(weekdayGapsIn(["2026-09-28", "2026-09-29"])).toEqual(["2026-09-28", "2026-09-29"]);
+  test("weekends are never gaps", () => {
+    const gaps = missingCaptureWeekdays(probe("2026-09-30"), new Set(["2026-09-25"]), "2026-09-30");
+    expect(gaps).not.toContain("2026-09-26");   // Sat
+    expect(gaps).not.toContain("2026-09-27");   // Sun
   });
 
-  test("a weekend-only gap and a weekday gap are not the same signal", () => {
-    expect(weekdayGapsIn(["2026-09-25", "2026-09-26", "2026-09-27"])).toEqual(["2026-09-25"]);
+  test("TODAY is never a gap — the cron runs at 14:30 UTC", () => {
+    // Otherwise the card is red from midnight UTC until mid-morning ET on every trading day:
+    // roughly 14 hours out of every 24, with nothing wrong.
+    const gaps = missingCaptureWeekdays(probe("2026-09-30"), new Set(["2026-09-29"]), "2026-09-30");
+    expect(gaps).not.toContain("2026-09-30");
+  });
+
+  test("days BEFORE the first capture are not gaps", () => {
+    // Without this the card opens on ~21 missing weekdays the day the feature ships, and decays
+    // red for a month.
+    const gaps = missingCaptureWeekdays(probe("2026-09-30"), new Set(["2026-09-29"]), "2026-09-30");
+    expect(gaps).toEqual([]);
+    expect(gaps).not.toContain("2026-09-21");
+  });
+
+  test("nothing captured at all reads as 'never', not as a stall", () => {
+    expect(missingCaptureWeekdays(probe("2026-09-30"), new Set(), "2026-09-30")).toEqual([]);
+  });
+
+  test("a market holiday is not a gap", () => {
+    // ~10 a year; a naive weekday test would keep the card red for 30 days after each one.
+    const thanksgiving = "2026-11-26";
+    const gaps = missingCaptureWeekdays(
+      probe("2026-11-30"), new Set(["2026-11-25", "2026-11-27"]), "2026-11-30",
+    );
+    expect(gaps).not.toContain(thanksgiving);
   });
 });

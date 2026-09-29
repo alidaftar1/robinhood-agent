@@ -2,8 +2,8 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSessionCookieConfig, touchSession } from "@/lib/dashboard-auth";
-import { getGivebackShadow } from "@/lib/giveback-shadow";
-import { getMeanRevShadow } from "@/lib/mean-reversion";
+import { getGivebackShadowOrNull } from "@/lib/giveback-shadow";
+import { getMeanRevShadowOrNull } from "@/lib/mean-reversion";
 import { scoreShadowObservations, type ShadowStats } from "@/lib/shadow-scoring";
 import { getFeatureCaptureStatus, type CaptureStatus } from "@/lib/feature-capture";
 
@@ -97,10 +97,13 @@ function CaptureCard({ status, error }: { status: CaptureStatus | null; error?: 
               {status!.missingRecentWeekdays.slice(0, 5).join(", ")}
               {status!.missingRecentWeekdays.length > 5 ? " …" : ""}. A stalled capture has no other
               symptom — it simply produces a thinner dataset than anyone expects later.
+              Weekends, market holidays, today, and days before the first capture are already
+              excluded, so these are real misses.
             </p>
           ) : (
             <p style={{ color: "#8b949e", fontSize: 12, marginTop: 10 }}>
-              No weekday gaps in the last 30 days. Market holidays show as gaps here and are expected.
+              No missing trading days in the last 30. Weekends, market holidays, and today are
+              excluded — today's capture lands with the 14:30 UTC run.
             </p>
           )}
         </>
@@ -123,20 +126,36 @@ export default async function ObservabilityPage() {
   const reason = (r: PromiseSettledResult<unknown>) =>
     r.status === "rejected" ? (r.reason instanceof Error ? r.reason.message : String(r.reason)) : undefined;
 
+  // Scoring fans out one live quote per DISTINCT symbol in sequential batches, so cost grows with
+  // the capture. Bound it two ways: only score the most recent window, and give each card a hard
+  // deadline. Without the deadline a slow quote source kills the whole function before
+  // allSettled can report anything — the per-card error state would be bypassed exactly when it
+  // is needed, and the visitor would get a 504 instead of a diagnosis.
+  const SCORE_WINDOW_DAYS = 60;
+  const DEADLINE_MS = 8_000;
+  const withDeadline = <T,>(p: Promise<T>, label: string): Promise<T> =>
+    Promise.race([p, new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} took longer than ${DEADLINE_MS / 1000}s`)), DEADLINE_MS))]);
+  const recent = <T extends { date: string }>(days: T[]) => days.slice(-SCORE_WINDOW_DAYS);
+
   // allSettled, not all: one unreachable capture must not blank the whole page. Each card reports
   // its own failure — a page that renders nothing teaches you to stop opening it.
   const [giveback, meanrev, capture] = await Promise.allSettled([
-    getGivebackShadow().then(days =>
-      scoreShadowObservations(
-        (days ?? []).flatMap(d => (d.holdings ?? []).map(h => ({ symbol: h.symbol, price: h.price, date: d.date }))),
+    withDeadline(getGivebackShadowOrNull().then(days => {
+      if (days === null) throw new Error("capture unreadable (Upstash)");
+      return scoreShadowObservations(
+        recent(days).flatMap(d => (d.holdings ?? []).map(h => ({ symbol: h.symbol, price: h.price, date: d.date }))),
         today, "exit",
-      )),
-    getMeanRevShadow().then(days =>
-      scoreShadowObservations(
-        (days ?? []).flatMap(d => (d.candidates ?? []).map(c => ({ symbol: c.symbol, price: c.price, date: d.date }))),
+      );
+    }), "give-back scoring"),
+    withDeadline(getMeanRevShadowOrNull().then(days => {
+      if (days === null) throw new Error("capture unreadable (Upstash)");
+      return scoreShadowObservations(
+        recent(days).flatMap(d => (d.candidates ?? []).map(c => ({ symbol: c.symbol, price: c.price, date: d.date }))),
         today, "entry",
-      )),
-    getFeatureCaptureStatus(today),
+      );
+    }), "mean-reversion scoring"),
+    withDeadline(getFeatureCaptureStatus(today), "capture health"),
   ]);
 
   return (

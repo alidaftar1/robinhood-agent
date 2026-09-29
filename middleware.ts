@@ -137,5 +137,5 @@ function withCspOnPageRender(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  matcher: ["/", "/public"],
+  matcher: ["/", "/public", "/observability"],
 };

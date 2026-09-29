@@ -23,7 +23,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { StockData } from "./market-data";
-import { redisPost } from "./run-store";
+import { redisPost, redisPipeline } from "./run-store";
+import { isMarketHoliday } from "./holidays";
 
 /** ~18 months: long enough to outlive any evaluation window, short enough to bound storage. */
 export const CAPTURE_TTL_SECONDS = 550 * 24 * 60 * 60;
@@ -126,7 +127,7 @@ export async function recordFeatureCapture(
   // STRLEN in the same pipeline costs nothing and proves the bytes are actually there.
   // Bounded: this runs after saveRun but before updateLatestRun, so an unbounded hang here would
   // cost the day's agenticDailyReturn and final snapshot. A capture is never worth that.
-  const res = await redisPost("pipeline", [
+  const res = await redisPipeline([
     ["SET", key, json, "EX", CAPTURE_TTL_SECONDS],
     ["STRLEN", key],
   ], AbortSignal.timeout(CAPTURE_WRITE_TIMEOUT_MS));
@@ -156,6 +157,37 @@ export interface CaptureStatus {
   missingRecentWeekdays: string[];
 }
 
+/** Which probed days SHOULD have a capture and do not. Pure and exported so the tests exercise this
+ *  rather than a re-implementation of it.
+ *
+ *  A health card that cries wolf is worse than no card — it trains you to ignore the one signal a
+ *  stalled capture ever produces. So four things are deliberately NOT gaps:
+ *   · weekends — no run;
+ *   · market holidays — the exchange is shut, and with ~10 a year a naive weekday test would sit
+ *     red for a large slice of the calendar;
+ *   · TODAY — the capture is written by the 14:30 UTC cron, so from midnight UTC until then its
+ *     absence is expected. Excluding it costs one day of detection latency and removes a false
+ *     alarm that would otherwise be lit ~14 hours of every trading day;
+ *   · anything before the FIRST capture we can see — those days predate the feature, and without
+ *     this the card would open on ~21 "missing" weekdays the day it shipped. */
+export function missingCaptureWeekdays(
+  probedDates: string[],
+  presentDates: Set<string>,
+  today: string,
+): string[] {
+  const earliestPresent = [...presentDates].sort()[0];
+  if (!earliestPresent) return [];   // nothing captured yet — "never", not "stalled"
+  return probedDates.filter(d => {
+    if (presentDates.has(d)) return false;
+    if (d >= today) return false;                       // today's run may not have happened yet
+    if (d < earliestPresent) return false;              // predates the capture
+    const dow = new Date(`${d}T00:00:00Z`).getUTCDay();
+    if (dow === 0 || dow === 6) return false;           // weekend
+    if (isMarketHoliday(d)) return false;               // exchange shut
+    return true;
+  });
+}
+
 /** Probe the last `days` calendar days by EXPLICIT key. Deliberately not KEYS/SCAN: a pattern sweep
  *  on a shared Redis is the operation most likely to be slow or, worse, copied into something that
  *  deletes. One pipeline of STRLEN calls answers the same question and can only read. */
@@ -164,28 +196,22 @@ export async function getFeatureCaptureStatus(today: string, days = 30): Promise
   if (!Number.isFinite(base)) return { days: [], totalBytes: 0, lastCapture: null, missingRecentWeekdays: [] };
   const dates = Array.from({ length: days }, (_, i) =>
     new Date(base - i * 86_400_000).toISOString().slice(0, 10));
-  const res = await redisPost(
-    "pipeline",
+  const res = await redisPipeline(
     dates.map(d => ["STRLEN", `${CAPTURE_KEY_PREFIX}${d}`]),
     AbortSignal.timeout(CAPTURE_WRITE_TIMEOUT_MS),
   );
   const lens = Array.isArray(res) ? res : [];
   const present: Array<{ date: string; bytes: number }> = [];
-  const missing: string[] = [];
   dates.forEach((date, i) => {
     const raw = lens[i] as { result?: unknown } | number | undefined;
     const n = typeof raw === "object" && raw !== null ? (raw as { result?: unknown }).result : raw;
     const bytes = typeof n === "number" && Number.isFinite(n) ? n : 0;
     if (bytes > 0) present.push({ date, bytes });
-    else {
-      const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
-      if (dow !== 0 && dow !== 6) missing.push(date);   // weekends are expected gaps, not failures
-    }
   });
   return {
     days: present,
     totalBytes: present.reduce((a, d) => a + d.bytes, 0),
     lastCapture: present[0]?.date ?? null,
-    missingRecentWeekdays: missing,
+    missingRecentWeekdays: missingCaptureWeekdays(dates, new Set(present.map(p => p.date)), today),
   };
 }
