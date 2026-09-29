@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   isValidDashboardKey,
   mintLoginToken,
+  dashboardLoginUrl,
+  EMAIL_LOGIN_TOKEN_TTL_SECONDS,
   redeemLoginToken,
   createSession,
   touchSession,
@@ -218,5 +220,44 @@ describe("Redis unreachable — every helper fails closed, never throws past the
 
   it("touchSession returns false instead of throwing", async () => {
     expect(await touchSession("some-session")).toBe(false);
+  });
+});
+
+describe("the emailed login link must work when the mail is actually read", () => {
+  // mintLoginToken existed, was tested, and its own docstring said "callers (autopilot,
+  // drop-check, earnings-exit) embed this in the Open dashboard link" — but NOTHING in production
+  // called it. The email linked only to /public, so there was no way into the private dashboard
+  // without hand-fetching DASHBOARD_SECRET out of Vercel.
+  it("the email TTL outlives a morning digest; the interactive default does not", () => {
+    // A 15-minute link is dead before most people open an 8am email, which reads as broken rather
+    // than secure. 12h keeps it good for the day it was sent and dead by the next one.
+    expect(EMAIL_LOGIN_TOKEN_TTL_SECONDS).toBe(12 * 60 * 60);
+    expect(EMAIL_LOGIN_TOKEN_TTL_SECONDS).toBeGreaterThan(15 * 60);
+    expect(EMAIL_LOGIN_TOKEN_TTL_SECONDS).toBeLessThanOrEqual(24 * 60 * 60);
+  });
+
+  it("the login URL targets '/' — middleware redeems a token ONLY there", () => {
+    const url = new URL(dashboardLoginUrl("abc123", "https://example.com"));
+    expect(url.pathname).toBe("/");
+    expect(url.searchParams.get("token")).toBe("abc123");
+  });
+
+  it("the URL carries NO redirect target", () => {
+    // `&next=/observability` would save one click and put an unvalidated redirect in the auth path.
+    const url = new URL(dashboardLoginUrl("abc123", "https://example.com"));
+    expect(url.searchParams.get("next")).toBeNull();
+    expect([...url.searchParams.keys()]).toEqual(["token"]);
+  });
+
+  it("a token with URL-significant characters survives the round trip", () => {
+    const raw = "a+b/c=d&e";
+    const url = new URL(dashboardLoginUrl(raw, "https://example.com"));
+    expect(url.searchParams.get("token")).toBe(raw);
+  });
+
+  it("it falls back to the canonical host rather than emitting a relative link", () => {
+    for (const host of [null, undefined, ""]) {
+      expect(dashboardLoginUrl("t", host).startsWith("https://robinhood-agent.vercel.app/")).toBe(true);
+    }
   });
 });

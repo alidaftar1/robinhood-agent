@@ -47,7 +47,13 @@ const SESSION_PREFIX = "dashboard:session:";
 
 // Single-use email/manual-link bootstrap token: short-lived, since it's only meant to be used
 // once, right after the email arrives or the link is manually opened.
-const LOGIN_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
+const LOGIN_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes — default, for an interactive mint
+/** A DAILY DIGEST is read whenever it is read. A 15-minute link is dead before most people open
+ *  the mail, which makes the feature look broken rather than secure. 12h keeps it useful for the
+ *  day it was sent and dead by the next one. The token is still single-use (GETDEL), still scrubbed
+ *  from Sentry (?token= is in SENSITIVE_PARAMS), and still grants only dashboard READ access —
+ *  no trading, no secrets — over a channel that already contains the portfolio detail it unlocks. */
+export const EMAIL_LOGIN_TOKEN_TTL_SECONDS = 12 * 60 * 60;
 
 // Session lifetime once logged in. Renewed on every valid dashboard load (see touchSession),
 // so an active user never gets logged out mid-use — only real inactivity expires it.
@@ -121,10 +127,10 @@ export async function isValidDashboardKey(candidate: string): Promise<boolean> {
  * this codebase (lib/run-store.ts's saveRun swallows Upstash errors rather than blocking the
  * cron itself on a storage hiccup).
  */
-export async function mintLoginToken(): Promise<string | null> {
+export async function mintLoginToken(ttlSeconds: number = LOGIN_TOKEN_TTL_SECONDS): Promise<string | null> {
   try {
     const token = randomToken();
-    await redisCommand("SET", `${LOGIN_TOKEN_PREFIX}${token}`, "1", "EX", LOGIN_TOKEN_TTL_SECONDS);
+    await redisCommand("SET", `${LOGIN_TOKEN_PREFIX}${token}`, "1", "EX", ttlSeconds);
     return token;
   } catch {
     console.warn("Upstash unavailable — dashboard login token not minted");
@@ -201,4 +207,17 @@ export async function buildDashboardLoginUrl(host: string): Promise<string> {
 export function dashboardPublicUrl(host?: string | null): string {
   const base = host && host.length > 0 ? host : "https://robinhood-agent.vercel.app";
   return `${base}/public`;
+}
+
+/** One-click login URL for an outbound email. Always targets "/" — middleware redeems a token only
+ *  on that pathname (guarded there on purpose), so a token anywhere else silently does nothing and
+ *  the reader just sees a login screen.
+ *
+ *  Deliberately NO redirect-target parameter. The obvious next step would be `&next=/observability`,
+ *  but the middleware has no such handling and adding one would introduce an unvalidated redirect
+ *  into the auth path to save a single click. The session cookie persists, so the reader lands on
+ *  the dashboard and navigates from there. */
+export function dashboardLoginUrl(token: string, host?: string | null): string {
+  const base = host && host.length > 0 ? host : "https://robinhood-agent.vercel.app";
+  return `${base}/?token=${encodeURIComponent(token)}`;
 }

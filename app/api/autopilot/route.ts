@@ -1,7 +1,7 @@
 import { isMainRebalanceDay } from "@/lib/strategy";
 import { requireCronAuth } from "@/lib/auth";
 import { parseTradeDecision, isFullExit } from "@/lib/trade-decision";
-import { dashboardPublicUrl } from "@/lib/dashboard-auth";
+import { dashboardPublicUrl, dashboardLoginUrl, mintLoginToken, EMAIL_LOGIN_TOKEN_TTL_SECONDS } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -544,6 +544,12 @@ export async function GET(request: Request) {
     </tr>`;
 
   const dashboardUrl = dashboardPublicUrl(host);
+  // One-click login for the PRIVATE dashboard. mintLoginToken returns null if Redis is unavailable
+  // or the write fails, in which case the private link is simply omitted — never a broken link, and
+  // never a fallback that puts DASHBOARD_SECRET in an email. The token is single-use (GETDEL on
+  // redeem), scrubbed from Sentry, and grants dashboard READ access only.
+  const loginToken = await mintLoginToken(EMAIL_LOGIN_TOKEN_TTL_SECONDS);
+  const privateUrl = loginToken ? dashboardLoginUrl(loginToken, host) : null;
 
   const html = `
 <div style="font-family:monospace;max-width:600px;margin:0 auto;padding:24px;color:#111">
@@ -659,7 +665,10 @@ export async function GET(request: Request) {
 
   <p style="font-size:12px;color:#9ca3af;margin-top:24px">
     Sent by Vercel cron at 8am PT — no Mac required.<br/>
-    <a href="${dashboardUrl}">Open dashboard</a>
+    ${privateUrl
+      ? `<a href="${privateUrl}">Open private dashboard</a> &nbsp;·&nbsp; <a href="${dashboardUrl}">public view</a><br/>
+    <span style="color:#9ca3af">One-time login link — it works once and expires in 12 hours.</span>`
+      : `<a href="${dashboardUrl}">Open dashboard</a>`}
   </p>
 </div>`;
 
