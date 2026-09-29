@@ -290,6 +290,82 @@ async function fetchTranscript(videoId: string, quota?: { exhausted: boolean }):
   return null; // exhausted 429 retries
 }
 
+const SIGNAL_CACHE_TTL = 60 * 60 * 24 * 14; // 14d — matches the transcript cache
+
+/**
+ * Bump when the extraction prompt or ExtractedSignal shape changes.
+ *
+ * Without this, a prompt edit would keep serving signals produced by the OLD prompt for
+ * two weeks, and the change would look like it did nothing.
+ */
+const SIGNAL_PROMPT_VERSION = "v1";
+
+/**
+ * Signals are cached per video for the same reason transcripts are, one line above: the
+ * 7-day window re-sees the same videos daily, so a video published Monday was being sent
+ * to Haiku again on Tuesday, Wednesday and so on — up to 7 times, from an identical
+ * cached transcript, for an identical result.
+ *
+ * That reasoning was already written for the transcript fetch and stopped one call short
+ * of the thing it feeds. A signal derived from an immutable transcript by a fixed prompt
+ * is equally immutable. Haiku was $26.40 of $59.88 total API spend over 30 days, ~90% of
+ * it input tokens, and this is where most of that went.
+ *
+ * Prompt caching, the obvious-looking fix, does NOT apply here: the static system prompt
+ * is ~489 tokens, below the minimum cacheable prefix, and the expensive part — ~2k tokens
+ * of transcript — differs every call. Caching the RESULT is what saves anything.
+ *
+ * `fromTranscript` records how well-sourced the cached signal was. A transcript fetch can
+ * fail on one run and succeed on the next, so a signal derived from just title+description
+ * must not be reused once the real transcript is available — otherwise a transient
+ * Supadata failure would freeze the weaker answer in place for 14 days.
+ */
+type CachedSignal = ExtractedSignal & { fromTranscript: boolean };
+
+/**
+ * Whether a cached signal is good enough to reuse instead of re-extracting.
+ *
+ * Exported and pure so the rule is testable: it is the one place this cache can be
+ * actively WRONG rather than merely unhelpful. A transcript fetch can fail on one run and
+ * succeed on the next, so a signal derived from just title+description must not be frozen
+ * in for 14 days once the real transcript arrives — the transcript is the whole point of
+ * the pipeline.
+ */
+export function shouldReuseCachedSignal(
+  cached: { fromTranscript: boolean } | null,
+  hasTranscript: boolean
+): boolean {
+  if (!cached) return false;
+  if (cached.fromTranscript) return true;  // already the best source available
+  return !hasTranscript;                    // weaker source, but nothing better on offer
+}
+
+async function signalCacheGet(videoId: string): Promise<CachedSignal | null> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  try {
+    const res = await fetch(`${url}/get/robinhood:signal:${SIGNAL_PROMPT_VERSION}:${videoId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const json = await res.json() as { result: string | null };
+    if (!json.result) return null;
+    const parsed = JSON.parse(json.result) as CachedSignal;
+    // Guard against a malformed or half-written entry rather than trusting the shape.
+    if (!Array.isArray(parsed.tickers) || !Array.isArray(parsed.avoid)) return null;
+    return parsed;
+  } catch { return null; } // unreadable cache must never block extraction
+}
+
+async function signalCacheSet(videoId: string, sig: CachedSignal): Promise<void> {
+  try {
+    await redisPost("pipeline", [[
+      "SET", `robinhood:signal:${SIGNAL_PROMPT_VERSION}:${videoId}`,
+      JSON.stringify(sig), "EX", SIGNAL_CACHE_TTL,
+    ]]);
+  } catch { /* cache write is best-effort */ }
+}
+
 export interface ExtractedSignal {
   tickers: string[];                          // BUY / bullish
   confidence: "high" | "medium" | "low";      // conviction of the BUY list
@@ -402,6 +478,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   // via Haiku. Transcript is the real signal; title+description is the fallback. Batch-throttled.
   const signals: InfluencerSignal[] = [];
   let transcriptHits = 0;
+  let signalCacheHits = 0; // how many Haiku calls the signal cache avoided this run
   const quota = { exhausted: false }; // per-run Supadata plan-quota breaker (see fetchTranscript)
   const BATCH = 5;
   for (let i = 0; i < candidateVideos.length; i += BATCH) {
@@ -410,6 +487,16 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
       batch.map(async v => {
         const transcript = await fetchTranscript(v.item.id.videoId, quota);
         if (transcript) transcriptHits++;
+
+        // Reuse a cached signal only when it is at least as well-sourced as one extracted
+        // now: a cached transcript-based signal always wins, but a title-only signal is
+        // re-extracted the moment a transcript becomes available.
+        const cached = await signalCacheGet(v.item.id.videoId);
+        if (cached && shouldReuseCachedSignal(cached, !!transcript)) {
+          signalCacheHits++;
+          return { v, result: cached as ExtractedSignal };
+        }
+
         const result = await extractSignal(
           anthropic,
           v.item.snippet.title,
@@ -417,6 +504,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
           v.channelName,
           transcript,
         );
+        await signalCacheSet(v.item.id.videoId, { ...result, fromTranscript: !!transcript });
         return { v, result };
       })
     );
@@ -443,6 +531,14 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   }
 
   console.log("INFLUENCER_TRANSCRIPT_COVERAGE", { videos: candidateVideos.length, withTranscript: transcriptHits });
+  // Haiku calls avoided this run. Expected to climb toward videos-minus-new over a few
+  // days as the window fills with already-seen videos; a persistent 0 means the cache is
+  // not working and the spend has not moved.
+  console.log("INFLUENCER_SIGNAL_CACHE", {
+    videos: candidateVideos.length,
+    cacheHits: signalCacheHits,
+    haikuCalls: candidateVideos.length - signalCacheHits,
+  });
 
   // Validate every extracted ticker (buy AND avoid) for real liquidity (known names fast-pass,
   // unknown names checked against Yahoo). Drop non-qualifying tickers, then keep a signal if it
