@@ -548,7 +548,13 @@ export async function GET(request: Request) {
   // or the write fails, in which case the private link is simply omitted — never a broken link, and
   // never a fallback that puts DASHBOARD_SECRET in an email. The token is single-use (GETDEL on
   // redeem), scrubbed from Sentry, and grants dashboard READ access only.
-  const loginToken = await mintLoginToken(EMAIL_LOGIN_TOKEN_TTL_SECONDS);
+  // BOUNDED. redisCommand carries no timeout, so a hung Upstash would stall this await and take
+  // the 8am digest with it — trading a convenience link for the day's report. On timeout we fall
+  // back to exactly the documented null path: no private link, email still sends.
+  const loginToken = await Promise.race([
+    mintLoginToken(EMAIL_LOGIN_TOKEN_TTL_SECONDS),
+    new Promise<null>(resolve => setTimeout(() => resolve(null), 4_000)),
+  ]).catch(() => null);
   const privateUrl = loginToken ? dashboardLoginUrl(loginToken, host) : null;
 
   const html = `
