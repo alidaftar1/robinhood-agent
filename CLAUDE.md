@@ -248,6 +248,15 @@ version was the safety fix. Every one passed its tests. The gate caught all thre
 - **Prefer deleting a mechanism to patching it a fourth time.** Three of four defects in the
   valuation work lived in one "helpful" refresh path; removing it fixed them all at the cost of
   detection latency that fails in the safe direction.
+- **Read the layer BELOW for invariants it already maintains, before adding a layer on top.** The
+  2026-09-29 cache bug was avoidable by reading one function down: `fetchTranscript` already
+  carried `if (!res.ok) return null; // don't cache, retry next run`, and the signal cache built
+  directly on top of it did not inherit that property — in code that had been read closely enough
+  to quote. Rediscovering an invariant from an incident is the expensive way to learn it.
+- **Widening a condition without renaming it re-claims something for every consumer.** The 403
+  handler kept the flag name `quotaExceeded` after it started matching rate limits too, so an email
+  downstream went on asserting "the daily quota is SPENT" for a limit that clears in seconds. When
+  a predicate's MEANING changes, re-read every consumer of it, not just the call site.
 - **A cache turns a TRANSIENT failure into a PERSISTENT one.** Any code that degrades gracefully —
   drops the item, returns an empty result, substitutes a neutral default — is self-healing only
   until something stores that output. The question to ask at a cache WRITE is not "is this value
