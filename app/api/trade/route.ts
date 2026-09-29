@@ -1550,33 +1550,38 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
         const mrRec = await recordMeanRevShadow(mrCands, today);
         console.log("MEANREV_SHADOW", { candidates: mrCands.length, symbols: mrCands.map(c => c.symbol), logged: mrRec.logged, skipped: mrRec.skipped ?? false });
       }
-      // FEATURE CAPTURE (Phase 0, docs/experiment-nori-tail-risk.md). Writes down the per-name
-      // feature vector this run already computed and would otherwise discard. Zero capital, zero
-      // new I/O, no model — and fail-safe: it can never affect the trade.
-      try {
-        const peOf = (sym: string) => {
-          const v = valuationsForCapture?.get(sym);
-          return { peTTM: v?.peTTM ?? null, peFY: v?.peFY ?? null };
-        };
-        const daysToEarningsOf = (sym: string) => {
-          const ed = earningsDatesMap[sym];
-          if (!ed) return null;
-          const d = Math.round((new Date(ed).getTime() - new Date(today).getTime()) / 86_400_000);
-          return Number.isFinite(d) ? d : null;
-        };
-        const rows = buildFeatureRows(
-          marketData.stocks,
-          (sym) => quality?.scores[sym]?.quality ?? null,
-          peOf,
-          daysToEarningsOf,
-        );
-        const cap = await recordFeatureCapture(rows, today);
-        console.log("FEATURE_CAPTURE", { rows: cap.written, bytes: cap.bytes, skipped: cap.skipped ?? false });
-      } catch (e) {
-        console.warn("FEATURE_CAPTURE_SKIP", e instanceof Error ? e.message : String(e));
-      }
     } catch (e) {
       console.warn("MEANREV_SHADOW_SKIP", e);
+    }
+
+    // FEATURE CAPTURE (Phase 0, docs/experiment-nori-tail-risk.md). Writes down the per-name
+    // feature vector this run already computed and would otherwise discard. Zero capital, zero new
+    // I/O, no model. A SIBLING of the meanrev shadow, deliberately not nested inside it: a meanrev
+    // throw would otherwise skip the capture for that day, and this asset cannot be backfilled.
+    try {
+      const peOf = (sym: string) => {
+        const v = valuationsForCapture?.get(sym);
+        return { peTTM: v?.peTTM ?? null, peFY: v?.peFY ?? null };
+      };
+      const daysToEarningsOf = (sym: string) => {
+        const ed = earningsDatesMap[sym];
+        if (!ed) return null;
+        const d = Math.round((new Date(ed).getTime() - new Date(today).getTime()) / 86_400_000);
+        return Number.isFinite(d) ? d : null;
+      };
+      const rows = buildFeatureRows(
+        marketData.stocks,
+        (sym) => quality?.scores[sym]?.quality ?? null,
+        peOf,
+        daysToEarningsOf,
+      );
+      const cap = await recordFeatureCapture(rows, today, {
+        capturedAt: new Date().toISOString(),
+        spyPrice: spyPrice ?? null,
+      });
+      console.log("FEATURE_CAPTURE", { rows: cap.written, bytes: cap.bytes, verified: cap.verified, skipped: cap.skipped ?? false });
+    } catch (e) {
+      console.warn("FEATURE_CAPTURE_SKIP", e instanceof Error ? e.message : String(e));
     }
 
     // ── Give-back stop SHADOW capture (Phase 1: ZERO capital) ──────────────────────────────────────

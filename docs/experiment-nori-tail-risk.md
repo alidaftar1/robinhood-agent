@@ -1,8 +1,8 @@
 # Experiment scope — Synthefy Nori for tail-risk sizing
 
-**Status:** SCOPED, NOT STARTED. Needs a go/no-go on Phase 0.
+**Status:** Phase 0 BUILT and approved (2026-09-29). Phase 1 not started.
 **Date:** 2026-09-29
-**Owner decision required:** whether to start the capture. Nothing here touches trading.
+**Measured cost:** 66.5 KB/day at 503 rows, 1 Redis SET, ~25 MB steady state, ~$0.006/month.
 
 ---
 
@@ -74,7 +74,7 @@ to start the clock.
 
 ---
 
-## Phase 0 — capture (the only thing being proposed now)
+## Phase 0 — capture (BUILT: lib/feature-capture.ts)
 
 Zero trading risk, zero capital, no change to any decision path. Follows the precedent already in
 this repo: `giveback-shadow` exists precisely to accrue forward outcomes before committing capital.
@@ -87,8 +87,24 @@ robinhood:feature-capture:<YYYY-MM-DD>   (14–18 month TTL)
   mom12_1, change5d, change14d, change30d
   volatility30d, beta, sharpe5d, sharpe14d, sharpe30d
   distFrom52wHigh, relStrength5d, relStrength30d
-  qualityPct, sector, peTTM | peFY | null, daysToEarnings
+  qualityPct, peTTM | peFY | null, daysToEarnings
 ```
+
+**Column caveats a later analyst needs** (the capture is the last point at which these are knowable):
+
+- `daysToEarnings` domain is `[0, 30] ∪ {null}`. `StockData.earningsDate` is only populated inside
+  a 30-day forward window, so `null` conflates "no earnings within 30 days" with "no data", and a
+  name that reported *two days ago* — plausibly the more predictive tail-risk feature — is
+  indistinguishable from one with no earnings for months.
+- `peTTM`/`peFY` are null for most rows. Valuation covers shortlist + held, not the universe.
+  That is accurate, not a gap.
+- `volatility30d === null` means the price series was broken or shorter than 3 closes. On those
+  rows `change5d/14d/30d` and `distFrom52wHigh` are also upstream sentinels (coerced to 0) and
+  should be treated as unreliable. Null vol is the only unambiguous tell, which is why it is nulled
+  at capture and the others are not — `distFrom52wHigh === 0` is genuinely common (a new high).
+- `spyAvailable === false` days have fabricated `relStrength*` columns: market-data falls back to
+  `spy?.changeNd ?? 0`, making relative strength equal the name's own return across every row.
+  Drop those days rather than correct them.
 
 All of these are **already computed** in the run — this writes what is currently discarded.
 

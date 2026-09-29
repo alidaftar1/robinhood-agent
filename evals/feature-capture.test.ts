@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildFeatureRows, recordFeatureCapture, CAPTURE_COLUMNS, CAPTURE_KEY_PREFIX } from "@/lib/feature-capture";
+import { buildFeatureRows, recordFeatureCapture, storedLengthOf, CAPTURE_COLUMNS, CAPTURE_KEY_PREFIX } from "@/lib/feature-capture";
 import type { StockData } from "@/lib/market-data";
 
 // Phase 0 of docs/experiment-nori-tail-risk.md. The capture exists because the run computes these
@@ -59,7 +59,8 @@ describe("feature capture preserves what the run would otherwise throw away", ()
   test("an empty universe writes NOTHING rather than an empty day", () => {
     // An empty day would read later as "the market had no names", which is never true — it means
     // the upstream fetch failed. Absence is the honest record.
-    expect(recordFeatureCapture([], "2026-09-29")).resolves.toMatchObject({ written: 0, skipped: "no rows" });
+    expect(recordFeatureCapture([], "2026-09-29", { capturedAt: "2026-09-29T14:30:00Z", spyPrice: 773.5 }))
+      .resolves.toMatchObject({ written: 0, skipped: "no rows" });
   });
 
   test("the payload stays small enough to be worth doing daily", () => {
@@ -77,5 +78,61 @@ describe("feature capture preserves what the run would otherwise throw away", ()
   test("the key is per-DAY, so one bad write cannot damage the history", () => {
     // Deliberately unlike the meanrev/giveback shadows, which read-modify-write one growing blob.
     expect(`${CAPTURE_KEY_PREFIX}2026-09-29`).toBe("robinhood:feature-capture:2026-09-29");
+  });
+
+  test("EVERY column lands in its declared position — a reorder must fail this", () => {
+    // The previous version of this file only caught a LENGTH mismatch: nine columns shared the
+    // value 0 in the fixture, so any permutation among them passed. Give every field a distinct
+    // value and assert the whole row, which is the only thing that catches an insertion or swap.
+    const rows = buildFeatureRows(
+      [stock({
+        symbol: "UNIQ", price: 1, change5d: 2, change14d: 3, change30d: 4,
+        volatility30d: 5, beta: 6, sharpe5d: 7, sharpe14d: 8, sharpe30d: 9,
+        distFrom52wHigh: 10, relStrength5d: 11, relStrength30d: 12, mom12_1: 13,
+      })],
+      () => 14, () => ({ peTTM: 15, peFY: 16 }), () => 17,
+    );
+    expect(rows[0]).toEqual([
+      "UNIQ", 1,          // symbol, price
+      13, 2, 3, 4,        // mom12_1, change5d, change14d, change30d
+      5, 6,               // volatility30d, beta
+      7, 8, 9,            // sharpe5d, sharpe14d, sharpe30d
+      10, 11, 12,         // distFrom52wHigh, relStrength5d, relStrength30d
+      14, 15, 16, 17,     // qualityPct, peTTM, peFY, daysToEarnings
+    ]);
+    // And the labels must still describe those positions.
+    expect([...CAPTURE_COLUMNS]).toEqual([
+      "symbol", "price", "mom12_1", "change5d", "change14d", "change30d",
+      "volatility30d", "beta", "sharpe5d", "sharpe14d", "sharpe30d",
+      "distFrom52wHigh", "relStrength5d", "relStrength30d",
+      "qualityPct", "peTTM", "peFY", "daysToEarnings",
+    ]);
+  });
+
+  test("zero volatility is recorded as NULL — it is a broken-series sentinel, not a fact", () => {
+    // annualizedVol returns 0 for a series with <3 closes, and market-data coerces the change and
+    // distFrom52wHigh columns to 0 too. Left as-is that row reads "flat and at its 52-week high":
+    // the strongest momentum signal in the set, manufactured from missing data.
+    const rows = buildFeatureRows([stock({ volatility30d: 0 })], noQuality, noPe, noEarn);
+    expect(rows[0][CAPTURE_COLUMNS.indexOf("volatility30d")]).toBeNull();
+  });
+
+  test("a real distFrom52wHigh of 0 is KEPT — a new high is not missing data", () => {
+    // Deliberately not nulled: 0 there is genuinely common (a name printing a new high), so
+    // mapping it would destroy real signal to catch a rare sentinel.
+    const rows = buildFeatureRows([stock({ distFrom52wHigh: 0, volatility30d: 25 })], noQuality, noPe, noEarn);
+    expect(rows[0][CAPTURE_COLUMNS.indexOf("distFrom52wHigh")]).toBe(0);
+  });
+
+  test("an unverified write is detectable — storedLengthOf reads the pipeline's STRLEN", () => {
+    // redisPost never checks res.ok and a pipeline response is an ARRAY, so a 429/413 resolves
+    // normally. Without this the log would report "503 rows written" on a day nothing was stored.
+    expect(storedLengthOf([{ result: "OK" }, { result: 1234 }])).toBe(1234);
+    expect(storedLengthOf([{ result: "OK" }, 1234])).toBe(1234);
+    // Every shape that does NOT prove a write must read as unverified, never as success.
+    expect(storedLengthOf([{ error: "ERR max requests" }])).toBeNull();
+    expect(storedLengthOf({ error: "429" })).toBeNull();
+    expect(storedLengthOf(null)).toBeNull();
+    expect(storedLengthOf([{ result: "OK" }, { result: null }])).toBeNull();
   });
 });

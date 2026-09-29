@@ -95,7 +95,7 @@ export async function redisCommand(command: string, ...args: (string | number)[]
   return json.result;
 }
 
-export async function redisPost(command: string, body: unknown): Promise<unknown> {
+export async function redisPost(command: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
   if (!url || !token) throw new Error("Upstash not configured");
@@ -104,6 +104,10 @@ export async function redisPost(command: string, body: unknown): Promise<unknown
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    // Optional and undefined by default, so every existing caller is unchanged. Callers that run
+    // AFTER saveRun but BEFORE updateLatestRun should pass one: a hung connection there burns the
+    // remaining maxDuration and the function dies before the day's return is written.
+    signal,
   });
   const json = await res.json() as { result: unknown };
   return json.result;
