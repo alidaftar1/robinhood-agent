@@ -328,7 +328,11 @@ const SIGNAL_CACHE_TTL = 60 * 60 * 24 * 14; // 14d — matches the transcript ca
  * Without this, a prompt edit would keep serving signals produced by the OLD prompt for
  * two weeks, and the change would look like it did nothing.
  */
-const SIGNAL_PROMPT_VERSION = "v1";
+// Every input that can change the OUTPUT belongs in the key, not just the prompt text. Upgrading
+// the Haiku model or widening a truncation cap would otherwise serve old-shaped signals for 14
+// days while the change looked inert — the exact staleness the version key exists to prevent.
+const SIGNAL_MODEL = "claude-haiku-4-5-20251001";
+const SIGNAL_PROMPT_VERSION = `v2-${SIGNAL_MODEL}-t8000-d1500`;
 
 /**
  * Signals are cached per video for the same reason transcripts are, one line above: the
@@ -401,6 +405,9 @@ export interface ExtractedSignal {
   confidence: "high" | "medium" | "low";      // conviction of the BUY list
   avoid: string[];                            // BEARISH / warn-against
   insight: string;                            // one-sentence takeaway/thesis
+  /** false = the extraction FAILED (overload/timeout/unparseable), not "no signal".
+   *  Load-bearing: the caller must not cache a failure as a result. */
+  extracted?: boolean;
 }
 
 // Exported for the prompt-injection eval (evals/eval.test.ts) — feeds a poisoned transcript and
@@ -413,6 +420,11 @@ export async function extractSignal(
   transcript: string | null,
 ): Promise<ExtractedSignal> {
   const EMPTY: ExtractedSignal = { tickers: [], confidence: "low", avoid: [], insight: "" };
+  // A FAILED extraction and a genuinely empty one are the same object. That is fine for trading
+  // (both mean "no signal today") but NOT for caching: caching a failure as a result freezes it for
+  // the video's whole window. `extracted: false` marks the difference so the caller can decline to
+  // store it. Before the signal cache existed this self-healed — the next day's run simply re-ran.
+  const FAILED: ExtractedSignal = { ...EMPTY, extracted: false };
   try {
     // Prefer the actual spoken transcript (the real picks + stance live in the video, not the
     // clickbait title). Fall back to title+description (which usually lists the discussed stocks).
@@ -420,7 +432,12 @@ export async function extractSignal(
       ? `Channel: ${channelName}\nTitle: ${title}\nVIDEO TRANSCRIPT (may be truncated to the start of the video):\n${transcript}`
       : `Channel: ${channelName}\nTitle: ${title}\nDescription:\n${description.slice(0, 1500)}`;
     const res = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: SIGNAL_MODEL,
+      // Explicit 0, not the SDK default of 1.0. Caching freezes ONE draw for the video's whole
+      // window; previously each daily run re-rolled. Confidence is decisive (high=3 vs the
+      // INFLUENCER_BUY_FLOOR of 3), so a lucky or unlucky first roll would persist for days.
+      // At temperature 0 the frozen result is the one re-extraction would have reproduced.
+      temperature: 0,
       max_tokens: 400,
       system: `You analyze a YouTube finance video to extract the creator's stock views.
 
@@ -444,7 +461,7 @@ If nothing actionable and no clear take: SIGNAL:{"buy":[],"confidence":"low","av
     });
     const text = res.content.filter(b => b.type === "text").map(b => (b as { type: "text"; text: string }).text).join("");
     const m = text.match(/^SIGNAL:(.+)$/m);
-    if (!m) return EMPTY;
+    if (!m) return FAILED;   // no SIGNAL: line — a malformed response, not a verdict
     const parsed = JSON.parse(m[1]) as { buy?: string[]; confidence?: string; avoid?: string[]; insight?: string };
     // Shape-check + alias-normalize only. Real liquidity validation happens in a second pass
     // (filterToTradeable) so newly-listed names not in the static universe can still qualify.
@@ -459,8 +476,9 @@ If nothing actionable and no clear take: SIGNAL:{"buy":[],"confidence":"low","av
       confidence: (["high", "medium", "low"].includes(parsed.confidence ?? "") ? parsed.confidence : "low") as "high" | "medium" | "low",
       avoid,
       insight: typeof parsed.insight === "string" ? parsed.insight.replace(/\s+/g, " ").trim().slice(0, 200) : "",
+      extracted: true,
     };
-  } catch { return EMPTY; }
+  } catch { return FAILED; }   // 429/529 overload, timeout, or unparseable JSON — NOT "no signal"
 }
 
 // ─── Main refresh ──────────────────────────────────────────────────────────────
@@ -512,6 +530,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   const signals: InfluencerSignal[] = [];
   let transcriptHits = 0;
   let signalCacheHits = 0; // how many Haiku calls the signal cache avoided this run
+  let signalExtractFailures = 0; // extractions that FAILED and were deliberately not cached
   const quota = { exhausted: false }; // per-run Supadata plan-quota breaker (see fetchTranscript)
   const BATCH = 5;
   for (let i = 0; i < candidateVideos.length; i += BATCH) {
@@ -537,7 +556,14 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
           v.channelName,
           transcript,
         );
-        await signalCacheSet(v.item.id.videoId, { ...result, fromTranscript: !!transcript });
+        // Persist a RESULT, never a FAILURE. extractSignal returns the same empty shape for
+        // "creator named nothing" and for an overload/timeout, and caching the second would
+        // suppress this video for the rest of its 7-day window with no way to tell from the logs.
+        if (result.extracted !== false) {
+          await signalCacheSet(v.item.id.videoId, { ...result, fromTranscript: !!transcript });
+        } else {
+          signalExtractFailures++;
+        }
         return { v, result };
       })
     );
@@ -568,6 +594,7 @@ export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
   // days as the window fills with already-seen videos; a persistent 0 means the cache is
   // not working and the spend has not moved.
   console.log("INFLUENCER_SIGNAL_CACHE", {
+    extractFailures: signalExtractFailures,
     videos: candidateVideos.length,
     cacheHits: signalCacheHits,
     haikuCalls: candidateVideos.length - signalCacheHits,
