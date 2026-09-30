@@ -1230,7 +1230,13 @@ describe("benchmark verdict: is the active book beating buy-and-hold SPY", () =>
 });
 
 describe("dashboard reconciliation: deterministic audit of derived numbers", () => {
-  const rpos = (symbol: string, qty: string, price: string): PositionSnapshot => ({ symbol, quantity: qty, avgCost: price, price });
+  // avgCost DELIBERATELY differs from price. This helper used to set `avgCost: price, price` — the
+  // two identical by construction — which is exactly the pre-enrichPriceMap artifact the
+  // cost-basis check detects, so every fixture here tripped it. The two `.some()` assertions
+  // tolerated the extra finding and only the `toEqual([])` control caught it. Pass avgCost
+  // explicitly when a test wants the artifact.
+  const rpos = (symbol: string, qty: string, price: string, avgCost?: string): PositionSnapshot =>
+    ({ symbol, quantity: qty, avgCost: avgCost ?? (parseFloat(price) * 0.95).toFixed(2), price });
   const rRun = (date: string, o: {
     positions?: PositionSnapshot[]; infl?: PositionSnapshot[]; trades?: TradeSnapshot[]; total?: string;
     spy?: number; agentic?: number | null; main?: number | null; infR?: number | null;
@@ -1248,14 +1254,16 @@ describe("dashboard reconciliation: deterministic audit of derived numbers", () 
       infl: [rpos("AAPL", "1", "110"), rpos("PLTR", "1", "110")],
       positions: [rpos("AAPL", "1", "110"), rpos("PLTR", "1", "110")], agentic: 0.01,
     })]);
-    expect(t.some(x => x.includes("at capacity"))).toBe(true);
+    // EXACT, not `.some()`. A tolerant assertion is what let the cost-basis finding ride along
+    // here unnoticed while the control test carried the failure alone.
+    expect(t).toEqual(["Influencer sleeve at capacity holding an S&P name"]);
   });
 
   it("flags an influencer position not actually held (stale sleeve membership)", () => {
     const t = titles([rRun("2026-07-02", {
       infl: [rpos("ZZZZ", "1", "10")], positions: [rpos("MSFT", "1", "100")], agentic: 0.01,
     })]);
-    expect(t.some(x => x.includes("not in the account"))).toBe(true);
+    expect(t).toEqual(["Influencer position not in the account"]);
   });
 
   it("stays quiet on a clean sleeve (held names, no squat, no orphan)", () => {
@@ -1263,6 +1271,29 @@ describe("dashboard reconciliation: deterministic audit of derived numbers", () 
       infl: [rpos("AAPL", "1", "110")], // 1 slot used → no squat; AAPL is held → no orphan
       positions: [rpos("AAPL", "1", "110"), rpos("MSFT", "1", "100")], agentic: 0.01,
     })]);
+    expect(t).toEqual([]);
+  });
+
+  // The cost-basis check had NO deliberate coverage — it was only ever exercised by accident,
+  // via a helper that built every position with avgCost === price. So the one check here that
+  // could misfire on live money's sleeve returns was the one nothing intentionally tested.
+  it("flags a held position priced at its cost basis (the PLTR 2026-07-08 artifact)", () => {
+    const t = titles([rRun("2026-07-02", {
+      // price EXACTLY equals avgCost and the name was not bought today → the price fell back to
+      // cost basis instead of marking to market, injecting a phantom day-over-day move.
+      positions: [rpos("PLTR", "1", "116.26", "116.26"), rpos("MSFT", "1", "100")], agentic: 0.01,
+    })]);
+    expect(t).toEqual(["Held position priced at cost basis (not marked to market)"]);
+  });
+
+  it("does NOT flag cost-basis pricing on a name bought TODAY — there price==avgCost is correct", () => {
+    const t = titles([rRun("2026-07-02", {
+      positions: [rpos("PLTR", "1", "116.26", "116.26"), rpos("MSFT", "1", "100")],
+      trades: [{ symbol: "PLTR", side: "buy", quantity: "1", avgPrice: "116.26", state: "filled" }],
+      agentic: 0.01,
+    })]);
+    // Without the boughtToday exclusion this check would fire on every ordinary buy day — the
+    // failure mode that makes a reviewer cry wolf and get ignored.
     expect(t).toEqual([]);
   });
 });
