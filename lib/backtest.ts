@@ -109,7 +109,11 @@ export type PriceLookup = (date: string, symbol: string) => number | null;
  */
 export function runBacktest(
   variant: StrategyVariant,
-  days: CaptureDay[],
+  /** ITERABLE, not an array, deliberately. The full 28-year run is ~7,000 days x ~500 rows x 18
+   *  columns; materialising that up front is several GB and exhausts memory — the same failure that
+   *  silently produced zero tradeable days and a "-100.05% return". `days` is consumed exactly once
+   *  here, so a generator lets each day be built, used, and collected. */
+  days: Iterable<CaptureDay>,
   priceOf: PriceLookup,
   spyCloseOf: (date: string) => number | null,
   cfg: BacktestConfig = DEFAULT_BACKTEST,

@@ -4,6 +4,7 @@
  *   bun scripts/bear-test.ts                 # all windows
  *   bun scripts/bear-test.ts gfc covid       # named windows only
  *   bun scripts/bear-test.ts --no-quality    # momentum-only, for the A/B
+ *   bun scripts/bear-test.ts --ttm           # quality from TTM (ART) instead of annual (ARY)
  *
  * The live book is a bull/chop strategy with ZERO bear data: the regime signal is advisory-only,
  * the sympathy heuristic inverts in a downturn, there is no hedge and no cash trigger, and
@@ -111,6 +112,12 @@ const argv = process.argv.slice(2);
 // --no-quality reproduces the pre-Bundle momentum-only run, so the quality contribution can be
 // read as a DIFFERENCE on identical windows rather than compared across two separate reports.
 const useQuality = !argv.includes("--no-quality");
+// ARY = as-reported ANNUAL (what lib/quality.ts mirrors today; refreshes once a year, so the gate
+// runs 12-15 months stale every Q1). ART = as-reported TRAILING TWELVE MONTHS, refreshed each
+// quarter — income items are TTM sums, balance-sheet items the latest quarter-end. The hypothesis
+// this flag exists to test: TTM removes the staleness that cost 22 points in 2022 WITHOUT giving
+// back quality's +10.4 in the GFC.
+const dimension = argv.includes("--ttm") ? "ART" : "ARY";
 const wanted = argv.filter(a => !a.startsWith("--"));
 const runWindows = wanted.length ? WINDOWS.filter(w => wanted.includes(w.key)) : WINDOWS;
 
@@ -122,15 +129,16 @@ const spy = await loadSpy();
 let fundIndex: ReturnType<typeof buildFundamentalIndex> | null = null;
 if (useQuality) {
   const tickers = new Set(sp500Rows.map(r => r.ticker));
-  const rows = parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fundamentals.csv`).text(), { dimension: "ARY", tickers });
+  const rows = parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fund_all.csv`).text(), { dimension, tickers });
   fundIndex = buildFundamentalIndex(rows);
-  console.log(`Quality: ${rows.length} as-reported annual filings across ${fundIndex.size} tickers (point-in-time, keyed on filing date).`);
+  const label = dimension === "ART" ? "as-reported TTM (quarterly refresh)" : "as-reported ANNUAL (yearly refresh)";
+  console.log(`Quality: ${rows.length} ${label} filings across ${fundIndex.size} tickers (point-in-time, keyed on filing date).`);
 }
 
 console.log(`\nBEAR-MARKET RISK TEST — ${LIVE_PROXY.id}`);
 console.log(`Screen: ${LIVE_PROXY.description}`);
 console.log(`Config: rebalance every ${DEFAULT_BACKTEST.rebalanceEveryDays}d, stop ${DEFAULT_BACKTEST.stopLossPct}%, cost ${DEFAULT_BACKTEST.costBps}bps, ${LIVE_PROXY.config.maxPositions} positions / ${LIVE_PROXY.config.maxPerSector} per sector`);
-console.log(`Quality gate: ${useQuality ? "ON (point-in-time, as-reported annual, keyed on FILING date)" : "OFF — momentum-only"}; stops on closes, not intraday.\n`);
+console.log(`Quality gate: ${useQuality ? `ON — ${dimension} (point-in-time, keyed on FILING date)` : "OFF — momentum-only"}; stops on closes, not intraday.\n`);
 
 const rows: string[] = [];
 for (const w of runWindows) {

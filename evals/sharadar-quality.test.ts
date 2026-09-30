@@ -158,3 +158,49 @@ describe("trap 3: the percentile cohort is the point-in-time universe", () => {
     expect(qualityAsOf([], index, "2008-06-01").cohortSize).toBe(0);
   });
 });
+
+// The staleness finding, encoded as a test so it cannot silently regress. Real DVN figures.
+// ARY refreshes ONCE a year, so on 2022-01-03 the newest annual filing was 2021-02-17 carrying
+// FY2020's -$2.68B COVID loss. ART refreshes each QUARTER and had already caught DVN turning
+// profitable (+$1.205B TTM, filed 2021-11-03). The gate excluded energy on stale losses exactly as
+// energy began its best year in a decade — a 22-point effect in the 2022 backtest window.
+describe("dimension freshness: ARY is stale in Q1 where ART is not", () => {
+  const CSV = [
+    "ticker,dimension,date,calendardate,assets,equity,liabilities,netinc",
+    // annual: two refreshes across 18 months
+    "DVN,ARY,2021-02-17,2020-12-31,9912000000,2885000000,6893000000,-2680000000",
+    "DVN,ARY,2022-02-16,2021-12-31,21025000000,9262000000,11626000000,2813000000",
+    // TTM: quarterly refreshes through the same turn
+    "DVN,ART,2021-02-17,2020-12-31,9912000000,2885000000,6893000000,-2680000000",
+    "DVN,ART,2021-05-05,2021-03-31,20457000000,8353000000,11971000000,-651000000",
+    "DVN,ART,2021-08-04,2021-06-30,20065000000,8399000000,11530000000,275000000",
+    "DVN,ART,2021-11-03,2021-09-30,21057000000,8924000000,11996000000,1205000000",
+    "DVN,ART,2022-02-16,2021-12-31,21025000000,9262000000,11626000000,2813000000",
+  ].join("\n");
+
+  test("on 2022-01-03 ARY still reports a LOSS while ART reports a PROFIT", () => {
+    const ary = buildFundamentalIndex(parseFundamentalsCsv(CSV, { dimension: "ARY" }));
+    const art = buildFundamentalIndex(parseFundamentalsCsv(CSV, { dimension: "ART" }));
+    const a = latestFilingAsOf(ary.get("DVN"), "2022-01-03")!;
+    const t = latestFilingAsOf(art.get("DVN"), "2022-01-03")!;
+    expect(a.filed).toBe("2021-02-17");
+    expect(a.netinc).toBeLessThan(0);          // FY2020 COVID loss, 10+ months stale
+    expect(t.filed).toBe("2021-11-03");
+    expect(t.netinc).toBeGreaterThan(0);       // TTM had already turned
+  });
+
+  test("ART yields strictly more refreshes over the same span", () => {
+    const ary = parseFundamentalsCsv(CSV, { dimension: "ARY" });
+    const art = parseFundamentalsCsv(CSV, { dimension: "ART" });
+    expect(art.length).toBeGreaterThan(ary.length);
+  });
+
+  test("both dimensions still agree on a date where the SAME filing is newest", () => {
+    // Control: the freshness difference must come from refresh CADENCE, not from the two
+    // dimensions disagreeing about a period they both report.
+    const ary = buildFundamentalIndex(parseFundamentalsCsv(CSV, { dimension: "ARY" }));
+    const art = buildFundamentalIndex(parseFundamentalsCsv(CSV, { dimension: "ART" }));
+    expect(latestFilingAsOf(ary.get("DVN"), "2021-03-01")!.netinc)
+      .toBe(latestFilingAsOf(art.get("DVN"), "2021-03-01")!.netinc);
+  });
+});

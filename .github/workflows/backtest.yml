@@ -1,0 +1,134 @@
+name: Backtest (Sharadar)
+
+# Runs the historical backtests on GitHub's compute so they do not depend on a laptop or a home
+# network. Nothing here touches the live account: the scripts are pure measurement over vendor
+# history and never call /api/trade or the broker.
+#
+# LICENSING — the reason this re-derives data instead of storing it. Sharadar data is licensed
+# per-subscriber and non-redistributable, so the ~515MB of derived CSVs must never enter git. They
+# are rebuilt inside the runner from SHARADAR_API_KEY and live only in ephemeral runner storage.
+# The optional cache below is OFF by default for the same reason; enable it only after confirming
+# the licence permits a private CI cache.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Which backtest: bear | full | both"
+        required: false
+        default: "both"
+      quality:
+        description: "Quality gate: annual (matches prod) | ttm | off"
+        required: false
+        default: "annual"
+      cache_data:
+        description: "Reuse cached Sharadar extracts between runs (see LICENSING note): true | false"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Validate inputs (default-deny allowlist)
+        env:
+          TEST: ${{ github.event.inputs.test }}
+          QUALITY: ${{ github.event.inputs.quality }}
+          CACHE_DATA: ${{ github.event.inputs.cache_data }}
+        run: |
+          case "$TEST" in bear|full|both) ;; *) echo "::error::disallowed test: $TEST"; exit 1 ;; esac
+          case "$QUALITY" in annual|ttm|off) ;; *) echo "::error::disallowed quality: $QUALITY"; exit 1 ;; esac
+          case "$CACHE_DATA" in true|false) ;; *) echo "::error::cache_data must be true or false"; exit 1 ;; esac
+
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Fail fast if the data key is absent
+        env:
+          SHARADAR_API_KEY: ${{ secrets.SHARADAR_API_KEY }}
+        run: |
+          if [ -z "$SHARADAR_API_KEY" ]; then
+            echo "::error::SHARADAR_API_KEY is not set. Add it under Settings → Secrets → Actions."
+            exit 1
+          fi
+          echo "key present (${#SHARADAR_API_KEY} chars)"
+
+      # Keyed by month so a cache refreshes as new trading days accrue. Disabled unless the operator
+      # explicitly opts in — see the LICENSING note at the top of this file.
+      - name: Restore Sharadar extracts (opt-in)
+        id: cache
+        if: ${{ github.event.inputs.cache_data == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sharadar
+          key: sharadar-extracts-v1-${{ github.run_id }}
+          restore-keys: sharadar-extracts-v1-
+
+      - name: Build Sharadar extracts
+        if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+        env:
+          SHARADAR_API_KEY: ${{ secrets.SHARADAR_API_KEY }}
+        run: bash scripts/sharadar-extract.sh
+
+      - name: Confirm extracts are present and non-trivial
+        run: |
+          cd ~/.cache/sharadar
+          for f in sp500.csv spy.csv sp500_prices.csv sp500_fund_all.csv; do
+            if [ ! -s "$f" ]; then echo "::error::missing or empty extract: $f"; exit 1; fi
+            printf '  %-24s %s rows\n' "$f" "$(wc -l < "$f")"
+          done
+
+      - name: Unit tests
+        run: bun run test:unit
+
+      - name: Run backtests
+        env:
+          TEST: ${{ github.event.inputs.test }}
+          QUALITY: ${{ github.event.inputs.quality }}
+        run: |
+          case "$QUALITY" in
+            annual) FLAG="" ;;
+            ttm)    FLAG="--ttm" ;;
+            off)    FLAG="--no-quality" ;;
+          esac
+          {
+            echo "## Backtest results"
+            echo ""
+            echo "Quality gate: \`$QUALITY\` · commit \`${GITHUB_SHA:0:7}\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TEST" = "bear" ] || [ "$TEST" = "both" ]; then
+            echo "### Bear-market windows" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            bun scripts/bear-test.ts $FLAG 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$TEST" = "full" ] || [ "$TEST" = "both" ]; then
+            echo "### Full cycle (1999 → 2026)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            bun scripts/full-period.ts $FLAG 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Deliberately NOT uploading the extracts as an artifact — that would publish licensed vendor
+      # data to anyone who can read the run. Only the computed results leave the runner.
+      - name: Guard against leaking vendor data
+        run: |
+          if git status --porcelain | grep -qE '\.csv$|\.zip$'; then
+            echo "::error::vendor data appeared in the working tree; refusing to finish"
+            git status --porcelain
+            exit 1
+          fi
+          echo "working tree clean of vendor data"
