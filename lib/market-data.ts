@@ -875,7 +875,7 @@ export function formatMarketDataForPrompt(data: MarketData): string {
             })
         )
         .join("\n")
-    : "\nANALYST ACTIONS: No upgrades, downgrades, or PT changes in last 7 days.";
+    : `\nANALYST ACTIONS: No upgrades, downgrades, or PT changes in last ${ANALYST_LOOKBACK_DAYS} days.`;
 
   const headlines = data.headlines.length > 0
     ? data.headlines.map((h) => `- ${h}`).join("\n")

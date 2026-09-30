@@ -49,10 +49,13 @@ export function findPostSaleCatalyst(exitDate: string, inp: CatalystInputs): str
   if (inp.news && inp.news.direction === "+" && after(inp.news.date)) {
     return `⚡NEWS↑ ${inp.news.summary} (${day(inp.news.date)})`;
   }
-  // Bullish analyst action after the exit. Exclude EXPLICITLY-negative-upside ratings: parseAction
-  // (lib/analyst.ts) maps a coverage "initiates"/"initiated" to action="upgrade" regardless of the
-  // rating, so an "initiates at Underperform" (PT below price → pctUpside<0) would otherwise pass as
-  // a bullish catalyst. Unknown upside (pctUpside==null) still passes — the direction tag stands.
+  // Bullish analyst action after the exit. Initiations are excluded at the SOURCE now — parseAction
+  // (lib/analyst.ts) gives a coverage "initiates"/"initiated" its own non-directional action, so no
+  // initiation reaches this test at any upside. (It previously mapped them to "upgrade" regardless
+  // of the rating, and the pctUpside filter below was the only thing stopping an "initiates at
+  // Underperform" from reading as a bullish catalyst.) That filter is KEPT on its own merits: a
+  // genuine upgrade or PT-raise whose target sits BELOW the current price is not a re-entry reason.
+  // Unknown upside (pctUpside==null) still passes — the direction tag stands.
   const up = (inp.analyst ?? []).find(a =>
     (a.action === "upgrade" || a.action === "raise_pt") && after(a.date) && (a.pctUpside == null || a.pctUpside > 0));
   if (up) return `↑FIRM ${up.firmShort ?? ""} ${up.action} (${day(up.date)})`.replace(/\s+/g, " ").trim();

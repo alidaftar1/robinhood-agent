@@ -1100,12 +1100,15 @@ export async function GET(request: Request) {
           analystSymbols: Object.keys(marketData.analystRatings ?? {}).length,
           newsSignals: newsSignals.size,
         });
+        // "proposed", not "executed": mainSells is the DECIDED count here. Downstream, an unheld
+        // name is dropped (SELL_SKIPPED_NOT_HELD) and placement can fail, so claiming execution
+        // would assert something this line cannot know — the decision and the claim stay separate.
         buySizingAdjustments.push(
           `⚠️ Sell-volume rail STOOD DOWN — evidence degraded (analyst ratings: ` +
           `${Object.keys(marketData.analystRatings ?? {}).length} symbols, news signals: ${newsSignals.size}). ` +
-          `${mainSells.length} main-book exit(s) executed UNBOUNDED. The rail stands down when it cannot ` +
-          `verify bearish-news/downgrade reasons, so it does not tighten hardest when it sees least — but if ` +
-          `this repeats daily, a provider is down and the guard is effectively off.`,
+          `${mainSells.length} main-book exit(s) proposed, none bounded by the rail. It stands down when it ` +
+          `cannot verify bearish-news/downgrade reasons, so it does not tighten hardest when it sees least — ` +
+          `but if this repeats daily, a provider is down and the guard is effectively off.`,
         );
       }
       const rail = applySellRail(mainSells, railCtx, railMax, { evidenceDegraded });

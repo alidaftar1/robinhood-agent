@@ -83,6 +83,11 @@ describe("a held name's analyst action is visible where the decision is made", (
     const src = await Bun.file(new URL("../lib/analyst.ts", import.meta.url)).text();
     expect(src).toContain("ANALYST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000");
     expect(src).not.toMatch(/\b7\s*\*\s*24\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
+    // A THIRD hard-coded 7 survived the first pass, 18 lines from the one that was fixed: the
+    // EMPTY-state branch of the ANALYST ACTIONS ternary. That branch is what renders during an FMP
+    // outage — precisely when a reader is most likely to check what window was searched.
+    const md = await Bun.file(new URL("../lib/market-data.ts", import.meta.url)).text();
+    expect(md).not.toMatch(/last 7 days/);
   });
 
   // The sleeve authorises exactly three exits (⚠⚠ IMMINENT earnings, bearish ⚡NEWS↓, ⏳STALE). A
