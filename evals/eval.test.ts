@@ -844,7 +844,7 @@ describe("benchmark-awareness: beta math", () => {
     const pf = { buyingPower: "$100", totalValue: "$1000", positions: [] } as any;
     const prompt = buildV1AnalysisPrompt("2026-07-06", "", pf, "", "");
     expect(prompt).toContain("concentrated");   // V1 wording: "a concentrated ~6-name book beats a long thin tail"
-    expect(prompt).toContain("up to 6");         // V1: "pick up to 6 MAIN-book names"
+    expect(prompt).toContain("up to 6");         // V1: "up to 6 BUYS THIS REBALANCE"
     expect(prompt).not.toContain("RISK-ON");     // no marketRegime passed → no regime block
     expect(prompt).not.toContain("RISK-OFF");
   });

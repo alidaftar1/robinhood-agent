@@ -148,8 +148,11 @@ describe("the rendered prompt honours the rebalance window", () => {
   });
 
   test("off-cycle does NOT invite main-book buys", () => {
-    expect(off).not.toContain("pick up to 6 MAIN-book names");
-    expect(on).toContain("pick up to 6 MAIN-book names");
+    // Anchors on the BUY allowance, reworded 2026-09-29 from "pick up to 6 MAIN-book names" to
+    // "up to 6 BUYS THIS REBALANCE" — the old phrasing read as a HOLDING target next to the new
+    // "target of ~6" line, so at 11 held it could mean either "add 6 more" or "sell 5".
+    expect(off).not.toContain("BUYS THIS REBALANCE");
+    expect(on).toContain("BUYS THIS REBALANCE");
   });
 
   test("off-cycle does NOT ask the thesis which shortlist names are being bought", () => {
