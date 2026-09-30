@@ -11,11 +11,13 @@
 // accept "a ↓FIRM downgrade". ILMN was sold 2026-09-14/15 days after a UBS upgrade to Buy with a
 // $260 target that the model could not see on its position line; it then rose ~21% vs SPY.
 
-/** Matches lib/analyst's cutoff — ratings older than this are never fetched. */
+/** THE cutoff: lib/analyst imports this to build its fetch window, so the legend's "last 7 days"
+ *  and the filter that enforces it cannot drift apart. Defined in the leaf so the importing
+ *  direction stays acyclic (lib/analyst → lib/strategy → lib/analyst-tag, which imports nothing). */
 export const ANALYST_LOOKBACK_DAYS = 7;
 
 export interface AnalystTagInput {
-  action: string;              // upgrade | downgrade | raise_pt | lower_pt
+  action: string;              // upgrade | downgrade | initiate | raise_pt | lower_pt
   firmShort: string;
   priceTarget?: number;
   pctUpside?: number;
@@ -45,7 +47,10 @@ export function formatAnalystTag(
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, max)
     .map((r) => {
-      const arrow = r.action === "upgrade" || r.action === "raise_pt" ? "↑" : "↓";
+      // NEW COVERAGE gets its own neutral marker. A firm can initiate at Neutral or Underweight,
+      // so an initiation is not directional and must never borrow ↑ — nor ⚡, which is a
+      // documented escape hatch from loss discipline and the time-stop. See parseAction.
+      const arrow = r.action === "initiate" ? "◦NEW " : (r.action === "upgrade" || r.action === "raise_pt" ? "↑" : "↓");
       const pt = r.priceTarget ? `$${r.priceTarget.toFixed(0)}` : "";
       const upside = r.pctUpside != null ? `(${r.pctUpside >= 0 ? "+" : ""}${r.pctUpside.toFixed(0)}%)` : "";
       // ⚡ marks an upgrade with material upside — the same bar the shortlist has always used.
@@ -55,5 +60,8 @@ export function formatAnalystTag(
       const ageStr = age == null || age < 0 ? "" : age === 0 ? ", today" : `, ${age}d ago`;
       return `${impact}${arrow}${r.firmShort}${pt}${upside}${ageStr}`;
     })
-    .join(" ");
+    // " · ", not " ". Once entries carry ", 5d ago" the space is no longer an unambiguous
+    // delimiter — "⚡↑UBS$260(+18%), 5d ago ↓GS$80(-12%), 1d ago" lets a reader attach the wrong
+    // age to the wrong action, which is the one field these rules judge freshness on.
+    .join(" · ");
 }

@@ -157,12 +157,18 @@ export async function GET(request: Request) {
       const dryInfluencerHeld = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
       const dryHeldMain = new Set((previousRun?.positions ?? []).map(p => p.symbol).filter(s => !dryInfluencerHeld.has(s)));
       const { buy: dryBuy, retained: dryRetained } = buildV1Shortlist(marketData.stocks, dryEligible, { held: dryHeldMain });
-      const dryShortlistTable = formatV1Shortlist([...dryBuy, ...dryRetained], dryQuality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, dryHeldMain);
+      const dryShortlistTable = formatV1Shortlist(
+        [...dryBuy, ...dryRetained], dryQuality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, dryHeldMain,
+        new Map(), new Map(), new Map(), new Map(), today,
+      );
 
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
         max_tokens: 3000,
-        system: buildV1AnalysisPrompt(today, dryShortlistTable, portfolioCtx, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), [], [], Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string])), new Map(), new Map(), new Map(), {}, {}, [], "", "", isRebalanceDay),
+        // analystRatings passed for the same reason the eval harness now passes it: the dry run is
+        // the surface a human reads before trusting a prompt change, so a preview missing a field
+        // the live path renders is a preview of a different prompt.
+        system: buildV1AnalysisPrompt(today, dryShortlistTable, portfolioCtx, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), [], [], Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string])), new Map(), new Map(), new Map(), {}, {}, [], "", "", isRebalanceDay, "", marketData.analystRatings),
         messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
       });
       const analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -1083,6 +1089,25 @@ export async function GET(request: Request) {
       // when its evidence is weakest.
       const evidenceDegraded =
         Object.keys(marketData.analystRatings ?? {}).length === 0 || newsSignals.size === 0;
+      // RECORDED, not just logged. Standing down is correct — but it disables a live guard, and a
+      // guard that switches itself off silently is indistinguishable from one that is working. A
+      // persistent provider failure (plan change → 403, expired key) degrades evidence on EVERY
+      // run, so without this the rail would be permanently off with nothing to show for it. Gated
+      // on there actually being exits to bound, so a quiet day does not emit noise.
+      if (evidenceDegraded && mainSells.length > 0) {
+        console.error("SELL_RAIL_STOOD_DOWN", {
+          proposedExits: mainSells.length,
+          analystSymbols: Object.keys(marketData.analystRatings ?? {}).length,
+          newsSignals: newsSignals.size,
+        });
+        buySizingAdjustments.push(
+          `⚠️ Sell-volume rail STOOD DOWN — evidence degraded (analyst ratings: ` +
+          `${Object.keys(marketData.analystRatings ?? {}).length} symbols, news signals: ${newsSignals.size}). ` +
+          `${mainSells.length} main-book exit(s) executed UNBOUNDED. The rail stands down when it cannot ` +
+          `verify bearish-news/downgrade reasons, so it does not tighten hardest when it sees least — but if ` +
+          `this repeats daily, a provider is down and the guard is effectively off.`,
+        );
+      }
       const rail = applySellRail(mainSells, railCtx, railMax, { evidenceDegraded });
       if (rail.dropped.length > 0) {
         decision.sells = [...rail.sells, ...sleeveSells];

@@ -1,6 +1,6 @@
 import { SP500_UNIVERSE } from "./strategy";
 import { formatNewsTag } from "./news-tag";
-import { formatAnalystTag } from "./analyst-tag";
+import { formatAnalystTag, ANALYST_LOOKBACK_DAYS } from "./analyst-tag";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
 import { getAnalystRatings, type AnalystRating } from "./analyst";
 import { fetchUpcomingEarnings, formatPostEarnings, formatEarningsRecord } from "./earnings";
@@ -783,7 +783,10 @@ export function formatMarketDataForPrompt(data: MarketData): string {
       .slice(0, 2)
       .map((r) => {
         const isPositive = r.action === "upgrade" || r.action === "raise_pt";
-        const arrow = isPositive ? "↑" : "↓";
+        // An initiation is NEITHER direction. Without this branch the `isPositive ? "↑" : "↓"`
+        // fallthrough renders new coverage as a DOWNGRADE — strictly worse than the conflation it
+        // replaced. Any two-way arrow on a three-way action has this failure mode.
+        const arrow = r.action === "initiate" ? "◦NEW " : isPositive ? "↑" : "↓";
         const pt = r.priceTarget ? `$${r.priceTarget.toFixed(0)}` : "";
         const upside = r.pctUpside != null ? `(${r.pctUpside >= 0 ? "+" : ""}${r.pctUpside.toFixed(0)}%)` : "";
         const impact = r.action === "upgrade" && (r.pctUpside ?? 0) >= 15 ? "⚡" : "";
@@ -854,7 +857,7 @@ export function formatMarketDataForPrompt(data: MarketData): string {
   // Analyst ratings section
   const analystEntries = Object.entries(data.analystRatings).filter(([, ratings]) => ratings.length > 0);
   const analystSection = analystEntries.length > 0
-    ? `\nANALYST ACTIONS (last 7 days — upgrades ↑, downgrades ↓, PT changes with upside/downside vs price at time of rating):\n` +
+    ? `\nANALYST ACTIONS (last ${ANALYST_LOOKBACK_DAYS} days — upgrades ↑, downgrades ↓, ◦ new coverage initiated at an unstated rating (NOT a bullish signal), PT changes with upside/downside vs price at time of rating):\n` +
       analystEntries
         .sort(([a], [b]) => a.localeCompare(b))
         .flatMap(([symbol, ratings]) =>
@@ -862,8 +865,9 @@ export function formatMarketDataForPrompt(data: MarketData): string {
             .sort((a, b) => b.date.localeCompare(a.date))
             .map((r) => {
               const isPositive = r.action === "upgrade" || r.action === "raise_pt";
-              const arrow = isPositive ? "↑" : "↓";
-              const actionLabel = r.action === "upgrade" ? "upgraded" : r.action === "downgrade" ? "downgraded" : r.action === "raise_pt" ? "raised PT" : "lowered PT";
+              // An initiation is new coverage at an unknown rating — neither direction. See parseAction.
+              const arrow = r.action === "initiate" ? "◦" : isPositive ? "↑" : "↓";
+              const actionLabel = r.action === "upgrade" ? "upgraded" : r.action === "downgrade" ? "downgraded" : r.action === "initiate" ? "initiated coverage" : r.action === "raise_pt" ? "raised PT" : "lowered PT";
               const ptPart = r.priceTarget
                 ? `, PT $${r.priceTarget.toFixed(0)}${r.prevPriceTarget ? ` (from $${r.prevPriceTarget.toFixed(0)})` : ""}${r.pctUpside != null ? ` — ${r.pctUpside >= 0 ? "+" : ""}${r.pctUpside.toFixed(0)}% upside vs price at rating` : ""}`
                 : "";

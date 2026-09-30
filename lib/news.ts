@@ -108,7 +108,12 @@ direction = likely stock impact (+ bullish, - bearish, 0 mixed/unclear). date = 
     });
     const text = res.content.filter(b => b.type === "text").map(b => (b as { type: "text"; text: string }).text).join("");
     const m = text.match(/NEWS:(.+)/);
-    if (!m) return null;
+    // No NEWS: line is a MALFORMED RESPONSE, not a verdict of "nothing material". An empty or
+    // refused content block during a 529/overload burst lands here, and caching it would be the
+    // very failure this file exists to prevent — a transient outage frozen into a 12-hour
+    // "this company has no material news", invisible to the prompt AND to the sell rail's
+    // hasBearishNews. lib/influencer-signals returns FAILED for the identical case.
+    if (!m) return FAILED;
     const parsed = JSON.parse(m[1]) as { material?: boolean; direction?: string; summary?: string; date?: string };
     if (!parsed.material || !parsed.summary) return null;
     const direction = (["+", "-", "0"].includes(parsed.direction ?? "") ? parsed.direction : "0") as "+" | "-" | "0";

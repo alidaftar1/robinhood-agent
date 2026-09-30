@@ -426,7 +426,16 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
         // shortlist table. A name the book HOLDS but which has fallen off the shortlist therefore
         // showed no upgrade or downgrade anywhere, while the keep-exceptions accept "⚡↑" and the
         // sell triggers accept "a ↓FIRM downgrade".
-        const analystStr = formatAnalystTag(analystRatings[p.symbol], today);
+        // MAIN-BOOK LINES ONLY. The sleeve authorises exactly three exits (⚠⚠ IMMINENT earnings,
+        // bearish ⚡NEWS↓, ⏳STALE) — a ↓FIRM downgrade is NOT among them, yet it is a documented
+        // MAIN-book sell trigger. Rendering it on a "[INFLUENCER SLEEVE — do not sell here]" line
+        // shows the model a reason the sleeve's own rules do not grant, and sleeve sells bypass the
+        // sell rail entirely (route.ts partitions them out), so nothing downstream would catch it.
+        // The keep side is worse: an ⚡↑ on a ⏳STALE sleeve line offers a keep-reason that is not
+        // on the sleeve's re-acceleration list, letting a name dodge the MUST-rotate rule.
+        // Adding these to the sleeve's exception list would change what the agent trades — that is
+        // the owner's call, not a side effect of a rendering change.
+        const analystStr = isInfl ? "" : formatAnalystTag(analystRatings[p.symbol], today);
         const analystTag = analystStr ? `  ${analystStr}` : "";
         // Backward-looking: a HOLDING that JUST reported — the ⚠EARN uncertainty is resolved; a big
         // pop is a take-profit/trim candidate, a big drop a reassess. (companion to the ⚠EARN flag)

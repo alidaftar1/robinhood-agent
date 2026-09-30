@@ -149,7 +149,10 @@ export function buildV1PromptFromScenario(scenario: Scenario, today: string): st
   const heldMain = new Set(scenario.positions.map((p) => p.symbol));
   const eligible = new Set(md.stocks.map((s) => s.symbol)); // permissive quality gate for fixtures
   const { buy, retained } = buildV1Shortlist(md.stocks, eligible, { held: heldMain });
-  const shortlistTable = formatV1Shortlist([...buy, ...retained], {}, md.insiderBuys, md.analystRatings, heldMain);
+  const shortlistTable = formatV1Shortlist(
+    [...buy, ...retained], {}, md.insiderBuys, md.analystRatings, heldMain,
+    new Map(), new Map(), new Map(), new Map(), today,
+  );
   const earningsDates = Object.fromEntries(
     md.stocks.filter((s) => s.earningsDate).map((s) => [s.symbol, s.earningsDate as string]),
   );
@@ -162,6 +165,13 @@ export function buildV1PromptFromScenario(scenario: Scenario, today: string): st
       positions: scenario.positions.map((p) => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.average_buy_price })),
     },
     "", "", [], [], [], earningsDates,
+    // Everything from here is defaulted EXCEPT analystRatings, which production passes. The eval
+    // suite exists to grade the prompt the live path builds; with this omitted, every behavioural
+    // scenario graded position lines carrying no analyst tag while production's carried one — and
+    // the `analyst-upgrade` scenario, whose whole premise is a HELD name with a GS upgrade, would
+    // have gone green against a prompt strictly weaker than the real thing.
+    new Map(), new Map(), new Map(), {}, {}, [], "", "", true, "",
+    md.analystRatings,
   );
 }
 

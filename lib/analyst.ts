@@ -1,4 +1,8 @@
 import { SP500_UNIVERSE } from "./strategy";
+// Single source of truth for the window. It lives in the LEAF module because the renderer's legend
+// promises "in the last 7 days" while this file is what actually enforces it — two independent 7s
+// meant changing the cutoff here would silently leave the tag asserting the old window.
+import { ANALYST_LOOKBACK_DAYS } from "./analyst-tag";
 
 const FIRM_ABBR: Record<string, string> = {
   "Goldman Sachs": "GS",
@@ -38,10 +42,20 @@ function firmShort(name: string): string {
 }
 
 // Parses action from news title text since the structured field isn't always populated.
-// Returns "upgrade", "downgrade", "raise_pt", "lower_pt", or null (reiterate/maintain → skip).
-function parseAction(title: string): "upgrade" | "downgrade" | "raise_pt" | "lower_pt" | null {
+// Returns "upgrade", "downgrade", "initiate", "raise_pt", "lower_pt", or null (reiterate/maintain).
+//
+// INITIATIONS ARE NOT UPGRADES, and conflating them was a real hazard once the analyst tag reached
+// HELD-position lines (2026-09-30). A firm can initiate coverage at ANY rating — including Neutral,
+// Peer Perform or Underweight — so an initiation carries no directional view at all. While it
+// mapped to "upgrade" it could render as ⚡↑ whenever the initiating price target happened to sit
+// ≥15% above the quote, which is MOST LIKELY on a name that has already fallen hard. That is
+// precisely the population the loss-discipline and time-stop rules target, and ⚡↑ is their
+// documented escape hatch — so a new-coverage note at a neutral rating could excuse keeping a name
+// the rules would otherwise force out.
+export function parseAction(title: string): "upgrade" | "downgrade" | "initiate" | "raise_pt" | "lower_pt" | null {
   const t = title.toLowerCase();
-  if (t.includes("upgrade") || t.includes("initiates") || t.includes("initiated")) return "upgrade";
+  if (t.includes("initiates") || t.includes("initiated")) return "initiate";
+  if (t.includes("upgrade")) return "upgrade";
   if (t.includes("downgrade")) return "downgrade";
   if (t.includes("raises") || t.includes("raised") || t.includes("increases") || t.includes("boosted")) return "raise_pt";
   if (t.includes("lowers") || t.includes("lowered") || t.includes("cuts") || t.includes("cut") || t.includes("reduces")) return "lower_pt";
@@ -50,7 +64,7 @@ function parseAction(title: string): "upgrade" | "downgrade" | "raise_pt" | "low
 
 export interface AnalystRating {
   symbol: string;
-  action: "upgrade" | "downgrade" | "raise_pt" | "lower_pt";
+  action: "upgrade" | "downgrade" | "initiate" | "raise_pt" | "lower_pt";
   firm: string;
   firmShort: string;
   priceTarget?: number;       // new PT
@@ -91,7 +105,7 @@ export async function getAnalystRatings(): Promise<Record<string, AnalystRating[
     if (!Array.isArray(data)) return {};
 
     const symbolSet = new Set(SP500_UNIVERSE);
-    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const cutoff = new Date(Date.now() - ANALYST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
     const result: Record<string, AnalystRating[]> = {};
 
     for (const item of data) {
