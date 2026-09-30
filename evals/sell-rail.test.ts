@@ -104,4 +104,39 @@ describe("the rail bounds restructuring, never risk", () => {
     expect(r.dropped).toHaveLength(0);
     expect(r.notes).toHaveLength(0);
   });
+
+  test("a sell of a name we do not hold does not consume a slot", () => {
+    // The executor drops it anyway (SELL_SKIPPED_NOT_HELD). Counting it would let a phantom
+    // symbol push a REAL exit over the cap.
+    const phantoms = ["P1", "P2", "P3"].map(symbol => ({ symbol, exit: "all" }));
+    const real = ["R1"].map(symbol => ({ symbol, exit: "all" }));
+    const r = applySellRail([...phantoms, ...real], ctx({
+      positionOf: (s) => (s.startsWith("R") ? { avgCost: 100, price: 101, quantity: 1 } : undefined),
+    }));
+    expect(r.dropped).toHaveLength(0);
+    expect(r.sells.map(x => x.symbol)).toContain("R1");
+  });
+
+  test("no price means UNKNOWN, not blockable", () => {
+    // Without a price, loss-discipline, staleness and the concentration test all silently read
+    // "healthy" — so a −20% position would look unjustified. The documented priceMap gap once
+    // suppressed the ⏳STALE tag exactly this way.
+    const r = applySellRail(exits(11), ctx({ positionOf: () => ({ avgCost: 100, price: undefined, quantity: 1 }) }));
+    expect(r.dropped).toHaveLength(0);
+  });
+
+  test("it stands down when its own evidence is degraded", () => {
+    // News and analyst ratings both fail to an EMPTY map on an outage or a missing key. The rail
+    // would otherwise tighten hardest precisely when it can see least.
+    const r = applySellRail(exits(11), ctx(), MAX_DISCRETIONARY_EXITS, { evidenceDegraded: true });
+    expect(r.sells).toHaveLength(11);
+    expect(r.dropped).toHaveLength(0);
+  });
+
+  test("a larger cap is honoured, for rebalance-day consolidation", () => {
+    // On the rebalance day the prompt explicitly authorises freeing slots, and the book holds ~11
+    // against a 6-name target — a legitimate consolidation there is larger than the off-window cap.
+    expect(applySellRail(exits(11), ctx(), 5).dropped).toHaveLength(6);
+    expect(applySellRail(exits(5), ctx(), 5).dropped).toHaveLength(0);
+  });
 });

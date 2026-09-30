@@ -18,7 +18,8 @@ import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
 import { buildFeatureRows, recordFeatureCapture } from "@/lib/feature-capture";
-import { applySellRail } from "@/lib/sell-rail";
+import { applySellRail, MAX_DISCRETIONARY_EXITS } from "@/lib/sell-rail";
+import { TARGET_MAIN_POSITIONS } from "@/lib/position-target";
 import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow";
 import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
@@ -1024,8 +1025,14 @@ export async function GET(request: Request) {
     // buys passed six. Provable risk exits are never capped, and the automatic stop path
     // (/api/drop-check, its own cron) does not come through here at all. Fails OPEN.
     {
-      const mainSells = decision.sells.filter(x => x.strategy !== "influencer");
-      const sleeveSells = decision.sells.filter(x => x.strategy === "influencer");
+      // Ownership, not the model's tag. The tag is model-emitted and never validated, so an
+      // untagged sleeve exit would route to the MAIN rail and be judged on the 60-day main clock —
+      // while the sleeve's clocks are 10/25 days and the prompt makes that rotation a MUST.
+      const mainHeldForRail = (portfolioCtx?.positions ?? []).filter(p => !influencerHeld.has(p.symbol)).length;
+      const isSleeveOwned = (x: { symbol: string; strategy?: string }) =>
+        x.strategy === "influencer" || influencerHeld.has(x.symbol);
+      const mainSells = decision.sells.filter(x => !isSleeveOwned(x));
+      const sleeveSells = decision.sells.filter(isSleeveOwned);
       const railCtx = {
         positionOf: (sym: string) => {
           const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
@@ -1046,11 +1053,17 @@ export async function GET(request: Request) {
         isOverConcentrationCap: (sym: string) => {
           const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
           const val = p?.price != null ? p.price * (parseFloat(p.quantity) || 0) : null;
-          return val != null && val > maxPositionDollars(portfolioCtx?.totalValue);
+          // The SAME trigger the ⚠CONCEN flag and applyConcentrationTrim use (maxPos x 1.25), not
+          // bare maxPos — otherwise the rail justifies an exit for a name never shown ⚠CONCEN.
+          return val != null && val > maxPositionDollars(portfolioCtx?.totalValue) * 1.25;
         },
-        // A post-print drop can be well under 10% BELOW ENTRY and so invisible to loss discipline,
-        // while the prompt tells the model to reassess or exit on exactly that.
-        reportedRecently: (sym: string) => recentEarnings.has(sym),
+        // A post-print DROP can be well under 10% below entry and so invisible to loss discipline,
+        // while the prompt tells the model to reassess or exit on exactly that. Gated on the
+        // direction: "reported at all" would exempt any name in a 7-day window, and through
+        // earnings season that is most of an 11-name book — the rail would quietly become a no-op
+        // in the regime that produces mass restructuring.
+        reportedRecently: (sym: string) =>
+          recentEarnings.has(sym) && ((change1dOfHeld[sym] ?? 0) < -3 || (change5dOfHeld[sym] ?? 0) < -5),
         isStale: (sym: string) => {
           const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
           const avg = p ? parseFloat(p.avgCost) : NaN;
@@ -1058,7 +1071,19 @@ export async function GET(request: Request) {
           return staleReasonOf(false, p?.heldDays ?? null, ret) != null;
         },
       };
-      const rail = applySellRail(mainSells, railCtx);
+      // Scaled on the rebalance day: the prompt explicitly adds "free a slot for a clearly
+      // higher-conviction NEW name" to the valid-sell list there, and the book holds ~11 against a
+      // 6-name target, so a legitimate consolidation is larger than 3. Off-window that trigger is
+      // withdrawn, so the tighter cap is the right one.
+      const railMax = isRebalanceDay
+        ? Math.max(MAX_DISCRETIONARY_EXITS, Math.ceil((mainHeldForRail - TARGET_MAIN_POSITIONS) / 2))
+        : MAX_DISCRETIONARY_EXITS;
+      // Both news and analyst ratings fail to an EMPTY map on an outage or a missing key, which
+      // would make every bearish-news/downgrade exit unverifiable — the rail tightening exactly
+      // when its evidence is weakest.
+      const evidenceDegraded =
+        Object.keys(marketData.analystRatings ?? {}).length === 0 || newsSignals.size === 0;
+      const rail = applySellRail(mainSells, railCtx, railMax, { evidenceDegraded });
       if (rail.dropped.length > 0) {
         decision.sells = [...rail.sells, ...sleeveSells];
         buySizingAdjustments.push(...rail.notes);

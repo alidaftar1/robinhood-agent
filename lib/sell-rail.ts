@@ -87,8 +87,15 @@ export function applySellRail(
   sells: TradeDecisionSell[],
   ctx: SellRailContext,
   max: number = MAX_DISCRETIONARY_EXITS,
+  opts: { evidenceDegraded?: boolean } = {},
 ): SellRailResult {
   try {
+    // News and analyst ratings both fail to an EMPTY map on a provider outage or a missing key.
+    // With them gone, every bearish-news and downgrade exit reads as unverifiable — so the rail
+    // would tighten hardest precisely when it can see least. Stand down instead.
+    if (opts.evidenceDegraded) {
+      return { sells, dropped: [], notes: [] };
+    }
     const kept: TradeDecisionSell[] = [];
     const dropped: string[] = [];
     const notes: string[] = [];
@@ -96,9 +103,17 @@ export function applySellRail(
 
     for (const s of sells) {
       const symbol = String(s.symbol ?? "");
-      const held = ctx.positionOf(symbol)?.quantity;
+      const pos = ctx.positionOf(symbol);
+      // Not held: harmless, and the executor drops it anyway (SELL_SKIPPED_NOT_HELD). Counting it
+      // would let a phantom symbol push a REAL exit over the cap.
+      if (!pos) { kept.push(s); continue; }
       // Trims pass unconditionally — reducing a position is not the failure this bounds.
-      if (!isFullExit(s, held)) { kept.push(s); continue; }
+      if (!isFullExit(s, pos.quantity)) { kept.push(s); continue; }
+      // No price: loss-discipline, staleness and the concentration test ALL silently read
+      // "healthy" without one, so a −20% position would look unjustified and be cappable. Unknown
+      // must not mean blockable — this is the documented priceMap gap that once suppressed the
+      // ⏳STALE tag the same way.
+      if (pos.price == null || !Number.isFinite(pos.price)) { kept.push(s); continue; }
 
       const reason = justifiedReason(symbol, ctx);
       if (reason) { kept.push(s); continue; }   // provable risk exit — never capped, however many

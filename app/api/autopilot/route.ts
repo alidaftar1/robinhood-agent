@@ -380,15 +380,6 @@ export async function GET(request: Request) {
       const heldQtyOf = new Map(
         todayRun.positions.map((p) => [p.symbol, (parseFloat(p.quantity) || 0) + (soldTodayQty.get(p.symbol) ?? 0)]),
       );
-      const notSold = decided.sells
-        .filter((s) => isFullExit(s, heldQtyOf.get(String(s.symbol))))
-        .map((s) => String(s.symbol))
-        .filter((sym) => heldSyms.has(sym));
-      if (notSold.length > 0) {
-        issues.push(
-          `Decided to sell ${notSold.join(", ")} but still held — sell order(s) dropped. Next run should re-attempt; place manually if it persists.`,
-        );
-      }
       // A buy that a guard dropped ON PURPOSE already explains itself in buySizingAdjustments
       // (off-rails, cap, budget, dust, cooldown, did-not-confirm). Re-reporting it as an unexplained
       // anomaly is the noise registry entries #19/#25 exist to prevent — and it dispatches the paid
@@ -413,6 +404,23 @@ export async function GET(request: Request) {
         const symRe = new RegExp(`(^|[^A-Z0-9.])${escapeRe(sym)}([^A-Z0-9.]|$)`);
         return (todayRun.buySizingAdjustments ?? []).some((note) => GUARD_DROP.test(note) && symRe.test(note));
       };
+
+      const notSold = decided.sells
+        .filter((s) => isFullExit(s, heldQtyOf.get(String(s.symbol))))
+        .map((s) => String(s.symbol))
+        .filter((sym) => heldSyms.has(sym))
+        // Same treatment buys already got. A sell a guard dropped ON PURPOSE explains itself in
+        // buySizingAdjustments; re-reporting it as an anomaly dispatches the paid cloud agent at a
+        // guard doing its job AND tells the owner to manually place the exact sell that was
+        // deliberately blocked. The sell-volume rail made that reachable — before it, no guard
+        // dropped a sell, which is why this filter existed on one side only.
+        .filter((sym) => !explained(sym));
+      if (notSold.length > 0) {
+        issues.push(
+          `Decided to sell ${notSold.join(", ")} but still held — sell order(s) dropped. Next run should re-attempt; place manually if it persists.`,
+        );
+      }
+
       const notBought = decided.buys
         .map((b) => String(b.symbol))
         .filter((sym) => !boughtSyms.has(sym) && !explained(sym));
