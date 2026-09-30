@@ -55,9 +55,13 @@ async function cacheSet(symbol: string, sig: NewsSignal | null): Promise<void> {
 
 // Recent company-news headlines for one symbol (most recent first, capped), each with its publish
 // date so the extractor can date the material event (needed by the re-buy cooldown). Fail-safe → [].
-async function fetchCompanyNews(symbol: string): Promise<Array<{ headline: string; date: string }>> {
+/** null = COULD NOT FETCH (no key, non-ok, bad shape, timeout). [] = fetched fine, this company
+ *  genuinely had no headlines in the window. Collapsing the two is what let a transient failure be
+ *  cached as a 12-hour verdict of "no material news" — and, once that was fixed naively, what made
+ *  a genuinely quiet symbol refetch on every run forever. */
+async function fetchCompanyNews(symbol: string): Promise<Array<{ headline: string; date: string }> | null> {
   const key = process.env.FINNHUB_API_KEY;
-  if (!key) return [];
+  if (!key) return null;
   const to = new Date();
   const from = new Date(to.getTime() - NEWS_LOOKBACK_DAYS * 86_400_000);
   try {
@@ -65,22 +69,23 @@ async function fetchCompanyNews(symbol: string): Promise<Array<{ headline: strin
       `https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${ymd(from)}&to=${ymd(to)}&token=${key}`,
       { signal: AbortSignal.timeout(8000) },
     );
-    if (!res.ok) return [];
+    if (!res.ok) return null;
     const data = await res.json() as Array<{ headline?: string; summary?: string; datetime?: number }>;
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) return null;
     return data
       .sort((a, b) => (b.datetime ?? 0) - (a.datetime ?? 0))
       .slice(0, MAX_HEADLINES)
       .map(a => ({ headline: (a.headline ?? "").trim(), date: a.datetime ? ymd(new Date(a.datetime * 1000)) : "" }))
       .filter(h => h.headline);
-  } catch { return []; }
+  } catch { return null; }   // timeout / network — could not ask
 }
 
 // Distill a MATERIAL, price-moving corporate event from the headlines (or null if there's none).
 // Deliberately EXCLUDES what we already track (analyst notes, earnings-date previews) and the noise
 // (listicles, price recaps, "most active stocks") so the flag stays high-signal.
-async function extractMaterialNews(anthropic: Anthropic, symbol: string, headlines: Array<{ headline: string; date: string }>): Promise<NewsSignal | null | typeof FAILED> {
-  if (headlines.length === 0) return FAILED;   // could not READ headlines — not "no news"
+async function extractMaterialNews(anthropic: Anthropic, symbol: string, headlines: Array<{ headline: string; date: string }> | null): Promise<NewsSignal | null | typeof FAILED> {
+  if (headlines === null) return FAILED;       // could not ASK — must not be cached
+  if (headlines.length === 0) return null;     // asked, genuinely nothing — safe to cache
   try {
     const res = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
