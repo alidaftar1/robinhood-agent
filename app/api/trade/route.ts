@@ -398,7 +398,10 @@ export async function GET(request: Request) {
     const influencerHeld = new Set((previousRun?.influencerPositions ?? []).map(p => p.symbol));
     const heldMainSymbols = new Set((portfolioCtx?.positions ?? []).map(p => p.symbol).filter(s => !influencerHeld.has(s)));
     // buy = the sector-capped buy-allowlist; retained = ◆HELD render-only names (not buyable).
-    const { buy: v1Buy, retained: v1Retained } = buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols });
+    // qualityUnknown keeps an unmeasurable name out of BUY without making a HELD one read as
+    // "fell off the shortlist" — see buildV1Shortlist and lib/quality's `withheld`.
+    const qualityUnknown = new Set(quality?.withheld ?? []);
+    const { buy: v1Buy, retained: v1Retained } = buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols, qualityUnknown });
     const v1ShortlistSet = new Set(v1Buy.map(s => s.symbol)); // buy-allowlist — retained names excluded on purpose
 
     // RELIABLE per-symbol earnings for the names that actually drive the ⚠⚠ judgment (shortlist +

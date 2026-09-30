@@ -56,6 +56,8 @@ interface IncomeFrames {
   label: string;                // human-readable description of the income window
   ttmCount: number;             // filers with a complete TTM window
   withheldCount: number;        // filers DROPPED for an incomplete window — never scored
+  /** A stub fetch FAILED (not merely sparse), so the window is shorter than the data allows. */
+  degraded: boolean;
 }
 
 export interface QualityScore {
@@ -68,14 +70,39 @@ export interface QualityScore {
 export interface QualityData {
   scores: Record<string, QualityScore>;
   median: number;
-  period: string;         // which fiscal year the numbers are from
+  period: string;         // which window the income numbers cover
   asOf: string;           // ISO date the scores were computed
+  /** Universe symbols whose quality could NOT be established. These must be excluded from the BUY
+   *  allowlist but must NOT read as "fell off the shortlist" for a name already held — that string
+   *  authorises a sell (lib/sell-rail justifiedReason), so conflating "we could not measure it" with
+   *  "it failed the measurement" would turn a data gap into a liquidation. */
+  withheld: string[];
+  /** True when a FETCH failed rather than a frame being genuinely unpublished. A degraded result is
+   *  never cached: "we could not ask" must not be frozen for a TTL as "SEC has not published". */
+  degraded: boolean;
+  basis: { ttmFromFrames: number; recoveredPerCompany: number; withheld: number };
 }
 
+/** Per-request ceiling. Was 25s, which stacked: ~11 sequential waits put the worst case at 275s
+ *  against the trade route's maxDuration of 300. */
+const SEC_REQUEST_TIMEOUT_MS = 10_000;
+/** Whole-refresh ceiling for the frames phase, checked between steps. The route already gives
+ *  valuation an explicit budget for exactly this reason (app/api/trade/route.ts) — this call had
+ *  none while becoming several times longer. */
+export const QUALITY_FRAMES_BUDGET_MS = 75_000;
+
 async function secGet(url: string): Promise<any> {
-  const res = await fetch(url, { headers: { "User-Agent": SEC_UA }, signal: AbortSignal.timeout(25000) });
+  const res = await fetch(url, { headers: { "User-Agent": SEC_UA }, signal: AbortSignal.timeout(SEC_REQUEST_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`SEC ${res.status} for ${url}`);
   return res.json();
+}
+
+/** A frame fetch that distinguishes COULD-NOT-ASK from genuinely-sparse. Collapsing the two is how a
+ *  403 becomes the claim "SEC has not published this quarter" — a fact about us stated as a fact
+ *  about SEC — and then gets cached for the full TTL. */
+const FRAME_FAILED = Symbol("frame-fetch-failed");
+async function frameOrFailed(concept: string, period: string): Promise<Record<number, number> | typeof FRAME_FAILED> {
+  try { return await frame(concept, period); } catch { return FRAME_FAILED; }
 }
 
 async function frame(concept: string, period: string): Promise<Record<number, number>> {
@@ -94,6 +121,77 @@ function percentileFn(vals: number[]): (x: number) => number {
     while (lo < hi) { const m = (lo + hi) >> 1; if (s[m] <= x) lo = m + 1; else hi = m; }
     return lo / n;
   };
+}
+
+/** A company's own reported facts for one concept, reduced to what a TTM needs. */
+export interface ConceptFact {
+  start: string;   // period start, YYYY-MM-DD ("" for an instant)
+  end: string;     // period end
+  val: number;
+  filed: string;   // when this figure became public
+}
+
+/** Days between two YYYY-MM-DD dates; NaN when either is unparseable. */
+const dayspan = (a: string, b: string) => (Date.parse(b) - Date.parse(a)) / 86_400_000;
+
+const ANNUAL_MIN = 330, ANNUAL_MAX = 400;   // a "fiscal year" duration
+const QTR_MIN = 80, QTR_MAX = 100;          // a "fiscal quarter" duration
+/** A twelve-month window ending longer ago than this is genuinely stale — withhold rather than use it. */
+export const MAX_WINDOW_AGE_DAYS = 400;
+
+/**
+ * The freshest sound twelve-month net-income window from a company's OWN reported facts.
+ *
+ * WHY THIS EXISTS. Calendar frames cannot serve off-calendar filers: SEC maps Microsoft's
+ * July-to-June fiscal year into `CY2025` and then has no calendar-Q1/Q2-2026 stub for it, so the
+ * frames path withheld MSFT entirely — excluding it for an accounting-calendar reason rather than
+ * anything to do with quality. Its own 10-K meanwhile covers 2025-07-01 → 2026-06-30 and is three
+ * months old. The data was never missing; the calendar-shaped lookup could not see it.
+ *
+ * Construction, same shape as the frames path but on the company's REAL periods:
+ *   window = latest fiscal year, then rolled forward by each contiguous quarter filed since,
+ *            netting off the same quarter a year earlier.
+ *
+ * Returns null — WITHHOLD — when no sound window exists, including when the freshest one ends more
+ * than MAX_WINDOW_AGE_DAYS ago. An annual by itself is NOT a stale fallback: it is a genuine
+ * twelve-month measurement, and the only question is whether it ended recently enough to describe
+ * the company now.
+ */
+export function ttmFromFacts(facts: ConceptFact[], asOf: string): { val: number; windowEnd: string; quartersAdded: number } | null {
+  // Dedupe by period, keeping the LATEST FILED value. The same quarter is re-presented in later
+  // filings; for a LIVE screen the most recently filed figure is what is actually known today.
+  // (A backtest would want the original — see lib/sharadar-quality, which uses as-reported data.)
+  const byPeriod = new Map<string, ConceptFact>();
+  for (const f of facts) {
+    if (!f.start || !f.end || typeof f.val !== "number" || !Number.isFinite(f.val)) continue;
+    if (f.end > asOf) continue;                       // not yet a closed period as of asOf
+    const k = `${f.start}|${f.end}`;
+    const prev = byPeriod.get(k);
+    if (!prev || f.filed > prev.filed) byPeriod.set(k, f);
+  }
+  const all = [...byPeriod.values()];
+  const annuals = all.filter(f => { const d = dayspan(f.start, f.end); return d >= ANNUAL_MIN && d <= ANNUAL_MAX; })
+    .sort((a, b) => a.end.localeCompare(b.end));
+  const quarters = all.filter(f => { const d = dayspan(f.start, f.end); return d >= QTR_MIN && d <= QTR_MAX; })
+    .sort((a, b) => a.end.localeCompare(b.end));
+  const base = annuals[annuals.length - 1];
+  if (!base) return null;
+
+  // Roll forward through quarters filed since the fiscal year end, requiring CONTIGUITY (a gap would
+  // silently drop a quarter of earnings) and a matching quarter a year earlier to net off.
+  let val = base.val, windowEnd = base.end, added = 0, cursor = base.end;
+  for (const q of quarters) {
+    if (dayspan(cursor, q.start) > 5 || dayspan(cursor, q.start) < -5) continue;   // must abut the cursor
+    const prior = quarters.find(p => Math.abs(dayspan(p.end, q.end) - 365) <= 12);
+    if (!prior) break;                              // cannot net off — stop rolling, keep what we have
+    val += q.val - prior.val;
+    windowEnd = q.end;
+    cursor = q.end;
+    added++;
+  }
+
+  if (dayspan(windowEnd, asOf) > MAX_WINDOW_AGE_DAYS) return null;   // genuinely stale -> withhold
+  return { val, windowEnd, quartersAdded: added };
 }
 
 /**
@@ -129,11 +227,15 @@ async function buildIncomeFrames(A: number): Promise<IncomeFrames | null> {
   // window must be CONTIGUOUS, since a hole would drop a quarter of earnings from the sum.
   const cur: Array<Record<number, number>> = [];
   const prior: Array<Record<number, number>> = [];
+  let degraded = false;
   for (let q = 1; q <= 3; q++) {
     const [c, p] = await Promise.all([
-      frame("NetIncomeLoss", `CY${A + 1}Q${q}`).catch(() => ({})),
-      frame("NetIncomeLoss", `CY${A}Q${q}`).catch(() => ({})),
+      frameOrFailed("NetIncomeLoss", `CY${A + 1}Q${q}`),
+      frameOrFailed("NetIncomeLoss", `CY${A}Q${q}`),
     ]);
+    // A FAILED fetch is not "unpublished". Mark it, stop rolling, and let the caller refuse to cache
+    // — otherwise our own network flake redefines the tradable universe for the whole TTL.
+    if (c === FRAME_FAILED || p === FRAME_FAILED) { degraded = true; break; }
     if (Object.keys(c).length <= MIN_FILERS || Object.keys(p).length <= MIN_FILERS) break;
     cur.push(c); prior.push(p);
   }
@@ -144,15 +246,20 @@ async function buildIncomeFrames(A: number): Promise<IncomeFrames | null> {
     // any year it is the expected state rather than a failure.
     // Uniform annual: nothing is withheld because no company has anything fresher. This is the
     // expected state in Q1 of any year, and it is identical to the pre-TTM behaviour.
-    return { ni: annual, instant: `CY${A}Q4I`, label: `CY${A} (annual — no newer quarter published)`, ttmCount: 0, withheldCount: 0 };
+    return {
+      ni: annual, instant: `CY${A}Q4I`, ttmCount: 0, withheldCount: 0, degraded,
+      label: degraded
+        ? `CY${A} (annual — a quarterly frame FETCH FAILED, so this window is short of what SEC has)`
+        : `CY${A} (annual — no newer quarter published)`,
+    };
   }
 
   const { ni, ttmCount, withheldCount } = combineTtm(annual, cur, prior);
   return {
     ni,
     instant: `CY${A + 1}Q${k}I`,
-    label: `TTM through CY${A + 1}Q${k} (CY${A} + ${k}Q stub)`,
-    ttmCount, withheldCount,
+    label: `TTM through CY${A + 1}Q${k} (CY${A} + ${k}Q stub)${degraded ? " — a later quarterly FETCH FAILED, window may be short" : ""}`,
+    ttmCount, withheldCount, degraded,
   };
 }
 
@@ -192,6 +299,58 @@ export function combineTtm(
   return { ni, ttmCount, withheldCount };
 }
 
+/** One company's NetIncomeLoss facts. Returns [] on any failure — the caller then withholds. */
+async function conceptFacts(cik: number): Promise<ConceptFact[]> {
+  const padded = String(cik).padStart(10, "0");
+  try {
+    const d = await secGet(`https://data.sec.gov/api/xbrl/companyconcept/CIK${padded}/us-gaap/NetIncomeLoss.json`);
+    return (d?.units?.USD ?? []).map((f: any) => ({
+      start: typeof f.start === "string" ? f.start : "",
+      end: typeof f.end === "string" ? f.end : "",
+      val: f.val, filed: typeof f.filed === "string" ? f.filed : "",
+    }));
+  } catch { return []; }
+}
+
+/** Hard ceiling on the recovery pass. SEC asks for <10 requests/second, and this runs inside the
+ *  trade route — an unbounded sweep over a wide universe could both breach fair-access and delay a
+ *  live run. Anything past the cap simply stays withheld, which is the safe direction. */
+export const MAX_RECOVERY_FETCHES = 140;
+const RECOVERY_CONCURRENCY = 4;
+const RECOVERY_BUDGET_MS = 30_000;
+
+/**
+ * Second pass for names the calendar frames could not serve. Fetches each company's own reported
+ * facts and derives a twelve-month window from its REAL fiscal periods.
+ *
+ * This is the root-cause fix for a systematic bias, not a convenience: the frames path withheld
+ * ~54 S&P names — essentially the off-calendar fiscal-year cohort, including MSFT — for a reason
+ * that has nothing to do with quality. Withholding them was correct given what that path could
+ * see; this makes it see further.
+ *
+ * Bounded three ways (count, concurrency, wall-clock) and failure-tolerant: a name that cannot be
+ * recovered stays withheld.
+ */
+async function recoverWithheld(
+  symbols: string[],
+  tk2cik: Record<string, number>,
+  asOf: string,
+): Promise<{ ni: Record<number, number>; recovered: number; attempted: number }> {
+  const ni: Record<number, number> = {};
+  const targets = symbols.map(s => tk2cik[s]).filter((c): c is number => c != null).slice(0, MAX_RECOVERY_FETCHES);
+  const deadline = Date.now() + RECOVERY_BUDGET_MS;
+  let recovered = 0, attempted = 0;
+  for (let i = 0; i < targets.length; i += RECOVERY_CONCURRENCY) {
+    if (Date.now() > deadline) break;
+    await Promise.all(targets.slice(i, i + RECOVERY_CONCURRENCY).map(async cik => {
+      attempted++;
+      const ttm = ttmFromFacts(await conceptFacts(cik), asOf);
+      if (ttm) { ni[cik] = ttm.val; recovered++; }
+    }));
+  }
+  return { ni, recovered, attempted };
+}
+
 // Fetch fundamentals from SEC and compute quality scores for the whole tradable universe.
 export async function fetchQualityFromSEC(): Promise<QualityData> {
   const tickersJson = await secGet("https://www.sec.gov/files/company_tickers.json");
@@ -204,28 +363,74 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
   // Try the most recent fiscal year that has data, newest first, derived from the clock.
   let eq: Record<number, number> = {}, ast: Record<number, number> = {}, lia: Record<number, number> = {}, ni: Record<number, number> = {};
   let usedPeriod = "";
+  let degraded = false, ttmFromFrames = 0, recoveredPerCompany = 0;
+  const started = Date.now();
   const thisYear = new Date().getUTCFullYear();
   for (const A of [thisYear - 1, thisYear - 2]) {
+    if (Date.now() - started > QUALITY_FRAMES_BUDGET_MS) {
+      console.warn("QUALITY_FRAMES_BUDGET_EXCEEDED", { ms: Date.now() - started });
+      break;
+    }
     try {
       const inc = await buildIncomeFrames(A);
       if (!inc) continue;
-      const [e, a, l] = await Promise.all([
-        frame("StockholdersEquity", inc.instant), frame("Assets", inc.instant), frame("Liabilities", inc.instant),
+      // BOTH instants, newer preferred PER NAME.
+      //
+      // Moving the balance sheet from CY{A}Q4I to the newer CY{A+1}Q{k}I to match the TTM window was
+      // conceptually right but silently dropped 25 names — 15 utilities and 4 REITs (AEP DUK SO NEE D
+      // PLD DLR …) that report Assets at the older instant and not the newer one. That removed XLU
+      // and XLRE from the buyable set entirely, on a strategy with no defensive rotation, and for a
+      // HELD name it would have read as "lost quality-eligibility" and authorised a sell.
+      //
+      // So: prefer the instant that matches the income window, fall back per name to the previous
+      // year-end. The residual is a <=2-quarter mismatch between numerator and denominator for those
+      // names, which mildly overstates ROA (assets usually grow) — bounded, disclosed, and far
+      // cheaper than deleting two sectors from the universe.
+      const older = `CY${A}Q4I`;
+      const [eN, aN, lN, eO, aO, lO] = await Promise.all([
+        frameOrFailed("StockholdersEquity", inc.instant), frameOrFailed("Assets", inc.instant), frameOrFailed("Liabilities", inc.instant),
+        frameOrFailed("StockholdersEquity", older), frameOrFailed("Assets", older), frameOrFailed("Liabilities", older),
       ]);
+      const ok = (x: Record<number, number> | typeof FRAME_FAILED) => (x === FRAME_FAILED ? {} : x);
+      const anyInstantFailed = [eN, aN, lN, eO, aO, lO].some(x => x === FRAME_FAILED);
+      // Spread order matters: the NEWER instant wins where both have the name.
+      const e = { ...ok(eO), ...ok(eN) };
+      const a = { ...ok(aO), ...ok(aN) };
+      const l = { ...ok(lO), ...ok(lN) };
       // Require Equity, Assets AND NetIncome to be well-populated — frames publish per-concept and can
       // lag independently. Accepting a period with a sparse Assets frame would collapse ROA/leverage for
       // the whole universe (every name hits a==null) → empty eligible set. Fall back to the prior year.
       if (Object.keys(e).length > MIN_FILERS && Object.keys(a).length > MIN_FILERS && Object.keys(inc.ni).length > MIN_FILERS) {
         eq = e; ast = a; lia = l; ni = inc.ni; usedPeriod = inc.label;
+        degraded = inc.degraded || anyInstantFailed;
+        ttmFromFrames = inc.ttmCount;
         console.log("QUALITY_PERIOD", {
-          income: inc.label, balanceSheet: inc.instant,
-          ttmFilers: inc.ttmCount, withheldFilers: inc.withheldCount,
+          income: inc.label, balanceSheet: `${inc.instant} (falling back per name to ${older})`,
+          ttmFilers: inc.ttmCount, withheldByFrames: inc.withheldCount, degraded,
         });
         break;
       }
     } catch { /* try older period */ }
   }
   if (!usedPeriod) throw new Error("SEC frames unavailable for all periods");
+
+  // RECOVERY PASS. The frames are calendar-shaped and cannot serve off-calendar fiscal years, so
+  // names still missing net income get a per-company lookup against their real reported periods.
+  const asOfDate = new Date().toISOString().slice(0, 10);
+  const stillMissing = Object.keys(STOCK_SECTOR).filter(sym => {
+    const cik = tk2cik[sym];
+    return cik != null && ni[cik] == null && ast[cik] != null;   // only worth recovering if we have assets
+  });
+  if (stillMissing.length > 0) {
+    const rec = await recoverWithheld(stillMissing, tk2cik, asOfDate);
+    Object.assign(ni, rec.ni);
+    recoveredPerCompany = rec.recovered;
+    console.log("QUALITY_RECOVERY", {
+      candidates: stillMissing.length, attempted: rec.attempted, recovered: rec.recovered,
+      stillWithheld: stillMissing.length - rec.recovered,
+      capped: stillMissing.length > MAX_RECOVERY_FETCHES,
+    });
+  }
 
   // Raw metrics per symbol (only names in our sector map, i.e. the tradable universe).
   const raw: Record<string, { roe: number | null; roa: number; lev: number | null }> = {};
@@ -264,7 +469,14 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
   const median = qs.length ? qs[Math.floor(qs.length / 2)] : 0.5;
   for (const s of Object.values(scores)) s.eligible = s.quality >= median;
 
-  return { scores, median, period: usedPeriod, asOf: new Date().toISOString().slice(0, 10) };
+  // Universe names we could NOT establish quality for. Reported so the caller can keep them out of
+  // the BUY allowlist WITHOUT making a held one look like it fell off the shortlist.
+  const withheld = Object.keys(STOCK_SECTOR).filter(sym => scores[sym] == null);
+  return {
+    scores, median, period: usedPeriod, asOf: new Date().toISOString().slice(0, 10),
+    withheld, degraded,
+    basis: { ttmFromFrames, recoveredPerCompany, withheld: withheld.length },
+  };
 }
 
 // ── Redis-cached accessor (self-contained Upstash REST, same env as run-store) ───────────────────────
@@ -294,7 +506,15 @@ export async function getQualityScores(force = false): Promise<QualityData | nul
       if (cached) return JSON.parse(cached) as QualityData;
     }
     const data = await fetchQualityFromSEC();
-    await redisSetEx(CACHE_KEY, JSON.stringify(data), CACHE_TTL_SEC).catch(() => {});
+    // NEVER cache a degraded result. A failed fetch cached for 8 days is the documented
+    // transient-becomes-persistent trap, and here it is worse than usual: which names are withheld
+    // depends on how many quarters were retrieved, so one network flake would redefine the tradable
+    // universe for the whole TTL. Recompute next run instead.
+    if (data.degraded) {
+      console.warn("QUALITY_DEGRADED_NOT_CACHED", { period: data.period, withheld: data.withheld.length });
+    } else {
+      await redisSetEx(CACHE_KEY, JSON.stringify(data), CACHE_TTL_SEC).catch(() => {});
+    }
     return data;
   } catch (e) {
     console.warn("QUALITY_SCORES_UNAVAILABLE", e instanceof Error ? e.message : String(e));

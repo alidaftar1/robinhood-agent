@@ -105,3 +105,97 @@ describe("the per-company fail-safe", () => {
     expect(r.withheldCount).toBe(1);
   });
 });
+
+// ── Per-company recovery, for filers the CALENDAR frames cannot serve ────────────────────────────
+// SEC maps Microsoft's July-to-June fiscal year into CY2025 and then has no calendar-Q1/Q2-2026 stub
+// for it, so the frames path withheld MSFT — excluding it for an accounting-calendar reason rather
+// than anything to do with quality. Its own 10-K covers 2025-07-01 → 2026-06-30 and is three months
+// old. These use MSFT's REAL reported facts, taken from the live SEC API.
+import { ttmFromFacts, MAX_WINDOW_AGE_DAYS, type ConceptFact } from "@/lib/quality";
+
+const f = (start: string, end: string, val: number, filed: string): ConceptFact => ({ start, end, val, filed });
+
+// Abridged from data.sec.gov companyconcept CIK0000789019 NetIncomeLoss, values in $B.
+const MSFT: ConceptFact[] = [
+  f("2024-07-01", "2024-12-31", 48.77, "2025-01-29"),   // YTD — must be ignored (183d)
+  f("2024-10-01", "2024-12-31", 24.11, "2025-01-29"),   // quarter
+  f("2025-01-01", "2025-03-31", 25.82, "2025-04-30"),   // quarter
+  f("2024-07-01", "2025-06-30", 101.83, "2025-07-30"),  // FY2025 annual
+  f("2025-07-01", "2025-09-30", 27.75, "2025-10-29"),   // quarter
+  f("2025-10-01", "2025-12-31", 38.46, "2026-01-28"),   // quarter
+  f("2025-07-01", "2025-12-31", 66.20, "2026-01-28"),   // YTD — ignored
+  f("2026-01-01", "2026-03-31", 31.78, "2026-04-29"),   // quarter
+  f("2025-07-01", "2026-03-31", 97.98, "2026-04-29"),   // YTD — ignored
+  f("2025-07-01", "2026-06-30", 133.75, "2026-07-29"),  // FY2026 annual — the freshest window
+];
+
+describe("ttmFromFacts recovers off-calendar filers", () => {
+  test("MSFT resolves to its own latest fiscal year, matching Sharadar ART exactly", () => {
+    const r = ttmFromFacts(MSFT, "2026-09-30")!;
+    expect(r.val).toBeCloseTo(133.75, 6);     // independently confirmed against Sharadar ART
+    expect(r.windowEnd).toBe("2026-06-30");   // 92 days old — not stale
+    expect(r.quartersAdded).toBe(0);          // no quarter filed after FY2026 yet
+  });
+
+  test("year-to-date facts are excluded — only ~quarterly and ~annual durations count", () => {
+    // 66.20 (183d) and 97.98 (273d) are cumulative. Summing them with quarters would double-count.
+    const r = ttmFromFacts(MSFT, "2026-09-30")!;
+    expect(r.val).not.toBeCloseTo(133.75 + 66.20, 3);
+  });
+
+  test("rolls the window FORWARD when a quarter is filed after the fiscal year", () => {
+    // Add Q1 FY2027 plus the year-earlier quarter it nets against.
+    const rolled = [...MSFT, f("2026-07-01", "2026-09-30", 30.0, "2026-10-28")];
+    const r = ttmFromFacts(rolled, "2026-11-15")!;
+    expect(r.quartersAdded).toBe(1);
+    expect(r.windowEnd).toBe("2026-09-30");
+    expect(r.val).toBeCloseTo(133.75 + (30.0 - 27.75), 6);   // nets off Q1 FY2026
+  });
+
+  test("a NON-CONTIGUOUS quarter is not rolled in — a gap would drop earnings", () => {
+    // A quarter that does not abut the fiscal-year end (skips a period) must be ignored.
+    const gapped = [...MSFT, f("2026-10-01", "2026-12-31", 30.0, "2027-01-28")];
+    const r = ttmFromFacts(gapped, "2027-02-15")!;
+    expect(r.quartersAdded).toBe(0);
+    expect(r.windowEnd).toBe("2026-06-30");
+  });
+
+  test("facts ending AFTER asOf are invisible — no look-ahead", () => {
+    const r = ttmFromFacts(MSFT, "2026-05-01")!;
+    // FY2026 (ending 2026-06-30) had not closed yet, so the base is FY2025.
+    expect(r.windowEnd).toBe("2025-06-30");
+    // And the roll HALTS rather than skipping: advancing past FY2025 needs the quarter ending
+    // 2025-09-30, which nets against the quarter ending 2024-09-30 — absent from this abridged
+    // fixture. Jumping to a later quarter instead would silently drop a quarter of earnings, so
+    // stopping is correct. Asserted explicitly because "returns the annual" and "rolled forward but
+    // lost a quarter" would otherwise be indistinguishable from the value alone.
+    expect(r.quartersAdded).toBe(0);
+    expect(r.val).toBeCloseTo(101.83, 6);
+  });
+
+  test("a genuinely STALE window is WITHHELD rather than used", () => {
+    const r = ttmFromFacts(MSFT, "2028-01-01");   // freshest window now >400 days old
+    expect(r).toBeNull();
+  });
+
+  test("the staleness threshold is the documented one, not an accident", () => {
+    const justInside = ttmFromFacts(MSFT, "2027-07-01");   // ~366 days after 2026-06-30
+    expect(justInside).not.toBeNull();
+    expect(MAX_WINDOW_AGE_DAYS).toBeGreaterThan(365);      // must span a full filing cycle
+  });
+
+  test("no annual at all means WITHHELD — quarters alone are never assembled into a year", () => {
+    const quartersOnly = MSFT.filter(x => x.val < 50);
+    expect(ttmFromFacts(quartersOnly, "2026-09-30")).toBeNull();
+  });
+
+  test("a restated period keeps the LATEST FILED value, since that is what is known today", () => {
+    const restated = [...MSFT, f("2025-07-01", "2026-06-30", 140.0, "2026-10-01")];
+    expect(ttmFromFacts(restated, "2026-11-01")!.val).toBeCloseTo(140.0, 6);
+  });
+
+  test("empty or malformed facts withhold rather than throw", () => {
+    expect(ttmFromFacts([], "2026-09-30")).toBeNull();
+    expect(ttmFromFacts([f("", "", NaN, "")], "2026-09-30")).toBeNull();
+  });
+});

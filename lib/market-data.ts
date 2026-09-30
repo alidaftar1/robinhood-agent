@@ -333,7 +333,13 @@ export { TARGET_MAIN_POSITIONS };
 export function buildV1Shortlist(
   stocks: StockData[],
   eligible: Set<string>,
-  opts: { N?: number; shortlistSize?: number; held?: Set<string> } = {},
+  /** `qualityUnknown` — names whose quality could NOT be established (SEC data gap), as distinct from
+   *  names that were measured and failed. The two must not be conflated: a HELD name absent from the
+   *  shortlist reads as "fell off the shortlist", which lib/sell-rail accepts as a code-verifiable
+   *  reason to exit and which lib/strategy names as a valid sell trigger. So an unmeasurable name is
+   *  kept out of BUY (it can never be bought on quality we don't have) while still being RETAINED if
+   *  already held — unbuyable, but never a liquidation signal. */
+  opts: { N?: number; shortlistSize?: number; held?: Set<string>; qualityUnknown?: Set<string> } = {},
 ): { buy: StockData[]; retained: StockData[] } {
   const N = opts.N ?? TARGET_MAIN_POSITIONS;
   // SECTOR RISK — unchanged, and deliberately NOT derived from the list size. This is the only
@@ -361,7 +367,15 @@ export function buildV1Shortlist(
     perSector[sec] = (perSector[sec] ?? 0) + 1;
   }
   const buySet = new Set(buy.map((s) => s.symbol));
-  const retained = ranked.filter((s) => held.has(s.symbol) && !buySet.has(s.symbol));
+  // RETENTION POOL is deliberately wider than the buy pool: it also admits HELD names whose quality
+  // is UNKNOWN. `ranked` alone would drop them, and a dropped held name is indistinguishable from one
+  // that genuinely lost eligibility — which authorises a sell.
+  const unknown = opts.qualityUnknown ?? new Set<string>();
+  const retained = stocks
+    .filter((s) => typeof s.mom12_1 === "number" && (s.mom12_1 as number) > 0
+      && held.has(s.symbol) && !buySet.has(s.symbol)
+      && (eligible.has(s.symbol) || unknown.has(s.symbol)))
+    .sort((a, b) => (b.mom12_1 as number) - (a.mom12_1 as number));
   return { buy, retained };
 }
 
