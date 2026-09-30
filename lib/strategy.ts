@@ -302,7 +302,14 @@ Rules for each field:
 // hard filter in the trade route enforces this regardless of what the model outputs. The influencer
 // sleeve is unchanged (≤2 slots on its own signal). This is the sole analysis-prompt builder (the V0
 // buildAnalysisPrompt was removed 2026-08-25 once the evals were migrated to grade V1).
-export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = [], marketRegime: string = "", earningsReleaseSection: string = "", isRebalanceDay: boolean = true, valuationSection: string = ""): string {
+/** Whole days between two YYYY-MM-DD dates; null when either is unparseable. */
+function daysBetween(from: string, to: string): number | null {
+  const a = Date.parse(`${from}T00:00:00Z`), b = Date.parse(`${to}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / 86_400_000);
+}
+
+export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string; date?: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = [], marketRegime: string = "", earningsReleaseSection: string = "", isRebalanceDay: boolean = true, valuationSection: string = ""): string {
   // MACRO-REGIME context only (Phase 0 news). The analysis is otherwise macro-blind,
   // yet it's asked to judge whether a move is broad-market SYMPATHY vs name-specific.
   // These are general business headlines — regime read only, NOT per-name, NOT a buy
@@ -415,7 +422,17 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
         const beatTag = formatEarningsRecord(beat);
         // Material news on a HOLDING (main or influencer) — a bearish event is a real trim/exit reason.
         const n = news.get(p.symbol);
-        const newsTag = n ? `  ⚡NEWS${n.direction === "+" ? "↑" : n.direction === "-" ? "↓" : ""} "${n.summary}"` : "";
+        // WITH ITS AGE. The prompt asks the model to justify keeping an underwater or ⏳STALE name
+        // with a "FRESH catalyst" — a freshness judgment — and until 2026-09-30 it could not see
+        // when the catalyst happened: NewsSignal.date existed and fed the re-buy cooldown, but was
+        // dropped at this boundary. News also runs on a ROLLING 5-day window, so a catalyst
+        // silently disappears between runs and a keep becomes a sell on unchanged facts. ILMN was
+        // kept 2026-09-14 citing a UBS upgrade, sold 09-15 for "no fresh catalyst", then rose
+        // ~21% vs SPY over ten days.
+        const newsAge = n?.date ? daysBetween(n.date, today) : null;
+        const newsAgeStr = newsAge == null ? "" : newsAge <= 0 ? ", today" : `, ${newsAge}d ago`;
+        const newsFading = newsAge != null && newsAge >= 4 ? " ⓘ near the 5-day news window edge — it will drop off shortly whether or not anything changed" : "";
+        const newsTag = n ? `  ⚡NEWS${n.direction === "+" ? "↑" : n.direction === "-" ? "↓" : ""}${newsAgeStr} "${n.summary}"${newsFading}` : "";
         // Backward-looking: a HOLDING that JUST reported — the ⚠EARN uncertainty is resolved; a big
         // pop is a take-profit/trim candidate, a big drop a reassess. (companion to the ⚠EARN flag)
         const re = recentEarnings.get(p.symbol);
