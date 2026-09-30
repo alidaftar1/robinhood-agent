@@ -1,4 +1,5 @@
 import { SP500_UNIVERSE } from "./strategy";
+import { formatNewsTag } from "./news-tag";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
 import { getAnalystRatings, type AnalystRating } from "./analyst";
 import { fetchUpcomingEarnings, formatPostEarnings, formatEarningsRecord } from "./earnings";
@@ -371,18 +372,20 @@ export function formatV1Shortlist(
   insiderBuys: Record<string, InsiderBuy[]> = {},
   analystRatings: Record<string, AnalystRating[]> = {},
   held: Set<string> = new Set(),
-  news: Map<string, { direction: string; summary: string }> = new Map(),
+  news: Map<string, { direction: string; summary: string; date?: string }> = new Map(),
   recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(),
   influencerX: Map<string, { net: number; avoid: number }> = new Map(),
   beatHistory: Map<string, import("./earnings").EarningsBeatRecord> = new Map(),
+  /** Needed to age the ⚡NEWS catalyst. Defaults to today so existing callers are unaffected. */
+  today: string = new Date().toISOString().slice(0, 10),
 ): string {
   // Material corporate-event news (M&A/litigation/guidance/product/regulatory) — the event tail the
   // structured signals miss. Only material events are in the map (Haiku already filtered the noise).
+  // Same renderer as the held-position lines. The shortlist is where BUY decisions read this, so
+  // a buy-side tag meaning something different from the hold-side tag is the worst version of drift.
   const newsFlag = (sym: string): string => {
-    const n = news.get(sym);
-    if (!n) return "";
-    const arrow = n.direction === "+" ? "↑" : n.direction === "-" ? "↓" : "";
-    return ` ⚡NEWS${arrow} "${n.summary}"`;
+    const tag = formatNewsTag(news.get(sym), today);
+    return tag ? ` ${tag}` : "";
   };
   // Re-surface the insider + analyst signals we fetch every run but V1 had dropped
   // from this table. Context flags — the model weighs them among the shortlist (a

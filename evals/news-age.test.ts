@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { buildV1AnalysisPrompt } from "@/lib/strategy";
+import { FAILED } from "@/lib/news";
 
 // THE ILMN FLIP, 2026-09-14/15. The prompt asks the model to justify keeping an underwater or
 // ⏳STALE name with a "FRESH catalyst" — a freshness judgment — while NewsSignal.date was dropped
@@ -22,12 +23,14 @@ describe("a catalyst's AGE must be visible, not just its existence", () => {
     expect(line("2026-09-15")).toContain("today");
   });
 
-  test("a catalyst about to fall out of the window says so", () => {
-    // This is the ILMN case: on 09-14 the upgrade was inside the window and the model kept the
-    // name; one day later the rolling window dropped it and the same facts read as "no catalyst".
-    expect(line("2026-09-10")).toMatch(/near the 5-day news window edge/);
-    expect(line("2026-09-11")).toMatch(/near the 5-day news window edge/);
-    expect(line("2026-09-13")).not.toMatch(/window edge/);
+  test("NO expiry warning — it argued against bearish exits and invited pre-emptive selling", () => {
+    // An earlier version warned when a catalyst neared the window edge. It rendered identically on
+    // ⚡NEWS↓ ("this bad news is old and will drop off"), arguing against one of the few sells
+    // allowed off-cycle — and telling a model a keep-justification has a deadline invites acting
+    // before it expires, which off-cycle can only surface as a reframed risk sell.
+    for (const d of ["2026-09-10", "2026-09-11", "2026-09-13"]) {
+      expect(line(d)).not.toMatch(/window edge|drop off/);
+    }
   });
 
   test("the summary and direction still render — this ADDS a fact, it does not replace one", () => {
@@ -47,5 +50,18 @@ describe("a catalyst's AGE must be visible, not just its existence", () => {
   test("an unparseable date is ignored rather than rendered", () => {
     expect(line("not-a-date")).not.toContain("NaN");
     expect(line("not-a-date")).toContain("⚡NEWS↑");
+  });
+});
+
+describe("a news fetch that FAILED is not a verdict of 'no news'", () => {
+  // The traced ILMN flip was NOT a rolling-window expiry — lib/news explicitly excludes routine
+  // analyst rating/PT notes as non-material, so 09-15 was correct and 09-14 was the leak. Two real
+  // causes remained, both of which make a catalyst appear and vanish on unchanged facts.
+  test("FAILED is distinguishable from null", () => {
+    // null = "asked, nothing material" (safe to cache for 12h).
+    // FAILED = "could not ask" (a 429 or timeout) — caching it turns a transient failure into a
+    // 12-hour verdict, the exact doctrine recorded in CLAUDE.md after the signal-cache incident.
+    expect(FAILED).not.toBeNull();
+    expect(typeof FAILED).toBe("symbol");
   });
 });

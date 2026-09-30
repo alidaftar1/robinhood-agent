@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { SP500_UNIVERSE } from "./strategy";
 import { formatPostEarnings, formatEarningsRecord } from "./earnings";
+import { formatNewsTag } from "./news-tag";
 
 // ─── Channel registry ──────────────────────────────────────────────────────────
 // Independent finance YouTubers who make specific stock pick recommendations.
@@ -713,7 +714,7 @@ export function isInfluencerRecovering(m: MomentumSignal | undefined): boolean {
  *  @param priceMap optional live prices for influencer tickers (fetched in trade route)
  *  @param momentum optional 5-day % change per ticker (downtrend screen)
  */
-export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>, recentEarnings?: Map<string, import("./earnings").RecentEarnings>, upcomingEarnings?: Map<string, string>, today?: string, news?: Map<string, { direction: string; summary: string }>, beatHistory?: Map<string, import("./earnings").EarningsBeatRecord>): string {
+export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?: Map<string, number>, momentum?: Map<string, MomentumSignal>, recentEarnings?: Map<string, import("./earnings").RecentEarnings>, upcomingEarnings?: Map<string, string>, today?: string, news?: Map<string, { direction: string; summary: string; date?: string }>, beatHistory?: Map<string, import("./earnings").EarningsBeatRecord>): string {
   if (!cache || cache.signals.length === 0) return "";
 
   // Rank BUY-mentioned tickers by NET score (buy consensus − avoid dissent), highest first.
@@ -761,7 +762,9 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     // Material corporate-event news — a bearish event (lawsuit/cut guidance/deal collapse/regulatory)
     // is a real AVOID reason even on strong influencer consensus. Universal risk flag, same as the shortlist.
     const nw = news?.get(ticker);
-    const newsStr = nw ? `  ⚡NEWS${nw.direction === "+" ? "↑" : nw.direction === "-" ? "↓" : ""} "${nw.summary}"` : "";
+    // Same renderer as the held-position lines and the main shortlist — see lib/news-tag.
+    const newsTagStr = today ? formatNewsTag(nw, today) : formatNewsTag(nw ? { ...nw, date: undefined } : nw, "");
+    const newsStr = newsTagStr ? `  ${newsTagStr}` : "";
     // Show the net score; when other creators warned against it, spell out the buy−avoid split.
     const avoid = avoidOf[ticker] ?? 0;
     const scoreStr = avoid > 0 ? `net=${score} (${cache.tickerCounts[ticker]} buy − ${avoid} avoid)` : `net=${score}`;

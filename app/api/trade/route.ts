@@ -467,7 +467,7 @@ export async function GET(request: Request) {
       : new Map<string, EarningsBeatRecord>();
     console.log("EARN_RECORD_SCOPE", { held: heldIntoEarnings, reportedCandidates, fetched: beatSymbols.length });
 
-    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings, influencerX, beatHistory);
+    const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings, influencerX, beatHistory, today);
     // Build the influencer section HERE (once) — after recentEarnings/news, so candidates carry the
     // SAME universal risk flags as the main book: 📊REPORTED, ⚠EARN/⚠⚠ IMMINENT (upcoming), ⚡NEWS.
     influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum, recentEarnings, perSymbolEarnings, today, newsSignals, beatHistory);

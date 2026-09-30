@@ -13,6 +13,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 
+/** Distinguishes "asked, nothing material" (null — safe to cache) from "could not ask" (this —
+ *  never cache). Without the distinction a Finnhub 429 becomes a 12-hour verdict of "no news". */
+export const FAILED = Symbol("news-fetch-failed");
+
 export interface NewsSignal {
   direction: "+" | "-" | "0"; // likely stock impact of the event
   summary: string;            // ≤100 chars — the specific event
@@ -75,11 +79,16 @@ async function fetchCompanyNews(symbol: string): Promise<Array<{ headline: strin
 // Distill a MATERIAL, price-moving corporate event from the headlines (or null if there's none).
 // Deliberately EXCLUDES what we already track (analyst notes, earnings-date previews) and the noise
 // (listicles, price recaps, "most active stocks") so the flag stays high-signal.
-async function extractMaterialNews(anthropic: Anthropic, symbol: string, headlines: Array<{ headline: string; date: string }>): Promise<NewsSignal | null> {
-  if (headlines.length === 0) return null;
+async function extractMaterialNews(anthropic: Anthropic, symbol: string, headlines: Array<{ headline: string; date: string }>): Promise<NewsSignal | null | typeof FAILED> {
+  if (headlines.length === 0) return FAILED;   // could not READ headlines — not "no news"
   try {
     const res = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
+      // Explicit 0. This is a CLASSIFICATION, and at the SDK default of 1.0 the same headlines can
+      // flip material:true -> false between two consecutive runs — a "fresh catalyst" that appears
+      // and vanishes with nothing about the company having changed. Exactly what happened to ILMN
+      // on 2026-09-14/15, and the same reason lib/influencer-signals pins SIGNAL_TEMPERATURE.
+      temperature: 0,
       max_tokens: 200,
       system: `You are given recent NEWS HEADLINES for one stock.
 
@@ -103,7 +112,12 @@ direction = likely stock impact (+ bullish, - bearish, 0 mixed/unclear). date = 
     const validDates = new Set(headlines.map(h => h.date).filter(Boolean));
     const date = parsed.date && validDates.has(parsed.date) ? parsed.date : undefined;
     return { direction, summary: String(parsed.summary).slice(0, 100), date };
-  } catch { return null; }
+  } catch {
+    // FAILED, not "no news". The caller must not cache this: a 429 or a timeout would otherwise
+    // become a 12-hour verdict of "this company has no material news", which is how a transient
+    // failure turns into a persistent one. Same rule as fetchTranscript's "don't cache, retry".
+    return FAILED;
+  }
 }
 
 // Material-news signals for a set of symbols (shortlist + held). Cache-first per symbol; only
@@ -115,6 +129,7 @@ export async function fetchNewsSignals(symbols: string[]): Promise<Map<string, N
   const uniq = [...new Set(symbols)];
   const BATCH = 5;
   let fetched = 0;
+  let failed = 0;   // could-not-ask, deliberately uncached
   for (let i = 0; i < uniq.length; i += BATCH) {
     const batch = uniq.slice(i, i + BATCH);
     await Promise.all(batch.map(async sym => {
@@ -123,10 +138,17 @@ export async function fetchNewsSignals(symbols: string[]): Promise<Map<string, N
       fetched++;
       const headlines = await fetchCompanyNews(sym);
       const sig = await extractMaterialNews(anthropic, sym, headlines);
+      if (sig === FAILED) {
+        // Do NOT cache. "Could not ask" must not become a 12-hour verdict of "no material news" —
+        // the same transient-becomes-persistent failure the signal cache had, and the reason a
+        // catalyst can vanish between runs with nothing about the company having changed.
+        failed++;
+        return;
+      }
       await cacheSet(sym, sig);
       if (sig) out.set(sym, sig);
     }));
   }
-  console.log("NEWS_SIGNALS", { symbols: uniq.length, fetched, material: out.size });
+  console.log("NEWS_SIGNALS", { symbols: uniq.length, fetched, material: out.size, failed });
   return out;
 }
