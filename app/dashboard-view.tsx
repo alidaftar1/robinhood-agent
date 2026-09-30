@@ -387,9 +387,6 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   // β, an "Unknown" β-bucket, and blended two unrelated strategies. Split the influencer holdings
   // out up front so EVERY metric here (β, β-breakdown, concentration) is main-book-only.
   const influencerSyms = new Set((current?.influencerPositions ?? []).map(p => p.symbol));
-  // MAIN book only — the influencer sleeve has its own 2-slot cap, and counting it here would
-  // overstate the book against a target it does not share.
-  const mainPositionCount = (current?.positions ?? []).filter(p => !influencerSyms.has(p.symbol)).length;
   const mainPositions = (current?.positions ?? []).filter(p => !influencerSyms.has(p.symbol));
   const mainRun = current ? { ...current, positions: mainPositions } : null;
   // β-bucket view — how the book splits by market-swing risk (main holdings only, so no
@@ -717,16 +714,16 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               </span>
             </div>
           </div>
-          {mainPositionCount > 0 && (
+          {mainPositions.length > 0 && (
             <div style={{ marginBottom: 18 }}>
               <div style={{ ...s.perfLabel, marginBottom: 6 }}>
                 <Tip label="Concentration" def="How many MAIN-book names are held versus the ~6 the strategy targets. Holding more than the target does not add safety — it splits the same money into smaller bets, and a long thin tail of low-conviction names tracks the index instead of beating it. The influencer sleeve is counted separately; it has its own 2-slot limit." />
               </div>
-              <div style={{ fontSize: 13, color: mainPositionCount > TARGET_MAIN_POSITIONS ? "#e0a030" : "#bbb" }}>
-                {mainPositionCount} held vs ~{TARGET_MAIN_POSITIONS} target
-                {mainPositionCount > TARGET_MAIN_POSITIONS && (
+              <div style={{ fontSize: 13, color: mainPositions.length > TARGET_MAIN_POSITIONS ? "#e0a030" : "#bbb" }}>
+                {mainPositions.length} held vs ~{TARGET_MAIN_POSITIONS} target
+                {mainPositions.length > TARGET_MAIN_POSITIONS && (
                   <span style={{ color: "#888" }}>
-                    {" "}— each position is ~{Math.round((TARGET_MAIN_POSITIONS / mainPositionCount) * 100)}% of designed size
+                    {" "}— each position is ~{Math.round((TARGET_MAIN_POSITIONS / mainPositions.length) * 100)}% of designed size
                   </span>
                 )}
               </div>
