@@ -54,8 +54,8 @@ interface IncomeFrames {
   ni: Record<number, number>;   // net income: TTM where computable, else the annual fallback
   instant: string;              // which balance-sheet instant the equity/assets/liabilities come from
   label: string;                // human-readable description of the income window
-  ttmCount: number;             // filers that got a real TTM figure
-  annualCount: number;          // filers that fell back to the annual figure
+  ttmCount: number;             // filers with a complete TTM window
+  withheldCount: number;        // filers DROPPED for an incomplete window — never scored
 }
 
 export interface QualityScore {
@@ -103,10 +103,23 @@ function percentileFn(vals: number[]): (x: number) => number {
  * is needed (see the IncomeFrames doc for why that matters). Returns null when the anchor annual
  * frame itself is not published yet, so the caller can try an older year.
  *
- * FAILS SAFE PER COMPANY. A filer missing ANY stub component keeps its ANNUAL figure rather than a
- * partial sum. Treating an absent quarter as zero would fabricate a TTM that is wrong by a whole
- * quarter of earnings — and it would be wrong in an unpredictable direction, understating a
- * profitable name and flattering a loss-making one. A known-stale number beats an invented one.
+ * WITHHOLDS PER COMPANY. A filer missing ANY stub component is DROPPED — not scored on its annual
+ * figure, and not scored on a partial sum.
+ *
+ * Why dropping, when the annual figure is real and is what the system used before TTM: the error of
+ * falling back is ASYMMETRIC. A stale annual can wrongly EXCLUDE a company that has since recovered
+ * — a missed opportunity, the safe direction — but it can equally wrongly INCLUDE one that has since
+ * DETERIORATED, whose year-old numbers still look strong while recent quarters collapsed. That
+ * second branch puts real money into a name for a reason that is no longer true, which is exactly
+ * what CLAUDE.md's "withhold rather than publish" rule exists to prevent. Withholding costs only
+ * opportunity.
+ *
+ * It also keeps the percentile cohort internally comparable: a cross-sectional median is only
+ * meaningful if every member is measured over the same window.
+ *
+ * NOTE the k === 0 case is NOT a fallback and is handled before this function: when NO company has a
+ * newer quarter published (the normal state in Q1), the annual is simply the freshest data that
+ * exists, applied uniformly, so there is nothing to withhold relative to.
  */
 async function buildIncomeFrames(A: number): Promise<IncomeFrames | null> {
   const annual = await frame("NetIncomeLoss", `CY${A}`);
@@ -129,15 +142,17 @@ async function buildIncomeFrames(A: number): Promise<IncomeFrames | null> {
   if (k === 0) {
     // Nothing newer than the annual is published — this is exactly the old behaviour, and in Q1 of
     // any year it is the expected state rather than a failure.
-    return { ni: annual, instant: `CY${A}Q4I`, label: `CY${A} (annual — no newer quarter published)`, ttmCount: 0, annualCount: Object.keys(annual).length };
+    // Uniform annual: nothing is withheld because no company has anything fresher. This is the
+    // expected state in Q1 of any year, and it is identical to the pre-TTM behaviour.
+    return { ni: annual, instant: `CY${A}Q4I`, label: `CY${A} (annual — no newer quarter published)`, ttmCount: 0, withheldCount: 0 };
   }
 
-  const { ni, ttmCount, annualCount } = combineTtm(annual, cur, prior);
+  const { ni, ttmCount, withheldCount } = combineTtm(annual, cur, prior);
   return {
     ni,
     instant: `CY${A + 1}Q${k}I`,
     label: `TTM through CY${A + 1}Q${k} (CY${A} + ${k}Q stub)`,
-    ttmCount, annualCount,
+    ttmCount, withheldCount,
   };
 }
 
@@ -155,10 +170,10 @@ export function combineTtm(
   annual: Record<number, number>,
   cur: Array<Record<number, number>>,
   prior: Array<Record<number, number>>,
-): { ni: Record<number, number>; ttmCount: number; annualCount: number } {
+): { ni: Record<number, number>; ttmCount: number; withheldCount: number } {
   const k = Math.min(cur.length, prior.length);
   const ni: Record<number, number> = {};
-  let ttmCount = 0, annualCount = 0;
+  let ttmCount = 0, withheldCount = 0;
   for (const cikStr of Object.keys(annual)) {
     const cik = Number(cikStr);
     let stub = 0, complete = k > 0;
@@ -169,10 +184,12 @@ export function combineTtm(
       }
       stub += c - p;
     }
+    // WITHHELD, not defaulted. An absent entry means the name is never scored, so it can never be
+    // bought on a quality reading we could not establish.
     if (complete) { ni[cik] = annual[cik] + stub; ttmCount++; }
-    else { ni[cik] = annual[cik]; annualCount++; }
+    else { withheldCount++; }
   }
-  return { ni, ttmCount, annualCount };
+  return { ni, ttmCount, withheldCount };
 }
 
 // Fetch fundamentals from SEC and compute quality scores for the whole tradable universe.
@@ -202,7 +219,7 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
         eq = e; ast = a; lia = l; ni = inc.ni; usedPeriod = inc.label;
         console.log("QUALITY_PERIOD", {
           income: inc.label, balanceSheet: inc.instant,
-          ttmFilers: inc.ttmCount, annualFallbackFilers: inc.annualCount,
+          ttmFilers: inc.ttmCount, withheldFilers: inc.withheldCount,
         });
         break;
       }
