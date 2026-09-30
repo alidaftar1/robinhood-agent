@@ -1,5 +1,6 @@
 import { SP500_UNIVERSE } from "./strategy";
 import { formatNewsTag } from "./news-tag";
+import { formatAnalystTag } from "./analyst-tag";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
 import { getAnalystRatings, type AnalystRating } from "./analyst";
 import { fetchUpcomingEarnings, formatPostEarnings, formatEarningsRecord } from "./earnings";
@@ -408,20 +409,10 @@ export function formatV1Shortlist(
     if (x.avoid > 0) return ` 🎬INFL~ net ${netStr}${avoidStr}`;                    // CONTESTED (net-flat, creators split) → weigh the dissent, not corroboration
     return ""; // mild mention below the buy bar with no dissent — not a signal either way
   };
+  // Shared renderer — held-position lines show the same tag, and two copies of the format drift.
   const analystFlag = (sym: string): string => {
-    const ratings = analystRatings[sym];
-    if (!ratings?.length) return "";
-    return [...ratings]
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 2)
-      .map((r) => {
-        const arrow = r.action === "upgrade" || r.action === "raise_pt" ? "↑" : "↓";
-        const pt = r.priceTarget ? `$${r.priceTarget.toFixed(0)}` : "";
-        const upside = r.pctUpside != null ? `(${r.pctUpside >= 0 ? "+" : ""}${r.pctUpside.toFixed(0)}%)` : "";
-        const impact = r.action === "upgrade" && (r.pctUpside ?? 0) >= 15 ? "⚡" : "";
-        return ` ${impact}${arrow}${r.firmShort}${pt}${upside}`;
-      })
-      .join("");
+    const tag = formatAnalystTag(analystRatings[sym], today);
+    return tag ? ` ${tag}` : "";
   };
   const rows = shortlist.map((s) => {
     const q = quality[s.symbol]?.quality;

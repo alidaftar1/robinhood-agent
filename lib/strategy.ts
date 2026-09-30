@@ -1,6 +1,7 @@
 import { formatPostEarnings, formatEarningsRecord } from "./earnings";
 import { TARGET_MAIN_POSITIONS } from "./position-target";
 import { formatNewsTag } from "./news-tag";
+import { formatAnalystTag } from "./analyst-tag";
 
 export const SP500_UNIVERSE = [
   // Technology (XLK)
@@ -304,7 +305,7 @@ Rules for each field:
 // sleeve is unchanged (≤2 slots on its own signal). This is the sole analysis-prompt builder (the V0
 // buildAnalysisPrompt was removed 2026-08-25 once the evals were migrated to grade V1).
 
-export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string; date?: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = [], marketRegime: string = "", earningsReleaseSection: string = "", isRebalanceDay: boolean = true, valuationSection: string = ""): string {
+export function buildV1AnalysisPrompt(today: string, shortlistTable: string, portfolio: PortfolioContext, influencerSection?: string, sectorSection?: string, influencerHeld: string[] = [], recentStopouts: { symbol: string; date: string; changePct: number }[] = [], marketHeadlines: string[] = [], earningsDates: Record<string, string> = {}, news: Map<string, { direction: string; summary: string; date?: string }> = new Map(), beatHistory: Map<string, { beats: number; total: number; avgSurprisePct: number }> = new Map(), recentEarnings: Map<string, import("./earnings").RecentEarnings> = new Map(), change1dOf: Record<string, number> = {}, change5dOf: Record<string, number> = {}, recentSells: Array<{ symbol: string; date: string; price: number }> = [], marketRegime: string = "", earningsReleaseSection: string = "", isRebalanceDay: boolean = true, valuationSection: string = "", analystRatings: Record<string, Array<{ action: string; firmShort: string; priceTarget?: number; pctUpside?: number; date: string }>> = {}): string {
   // MACRO-REGIME context only (Phase 0 news). The analysis is otherwise macro-blind,
   // yet it's asked to judge whether a move is broad-market SYMPATHY vs name-specific.
   // These are general business headlines — regime read only, NOT per-name, NOT a buy
@@ -420,11 +421,18 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
         // Shared renderer — the shortlist and influencer sections show the same tag, and three
         // copies of the format string would drift. See lib/news-tag for why the AGE is carried.
         const newsTag = n ? `  ${formatNewsTag(n, today)}` : "";
+        // Analyst actions are a SEPARATE channel from ⚡NEWS — lib/news deliberately excludes
+        // routine rating/PT notes as non-material — and until now they rendered only in the
+        // shortlist table. A name the book HOLDS but which has fallen off the shortlist therefore
+        // showed no upgrade or downgrade anywhere, while the keep-exceptions accept "⚡↑" and the
+        // sell triggers accept "a ↓FIRM downgrade".
+        const analystStr = formatAnalystTag(analystRatings[p.symbol], today);
+        const analystTag = analystStr ? `  ${analystStr}` : "";
         // Backward-looking: a HOLDING that JUST reported — the ⚠EARN uncertainty is resolved; a big
         // pop is a take-profit/trim candidate, a big drop a reassess. (companion to the ⚠EARN flag)
         const re = recentEarnings.get(p.symbol);
         const reportedTag = re ? formatPostEarnings(re, change1dOf[p.symbol], change5dOf[p.symbol]) : "";
-        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${ageStr}${tag}${concenTag}${staleTag}${earnTag}${beatTag}${newsTag}${reportedTag}`;
+        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${ageStr}${tag}${concenTag}${staleTag}${earnTag}${beatTag}${analystTag}${newsTag}${reportedTag}`;
       }).join("\n")
     : "  (none — full cash)";
 
