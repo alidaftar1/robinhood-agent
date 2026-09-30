@@ -1,4 +1,5 @@
 import { formatPostEarnings, formatEarningsRecord } from "./earnings";
+import { TARGET_MAIN_POSITIONS } from "./position-target";
 
 export const SP500_UNIVERSE = [
   // Technology (XLK)
@@ -352,6 +353,17 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
   // the flag's actual number is the source of truth the model should read).
   const bookTotal = parseFloat((portfolio.totalValue ?? "").replace(/[^0-9.]/g, "")) || 0;
   const concenTrigger = maxPositionDollars(portfolio.totalValue) * 1.25;
+  // MAIN-book count against target. The prompt already argues for concentration ("a concentrated
+  // ~6-name book beats a long thin tail") but never showed whether the book COMPLIES — it listed
+  // holdings and never counted them, so the model had no way to know it was at 12 against a 6-name
+  // design. Stated as a FACT, with no new imperative: the concentration guidance and the
+  // free-a-slot rule already exist, and this is the missing input to both, not a new instruction.
+  const influencerHeldSet = new Set(influencerHeld);
+  const mainHeldCount = (portfolio.positions ?? []).filter(p => !influencerHeldSet.has(p.symbol)).length;
+  const overBy = mainHeldCount - TARGET_MAIN_POSITIONS;
+  const mainCountNote = overBy > 0
+    ? ` You are ${overBy} OVER target, so each position is roughly ${(TARGET_MAIN_POSITIONS / mainHeldCount * 100).toFixed(0)}% of the size the strategy assumes — a longer, thinner tail than the design intends. This is context for sizing and for the free-a-slot judgment on rebalance days; it is NOT an instruction to sell, and the loss-discipline, time-stop and hysteresis rules below are unchanged.`
+    : "";
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => {
         const avg = parseFloat(p.avgCost);
@@ -418,6 +430,7 @@ The BUYABLE names already passed three screens: (1) strong 12-MONTH momentum ("1
 PORTFOLIO STATE (live from Robinhood):
 - Settled buying power: ${portfolio.buyingPower} — this is your ENTIRE budget for buys today.
 - Total value: ${portfolio.totalValue ?? "unknown"}
+- MAIN-BOOK POSITIONS: ${mainHeldCount} held vs a target of ~${TARGET_MAIN_POSITIONS}.${mainCountNote}
 - Current positions:
 ${positionsLines}
 ${sectorSection ?? ""}

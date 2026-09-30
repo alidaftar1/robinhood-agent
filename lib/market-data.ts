@@ -323,12 +323,17 @@ export function momentumScore(changePct: number, tradingDays: number, annualized
 // Hysteresis rationale: without retention, held names jostling at the rank cutoff get sold and rebought
 // on daily momentum noise (the ILMN↔INCY 2026-07-28/29 whipsaw: sold at 65% momentum as "decayed",
 // rebought at 65% the next day). No rank cap on retention — any held name still trending up is kept.
+
+
+import { TARGET_MAIN_POSITIONS } from "./position-target";
+export { TARGET_MAIN_POSITIONS };
+
 export function buildV1Shortlist(
   stocks: StockData[],
   eligible: Set<string>,
   opts: { N?: number; shortlistSize?: number; held?: Set<string> } = {},
 ): { buy: StockData[]; retained: StockData[] } {
-  const N = opts.N ?? 6;
+  const N = opts.N ?? TARGET_MAIN_POSITIONS;
   // SECTOR RISK — unchanged, and deliberately NOT derived from the list size. This is the only
   // sector control on buys (there is no second check at buy time), so it stays pinned to the
   // TARGET POSITION COUNT: ≤2 buyable names per sector out of ~6 held ≈ the 40% cap.
