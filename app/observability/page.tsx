@@ -6,6 +6,8 @@ import { getGivebackShadowOrNull } from "@/lib/giveback-shadow";
 import { getMeanRevShadowOrNull } from "@/lib/mean-reversion";
 import { scoreShadowObservations, type ShadowStats } from "@/lib/shadow-scoring";
 import { getFeatureCaptureStatus, type CaptureStatus } from "@/lib/feature-capture";
+import { replayAllVariants, type ReplayAllResult, type VariantReplayResult } from "@/lib/variant-replay";
+import { VARIANTS, BASELINE_VARIANT_ID } from "@/lib/strategy-variant";
 
 // Read-only observability for the measure-first captures. Everything here already existed behind
 // CRON_SECRET, which meant reading it required a terminal and handling the cron secret by hand —
@@ -112,6 +114,100 @@ function CaptureCard({ status, error }: { status: CaptureStatus | null; error?: 
   );
 }
 
+function VariantRow({ v, baselineExcess }: { v: VariantReplayResult; baselineExcess: number | null }) {
+  const oos = v.outOfSample.stats;
+  const isBaseline = v.id === BASELINE_VARIANT_ID;
+  // Only ever compared on OUT-OF-SAMPLE, and only when BOTH sides have a real benchmark. A missing
+  // SPY reference must not read as "matched the baseline".
+  const delta = !isBaseline && oos?.avgExcessReturnPct != null && baselineExcess != null
+    ? oos.avgExcessReturnPct - baselineExcess
+    : null;
+  return (
+    <div style={{ borderTop: "1px solid #21262d", padding: "12px 0" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+        <span style={{ fontWeight: 600 }}>
+          {v.id}{isBaseline ? <span style={{ color: "#8b949e", fontWeight: 400 }}> — baseline</span> : null}
+        </span>
+        <span style={{ color: "#8b949e", fontSize: 12 }}>registered {v.registeredAt}</span>
+      </div>
+      <p style={{ margin: "4px 0 8px", color: "#8b949e", fontSize: 12, lineHeight: 1.5 }}>{v.description}</p>
+      <StatRow
+        label="Out-of-sample vs SPY"
+        value={oos && oos.symbolsScored > 0 ? pct(oos.avgExcessReturnPct) : "—"}
+        hint={oos && oos.symbolsScored > 0
+          ? `${oos.symbolsScored} names · ${oos.hitRatePct.toFixed(0)}% hit · ${v.outOfSample.days}d`
+          : `${v.outOfSample.days} day(s) captured, nothing matured yet`}
+      />
+      {delta != null ? (
+        <StatRow label="vs baseline (out-of-sample)" value={pct(delta)} />
+      ) : null}
+      <StatRow
+        label="In-sample (cannot promote)"
+        value={v.inSample.stats && v.inSample.stats.symbolsScored > 0 ? pct(v.inSample.stats.avgExcessReturnPct) : "—"}
+        hint={`${v.inSample.days}d before registration`}
+      />
+      {v.promotion ? (
+        <p style={{
+          margin: "8px 0 0", fontSize: 12, lineHeight: 1.5,
+          color: v.promotion.eligible ? "#3fb950" : "#8b949e",
+        }}>
+          {v.promotion.eligible ? "✓ " : "· "}{v.promotion.reasons.join("; ")}
+        </p>
+      ) : (
+        <p style={{ margin: "8px 0 0", color: "#d29922", fontSize: 12 }}>
+          Not yet judgeable — no out-of-sample name has a forward window.
+        </p>
+      )}
+      {v.excludedDays.length > 0 ? (
+        <p style={{ margin: "6px 0 0", color: "#8b949e", fontSize: 11 }}>
+          {v.excludedDays.length} day(s) excluded: {v.excludedDays.slice(0, 2).map(d => `${d.date} (${d.reason})`).join("; ")}
+          {v.excludedDays.length > 2 ? " …" : ""}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function VariantsCard({ result, error }: { result: ReplayAllResult | null; error?: string }) {
+  const baseline = result?.variants.find(v => v.id === BASELINE_VARIANT_ID);
+  const baselineExcess = baseline?.outOfSample.stats?.avgExcessReturnPct ?? null;
+  return (
+    <section style={{ border: "1px solid #30363d", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+      <h2 style={{ margin: "0 0 4px", fontSize: 16 }}>Strategy variants (Tier 0)</h2>
+      <p style={{ margin: "0 0 12px", color: "#8b949e", fontSize: 13, lineHeight: 1.5 }}>
+        Zero-capital strategy candidates, replayed over the stored point-in-time feature capture and
+        scored against SPY. Variants are pure functions over captured features — they cannot place an
+        order, write a return, or deploy. Every one is compared to the <em>same</em> baseline on the
+        same days and the same caps.
+      </p>
+      {error ? (
+        <p style={{ color: "#f85149", fontSize: 13 }}>Could not load: {error}</p>
+      ) : !result || result.captureDays === 0 ? (
+        <p style={{ color: "#d29922", fontSize: 13 }}>
+          No capture days readable yet — the feature capture began 2026-09-29 and grows by one
+          trading day at a time. Replay depth is the binding constraint on this whole tier.
+        </p>
+      ) : (
+        <>
+          <StatRow label="Capture days replayed" value={String(result.captureDays)}
+            hint={`${result.windowDays}d window`} />
+          {result.variants.map(v => (
+            <VariantRow key={v.id} v={v} baselineExcess={baselineExcess} />
+          ))}
+          <p style={{ margin: "12px 0 0", color: "#8b949e", fontSize: 12, lineHeight: 1.5 }}>
+            <strong>In-sample can only disqualify, never promote.</strong> Because picks are recomputed
+            on read, a variant written today can be replayed over days that already happened — the
+            look-ahead that makes backtests lie. Promotion is judged on out-of-sample only, and even
+            then it names a Tier 1 <em>candidate</em>: forward evidence kills a bad variant fast and
+            confirms a good one slowly (an information ratio of 0.5 needs ~16 years to establish at
+            95% confidence).
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 export default async function ObservabilityPage() {
   const sessionId = (await cookies()).get(getSessionCookieConfig().name)?.value;
   const authed = sessionId ? await touchSession(sessionId) : false;
@@ -133,14 +229,14 @@ export default async function ObservabilityPage() {
   // is needed, and the visitor would get a 504 instead of a diagnosis.
   const SCORE_WINDOW_DAYS = 60;
   const DEADLINE_MS = 8_000;
-  const withDeadline = <T,>(p: Promise<T>, label: string): Promise<T> =>
+  const withDeadline = <T,>(p: Promise<T>, label: string, ms: number = DEADLINE_MS): Promise<T> =>
     Promise.race([p, new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} took longer than ${DEADLINE_MS / 1000}s`)), DEADLINE_MS))]);
+      setTimeout(() => reject(new Error(`${label} took longer than ${ms / 1000}s`)), ms))]);
   const recent = <T extends { date: string }>(days: T[]) => days.slice(-SCORE_WINDOW_DAYS);
 
   // allSettled, not all: one unreachable capture must not blank the whole page. Each card reports
   // its own failure — a page that renders nothing teaches you to stop opening it.
-  const [giveback, meanrev, capture] = await Promise.allSettled([
+  const [giveback, meanrev, capture, variants] = await Promise.allSettled([
     withDeadline(getGivebackShadowOrNull().then(days => {
       if (days === null) throw new Error("capture unreadable (Upstash)");
       return scoreShadowObservations(
@@ -156,6 +252,10 @@ export default async function ObservabilityPage() {
       );
     }), "mean-reversion scoring"),
     withDeadline(getFeatureCaptureStatus(today), "capture health"),
+    // Longer deadline than the cards above: this replays every variant and scores each one's picks,
+    // which costs a live quote per distinct symbol per variant. Still bounded, and still fails into
+    // its own card rather than taking the page down.
+    withDeadline(replayAllVariants(VARIANTS, today), "variant replay", 20_000),
   ]);
 
   return (
@@ -169,6 +269,11 @@ export default async function ObservabilityPage() {
       <CaptureCard
         status={capture.status === "fulfilled" ? capture.value : null}
         error={reason(capture)}
+      />
+
+      <VariantsCard
+        result={variants.status === "fulfilled" ? variants.value : null}
+        error={reason(variants)}
       />
 
       <ShadowCard
