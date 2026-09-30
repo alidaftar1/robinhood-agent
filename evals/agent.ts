@@ -28,10 +28,17 @@ export interface AnalysisResult {
   decision: TradeDecision | null;
 }
 
-export async function runAnalysisAgent(systemPrompt: string): Promise<AnalysisResult> {
+/** The model the PRODUCTION analysis path uses (app/api/trade/route.ts). The eval defaults to it so
+ *  a plain run still measures what actually trades; pass an override to compare candidates. */
+export const PRODUCTION_ANALYSIS_MODEL = "claude-sonnet-4-6";
+
+export async function runAnalysisAgent(
+  systemPrompt: string,
+  model: string = PRODUCTION_ANALYSIS_MODEL,
+): Promise<AnalysisResult> {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 });
   const resp = await (anthropic.messages as any).create({
-    model: "claude-sonnet-4-6",
+    model,
     max_tokens: 3000,
     system: systemPrompt,
     messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
