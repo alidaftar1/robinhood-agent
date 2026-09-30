@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS } from "@/lib/strategy";
+import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext } from "@/lib/market-data";
 import { getQualityScores } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
@@ -18,6 +18,7 @@ import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
 import { buildFeatureRows, recordFeatureCapture } from "@/lib/feature-capture";
+import { applySellRail } from "@/lib/sell-rail";
 import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow";
 import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
@@ -1017,6 +1018,49 @@ export async function GET(request: Request) {
     // mistype and over/under-sell. A full exit sells the EXACT held qty (no dust remainder); a trim
     // sells fraction × held. A legacy numeric `quantity` is clamped to what's held. Names we don't
     // actually hold are dropped. Fractional quantities are fine (market + regular_hours sells).
+    // ── SELL VOLUME RAIL ──────────────────────────────────────────────────────
+    // Bounds DISCRETIONARY main-book full exits. Measured 2026-09-29: the model proposed selling
+    // the entire main book in 1 of 4 runs. Sells previously passed one filter (is it held) while
+    // buys passed six. Provable risk exits are never capped, and the automatic stop path
+    // (/api/drop-check, its own cron) does not come through here at all. Fails OPEN.
+    {
+      const mainSells = decision.sells.filter(x => x.strategy !== "influencer");
+      const sleeveSells = decision.sells.filter(x => x.strategy === "influencer");
+      const railCtx = {
+        positionOf: (sym: string) => {
+          const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
+          return p ? { avgCost: parseFloat(p.avgCost), price: p.price, quantity: parseFloat(p.quantity) } : undefined;
+        },
+        stillRanked: (sym: string) => v1ShortlistSet.has(sym) || v1Retained.some(r => r.symbol === sym),
+        hasBearishNews: (sym: string) => newsSignals.get(sym)?.direction === "-",
+        hasDowngrade: (sym: string) => (marketData.analystRatings[sym] ?? []).some(r => r.action === "downgrade" || r.action === "lower_pt"),
+        daysToEarnings: (sym: string) => {
+          const ed = earningsDatesMap[sym];
+          if (!ed) return null;
+          const d = Math.round((new Date(ed).getTime() - new Date(today).getTime()) / 86_400_000);
+          return Number.isFinite(d) ? d : null;
+        },
+        isStale: (sym: string) => {
+          const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
+          const avg = p ? parseFloat(p.avgCost) : NaN;
+          const ret = p?.price != null && avg > 0 ? ((p.price - avg) / avg) * 100 : null;
+          return staleReasonOf(false, p?.heldDays ?? null, ret) != null;
+        },
+      };
+      const rail = applySellRail(mainSells, railCtx);
+      if (rail.dropped.length > 0) {
+        decision.sells = [...rail.sells, ...sleeveSells];
+        buySizingAdjustments.push(...rail.notes);
+        console.error("SELL_RAIL_TRIMMED", { dropped: rail.dropped, kept: rail.sells.length });
+        await sendAlert(
+          `⚠️ Sell-volume rail trimmed ${rail.dropped.length} exit(s) — ${today}`,
+          `The decision proposed more discretionary full exits than the rail allows: ${rail.dropped.join(", ")}. ` +
+          `Provable risk exits (underwater, stale, off-shortlist, downgrade, bearish news, imminent earnings) are never capped, ` +
+          `so these had no code-verifiable reason. Investigate if this recurs — it is the shape that preceded a proposed full liquidation on 2026-09-29.`,
+        ).catch(() => {});
+      }
+    }
+
     const sellsToExecute: Array<{ symbol: string; quantity: string; strategy?: string }> = [];
     for (const s of decision.sells) {
       const pos = (portfolioCtx?.positions ?? []).find(p => p.symbol === s.symbol);
