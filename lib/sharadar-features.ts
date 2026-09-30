@@ -120,11 +120,12 @@ const idxOf = (c: string) => CAPTURE_COLUMNS.indexOf(c as never);
  * `members` MUST come from the point-in-time universe resolver — passing today's S&P 500 is the
  * survivorship bug this whole exercise exists to avoid.
  *
- * Columns the Prices plan cannot fill (qualityPct, peTTM, peFY, daysToEarnings) are emitted as
- * NULL, never as a neutral default. A variant reads them through FeatureRow.get(), which returns
- * null, and LIVE_PROXY already degrades to momentum-only when quality is absent. That degradation
- * is a REAL fidelity gap — the backtested screen is momentum-only, not momentum-plus-quality — and
- * it must be reported with any result rather than quietly absorbed.
+ * qualityPct is supplied by the caller from lib/sharadar-quality (point-in-time, keyed on FILING
+ * dates). When omitted the column is NULL and LIVE_PROXY degrades to momentum-only — a REAL
+ * fidelity gap that must be reported with any result rather than quietly absorbed.
+ *
+ * Remaining unfillable columns (peTTM, peFY, daysToEarnings) stay NULL rather than taking a neutral
+ * default: 0 is a real, rankable value for every one of them.
  */
 export function buildCaptureDayFromHistory(
   date: string,
@@ -132,6 +133,10 @@ export function buildCaptureDayFromHistory(
   series: Series,
   indexByDate: Map<string, Map<string, number>>,
   spyClose: number | null,
+  /** symbol -> cross-sectional quality percentile for THIS date, from lib/sharadar-quality.
+   *  Omit to run momentum-only (the pre-Bundle behaviour) — the column then reads null and
+   *  LIVE_PROXY degrades, which is a REAL fidelity gap and must be reported, not absorbed. */
+  qualityPct?: Map<string, number>,
 ): CaptureDay {
   const rows: CaptureDay["rows"] = [];
   const posForDate = indexByDate.get(date);
@@ -156,6 +161,10 @@ export function buildCaptureDayFromHistory(
       row[idxOf("sharpe5d")] = r4(momentumScore(f.change5d, 5, f.volatility30d));
       row[idxOf("sharpe14d")] = r4(momentumScore(f.change14d, 10, f.volatility30d));
       row[idxOf("sharpe30d")] = r4(momentumScore(f.change30d, 21, f.volatility30d));
+      // null when this name had no filing public by `date` — NOT 0, which is a real (worst)
+      // percentile and would rank an unknown name as definitively low-quality.
+      const q = qualityPct?.get(symbol);
+      row[idxOf("qualityPct")] = q == null ? null : r4(q);
       rows.push(row);
     }
   }

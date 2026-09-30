@@ -3,6 +3,7 @@
  *
  *   bun scripts/bear-test.ts                 # all windows
  *   bun scripts/bear-test.ts gfc covid       # named windows only
+ *   bun scripts/bear-test.ts --no-quality    # momentum-only, for the A/B
  *
  * The live book is a bull/chop strategy with ZERO bear data: the regime signal is advisory-only,
  * the sympathy heuristic inverts in a downturn, there is no hedge and no cash trigger, and
@@ -15,13 +16,16 @@
  *
  * WHAT IT DOES NOT MODEL (repeated here because a number without its caveats gets quoted alone):
  *   · The LLM layer — this tests THE SCREEN, not the agent.
- *   · Quality — the Prices plan has no fundamentals, so the screen is momentum-only.
+ *   · Quality — ON by default (point-in-time, keyed on filing date). Pass --no-quality to
+ *     reproduce the momentum-only run, so quality's contribution reads as a DIFFERENCE on
+ *     identical windows rather than a comparison across two separate reports.
  *   · Intraday stops — evaluated on closes, which UNDERSTATES stop-outs in a fast crash.
  */
 import { parseSp500Csv, buildUniverseIndex, membersAsOfPrecise } from "../lib/sharadar-universe";
 import { buildCaptureDayFromHistory, buildDateIndex, type Bar, type Series } from "../lib/sharadar-features";
 import { runBacktest, DEFAULT_BACKTEST } from "../lib/backtest";
 import { LIVE_PROXY } from "../lib/strategy-variant";
+import { parseFundamentalsCsv, buildFundamentalIndex, qualityAsOf } from "../lib/sharadar-quality";
 
 const CACHE = "/Users/ali/.cache/sharadar";
 
@@ -90,17 +94,30 @@ async function loadSpy(): Promise<Map<string, number>> {
   return out;
 }
 
-const wanted = process.argv.slice(2);
+const argv = process.argv.slice(2);
+// --no-quality reproduces the pre-Bundle momentum-only run, so the quality contribution can be
+// read as a DIFFERENCE on identical windows rather than compared across two separate reports.
+const useQuality = !argv.includes("--no-quality");
+const wanted = argv.filter(a => !a.startsWith("--"));
 const runWindows = wanted.length ? WINDOWS.filter(w => wanted.includes(w.key)) : WINDOWS;
 
 const sp500Rows = parseSp500Csv(await Bun.file(`${CACHE}/sp500.csv`).text());
 const universe = buildUniverseIndex(sp500Rows);
 const spy = await loadSpy();
 
+// Point-in-time quality, keyed on FILING dates. Parsed once; ARY (as-reported annual) only.
+let fundIndex: ReturnType<typeof buildFundamentalIndex> | null = null;
+if (useQuality) {
+  const tickers = new Set(sp500Rows.map(r => r.ticker));
+  const rows = parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fundamentals.csv`).text(), { dimension: "ARY", tickers });
+  fundIndex = buildFundamentalIndex(rows);
+  console.log(`Quality: ${rows.length} as-reported annual filings across ${fundIndex.size} tickers (point-in-time, keyed on filing date).`);
+}
+
 console.log(`\nBEAR-MARKET RISK TEST — ${LIVE_PROXY.id}`);
 console.log(`Screen: ${LIVE_PROXY.description}`);
 console.log(`Config: rebalance every ${DEFAULT_BACKTEST.rebalanceEveryDays}d, stop ${DEFAULT_BACKTEST.stopLossPct}%, cost ${DEFAULT_BACKTEST.costBps}bps, ${LIVE_PROXY.config.maxPositions} positions / ${LIVE_PROXY.config.maxPerSector} per sector`);
-console.log(`NOTE: momentum-only (no quality — Prices plan has no fundamentals); stops on closes, not intraday.\n`);
+console.log(`Quality gate: ${useQuality ? "ON (point-in-time, as-reported annual, keyed on FILING date)" : "OFF — momentum-only"}; stops on closes, not intraday.\n`);
 
 const rows: string[] = [];
 for (const w of runWindows) {
@@ -111,9 +128,20 @@ for (const w of runWindows) {
   // Trading days inside the window: dates SPY traded (the market calendar) that we also have data for.
   const tradingDays = [...new Set([...adj.keys()])].filter(d => d >= w.from && d <= w.to).sort();
 
+  // Recomputing the cross-sectional percentile every day over ~500 names is wasteful and the
+  // cohort barely moves between filings, so it is refreshed monthly. That is a deliberate
+  // approximation of a gate whose inputs only change when someone files.
+  let qCache: Map<string, number> | null = null;
+  let qMonth = "";
   const days = tradingDays.map(date => {
-    const members = membersAsOfPrecise(universe, sp500Rows, date);
-    return buildCaptureDayFromHistory(date, members ?? new Set(), series, dateIdx, spy.get(date) ?? null);
+    const members = membersAsOfPrecise(universe, sp500Rows, date) ?? new Set<string>();
+    let q: Map<string, number> | undefined;
+    if (fundIndex) {
+      const month = date.slice(0, 7);
+      if (month !== qMonth) { qCache = qualityAsOf(members, fundIndex, date).quality; qMonth = month; }
+      q = qCache ?? undefined;
+    }
+    return buildCaptureDayFromHistory(date, members, series, dateIdx, spy.get(date) ?? null, q);
   });
 
   const priceOf = (date: string, symbol: string) => adj.get(date)?.get(symbol) ?? null;
