@@ -34,12 +34,14 @@ Max drawdown, full screen:
 −59.8% against SPY's −37.9%, with a −66.7% drawdown against −55.2%. The headline conclusion is
 unchanged, and now rests on the full screen rather than a momentum-only proxy.
 
-## Three findings, in order of how much they should change behaviour
+## Four findings, in order of how much they should change behaviour
 
 ### 1. In a LONG GRINDING bear the screen loses ~1.6–1.9× the market, and diversification does not fix it
 
 The obvious objection is concentration: 6 equal-weighted names is a far narrower book than SPY, and
-the live book actually holds ~12. Tested directly on the GFC window:
+the live book actually holds ~12. Tested directly on the GFC window (momentum-only mode, which is
+why these differ slightly from the quality-ON table above — the sensitivity, not the level, is the
+point):
 
 | Positions | Return | Max DD | Avg actually held |
 |---|---|---|---|
@@ -58,8 +60,8 @@ deliberately includes).
 
 This is the most robust finding, because it does not depend on the fidelity gaps below.
 
-**The book is in cash 1–3% of days in every single window.** Across the GFC it was stopped out 153
-times and still spent 97% of the period fully invested. The mechanism is visible: a stop fires, the
+**The book is in cash 0–2% of days in every single window, with quality ON.** Across the GFC it was
+stopped out 135 times and still spent 98% of the period fully invested. The mechanism is visible: a stop fires, the
 position is sold, and the next weekly rebalance immediately redeploys into whatever still ranks.
 The stop realises a loss and re-enters; it does not reduce exposure.
 
@@ -109,8 +111,9 @@ theoretical, and this harness can measure it directly.
 
 ### 4. A fast V-shaped crash is where momentum WINS
 
-COVID 2020: **+26.3% vs SPY's +17.3%, with a shallower drawdown (−30.9% vs −33.7%).** It beat the
-market on both axes in the most violent crash of the sample.
+COVID 2020: **+26.7% vs SPY's +17.3%, with a shallower drawdown (−31.2% vs −33.7%).** It beat the
+market on both axes in the most violent crash of the sample — and quality barely mattered there
+(+0.4), so this is a momentum result, not a quality one.
 
 This matters for interpretation. Had the sample stopped at COVID — the only crash within a 5-year
 data window, and therefore the only one a cheaper Sharadar tier would have shown — the conclusion
@@ -121,10 +124,10 @@ disagree, which is precisely why the full-history tier was the right purchase.**
 
 Stated plainly, because a number without its caveats gets quoted alone:
 
-- **Quality is missing.** The Prices plan has no fundamentals, so the screen ran momentum-only,
-  without the above-median quality gate. In a bear, quality screens out exactly the junk that gets
-  destroyed, so the real strategy would plausibly do better. **This is the single biggest unknown
-  and the main argument for upgrading to the Bundle tier.**
+- **Quality is now INCLUDED** (this was the biggest gap in the first version of this document, and it
+  is closed). Two residual approximations remain: the gate uses ANNUAL as-reported filings, matching
+  `lib/quality.ts`, which is what produced finding 3; and the cross-sectional percentile is refreshed
+  monthly rather than daily, since its inputs only change when someone files.
 - **No LLM layer.** Live is deterministic shortlist → LLM selection/sizing → risk rails. This tests
   the screen and the rails, not the agent. The model may have overridden some of these trades.
 - **Stops are evaluated on closes**, so intraday stop-outs are undercounted. That flatters fast
@@ -157,10 +160,13 @@ The corrected GFC figure is −70.2%. The direction of the finding did not chang
 Not a recommendation to act today — the book is in a bull/chop regime and this describes a regime
 that is not currently happening. But it converts a named, unquantified risk into a measured one:
 
-1. **Close the quality gap first.** Upgrade to Bundle Full and re-run. If quality materially
-   changes the grind results, the picture is different and everything below is premature.
-2. **The lever already scoped is the right one.** `docs/` notes exactly one deliberately-unbuilt
+1. **DONE — the quality gap is closed.** It improved the grinds by 3-10 points and did not change the
+   conclusion, so what follows is no longer premature.
+2. **Fix the quality gate's staleness (finding 3).** It is the largest single measured effect (22
+   points in 2022), it is a live defect rather than a backtest artifact, and TTM instead of annual is
+   a small, testable change. Cheapest real win available.
+3. **The lever already scoped is the right one.** `docs/` notes exactly one deliberately-unbuilt
    lever: a single absolute-momentum gate (go to cash when the name's own trend turns negative).
    These results are the argument for it, and it is now testable rather than theoretical.
-3. **Do not reach for more stops.** The evidence says the stop path is already firing 153 times
+4. **Do not reach for more stops.** The evidence says the stop path is already firing 153 times
    without reducing exposure. More of that mechanism is not the fix.
