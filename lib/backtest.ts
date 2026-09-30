@@ -66,6 +66,8 @@ export interface DayMark {
 }
 
 export interface BacktestResult {
+  /** False when the run is not fit to quote — see the UNUSABLE RUN notes. */
+  usable: boolean;
   variantId: string;
   from: string;
   to: string;
@@ -213,6 +215,7 @@ export function runBacktest(
 
   if (marks.length === 0) {
     return {
+      usable: false,
       variantId: variant.id, from: "", to: "", days: 0, marks: [],
       totalReturnPct: 0, spyReturnPct: null, maxDrawdownPct: 0, spyMaxDrawdownPct: null,
       drawdownFrom: null, drawdownTo: null, trades: 0, stopOuts: 0, daysFlat: 0,
@@ -228,11 +231,27 @@ export function runBacktest(
   const spyFirst = spySeries[0], spyLast = spySeries[spySeries.length - 1];
 
   if (excludedDays > 0) notes.push(`${excludedDays} day(s) excluded (SPY unavailable or no usable rows)`);
+  // A run whose days were mostly EXCLUDED is not a result, it is a broken load — and it reports as
+  // a confident number rather than an error. This actually happened: running four windows in one
+  // process exhausted memory, later windows silently produced zero usable rows, and the harness
+  // printed "-100.05% return / 0 trades / 100% days flat" as if it were a finding. A long-only book
+  // cannot lose more than 100%, which is the only reason it was obvious.
+  const excludedFrac = marks.length > 0 ? excludedDays / marks.length : 1;
+  if (excludedFrac > 0.1) {
+    notes.push(
+      `⚠️ UNUSABLE RUN — ${(excludedFrac * 100).toFixed(0)}% of days were excluded. The numbers ` +
+      `below describe a book that mostly could not trade, not the strategy. Do not quote them.`,
+    );
+  }
+  if (trades === 0 && marks.length > 1) {
+    notes.push("⚠️ UNUSABLE RUN — ZERO trades were placed; the screen never produced a pick.");
+  }
   if (spySeries.length < marks.length) {
     notes.push(`SPY missing on ${marks.length - spySeries.length} day(s) — benchmark is partial`);
   }
 
   return {
+    usable: excludedFrac <= 0.1 && (trades > 0 || marks.length <= 1),
     variantId: variant.id,
     from: marks[0].date,
     to: marks[marks.length - 1].date,

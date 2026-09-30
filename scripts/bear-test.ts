@@ -51,24 +51,37 @@ function shiftDays(date: string, days: number): string {
 /** Stream the filtered price CSV, keeping only rows inside [from, to]. Bounds memory: loading all
  *  5.5M rows at once is ~2GB of objects, and one window needs a fraction of that. */
 async function loadSeries(from: string, to: string): Promise<{ series: Series; adj: Map<string, Map<string, number>> }> {
-  const text = await Bun.file(`${CACHE}/sp500_prices.csv`).text();
+  // STREAMED, deliberately. Reading this 385MB file with .text() materialises one giant JS string
+  // per call; across four windows in a single process that exhausted memory and later windows
+  // silently produced ZERO usable rows, which the harness then printed as "-100.05% return" as if
+  // it were a finding. Streaming keeps peak memory to one chunk.
   const series: Series = new Map();
   const adj = new Map<string, Map<string, number>>();   // date -> symbol -> closeadj (for P&L)
-  let start = text.indexOf("\n") + 1;                   // skip header
-  while (start < text.length) {
-    let end = text.indexOf("\n", start);
-    if (end === -1) end = text.length;
-    const line = text.slice(start, end);
-    start = end + 1;
-    if (!line) continue;
+  const stream = Bun.file(`${CACHE}/sp500_prices.csv`).stream();
+  const decoder = new TextDecoder();
+  let carry = "";
+  let seenHeader = false;
+  for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+    carry += decoder.decode(chunk, { stream: true });
+    let nl: number;
+    while ((nl = carry.indexOf("\n")) !== -1) {
+      const line = carry.slice(0, nl);
+      carry = carry.slice(nl + 1);
+      if (!seenHeader) { seenHeader = true; continue; }
+      ingest(line);
+    }
+  }
+  if (carry) ingest(carry);
+  function ingest(line: string) {
+    if (!line) return;
     // ticker,date,open,high,low,close,volume,closeadj,closeunadj,lastupdated
     const f = line.split(",");
-    if (f.length < 8) continue;
+    if (f.length < 8) return;
     const date = f[1];
-    if (date < from || date > to) continue;
+    if (date < from || date > to) return;
     const ticker = f[0];
     const high = +f[3], close = +f[5], closeadj = +f[7];
-    if (!Number.isFinite(close) || close <= 0) continue;
+    if (!Number.isFinite(close) || close <= 0) return;
     let bars = series.get(ticker);
     if (!bars) { bars = []; series.set(ticker, bars); }
     bars.push({ date, close, high, closeadj: Number.isFinite(closeadj) && closeadj > 0 ? closeadj : close });
@@ -155,6 +168,7 @@ for (const w of runWindows) {
   console.log(`   Trades / stop-outs   ${r.trades} / ${r.stopOuts}`);
   console.log(`   Days flat (in cash)  ${r.daysFlat} of ${r.days} (${((r.daysFlat / r.days) * 100).toFixed(0)}%)`);
   if (r.notes.length) console.log(`   Notes: ${r.notes.join("; ")}`);
+  if (!r.usable) console.log(`   ⛔ THIS WINDOW IS NOT A RESULT — do not quote it.`);
   console.log("");
 
   rows.push([
@@ -164,6 +178,7 @@ for (const w of runWindows) {
     pct(r.maxDrawdownPct).padStart(9),
     pct(r.spyMaxDrawdownPct).padStart(9),
     String(r.stopOuts).padStart(6),
+    r.usable ? "" : "  ⛔ UNUSABLE",
   ].join(" "));
 }
 
