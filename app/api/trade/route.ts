@@ -1040,6 +1040,17 @@ export async function GET(request: Request) {
           const d = Math.round((new Date(ed).getTime() - new Date(today).getTime()) / 86_400_000);
           return Number.isFinite(d) ? d : null;
         },
+        // The prompt MANDATES reducing a ⚠CONCEN name and authorises a full exit when its thesis
+        // has weakened — and such a name is a WINNER that grew past the cap, so no distress test
+        // fires. Without this the rail could block an exit the prompt required.
+        isOverConcentrationCap: (sym: string) => {
+          const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
+          const val = p?.price != null ? p.price * (parseFloat(p.quantity) || 0) : null;
+          return val != null && val > maxPositionDollars(portfolioCtx?.totalValue);
+        },
+        // A post-print drop can be well under 10% BELOW ENTRY and so invisible to loss discipline,
+        // while the prompt tells the model to reassess or exit on exactly that.
+        reportedRecently: (sym: string) => recentEarnings.has(sym),
         isStale: (sym: string) => {
           const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
           const avg = p ? parseFloat(p.avgCost) : NaN;

@@ -12,6 +12,8 @@ const ctx = (over: Partial<SellRailContext> = {}): SellRailContext => ({
   hasDowngrade: () => false,
   daysToEarnings: () => null,
   isStale: () => false,
+  isOverConcentrationCap: () => false,
+  reportedRecently: () => false,
   ...over,
 });
 const exits = (n: number) => Array.from({ length: n }, (_, i) => ({ symbol: `S${i}`, exit: "all" }));
@@ -38,7 +40,24 @@ describe("the rail bounds restructuring, never risk", () => {
     expect(justifiedReason("X", ctx({ hasDowngrade: () => true }))).toMatch(/downgrade/);
     expect(justifiedReason("X", ctx({ hasBearishNews: () => true }))).toMatch(/bearish/);
     expect(justifiedReason("X", ctx({ daysToEarnings: () => 2 }))).toMatch(/earnings in 2d/);
+    expect(justifiedReason("X", ctx({ isOverConcentrationCap: () => true }))).toMatch(/CONCEN/);
+    expect(justifiedReason("X", ctx({ reportedRecently: () => true }))).toMatch(/just reported/);
     expect(justifiedReason("X", ctx())).toBeNull();
+  });
+
+  test("a prompt-MANDATED exit is never capped", () => {
+    // "You cannot KEEP a ⚠CONCEN name over the cap; if you believe its thesis has WEAKENED,
+    // FULL-exit it yourself." Such a name is a WINNER that grew past the cap, so no distress test
+    // fires for it — the rail would otherwise block an exit the prompt required.
+    const r = applySellRail(exits(11), ctx({ isOverConcentrationCap: () => true }));
+    expect(r.dropped).toHaveLength(0);
+  });
+
+  test("an earnings-reaction exit is not capped for being only mildly down", () => {
+    // A post-print drop can be far less than 10% below ENTRY and so invisible to loss discipline,
+    // while the prompt tells the model to reassess or exit on exactly that.
+    const r = applySellRail(exits(5), ctx({ reportedRecently: () => true }));
+    expect(r.dropped).toHaveLength(0);
   });
 
   test("the loss-discipline bar matches the prompt's −10%, not something stricter", () => {

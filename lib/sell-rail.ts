@@ -45,6 +45,14 @@ export interface SellRailContext {
   /** Days until earnings, or null when unknown / outside the window. */
   daysToEarnings: (symbol: string) => number | null;
   isStale: (symbol: string) => boolean;
+  /** Over the concentration cap (⚠CONCEN). The prompt MANDATES reducing these and explicitly
+   *  authorises a full exit when the thesis has weakened — and such a name is usually a WINNER
+   *  that appreciated past the cap, so none of the distress tests above fire for it. */
+  isOverConcentrationCap: (symbol: string) => boolean;
+  /** Reported earnings within the lookback. The prompt tells the model to reassess or exit on a
+   *  large post-print drop, which can easily be less than 10% BELOW ENTRY and therefore invisible
+   *  to loss discipline. */
+  reportedRecently: (symbol: string) => boolean;
 }
 
 export interface SellRailResult {
@@ -68,6 +76,8 @@ export function justifiedReason(symbol: string, ctx: SellRailContext): string | 
   if (ctx.hasBearishNews(symbol)) return "bearish material news";
   const d = ctx.daysToEarnings(symbol);
   if (d != null && d >= 0 && d <= 3) return `earnings in ${d}d`;
+  if (ctx.isOverConcentrationCap(symbol)) return "⚠CONCEN — over the concentration cap";
+  if (ctx.reportedRecently(symbol)) return "just reported earnings";
   return null;
 }
 
