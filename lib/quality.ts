@@ -13,10 +13,50 @@ import { STOCK_SECTOR } from "./market-data";
 // SEC's fair-access policy asks for a contact email in the User-Agent (www.sec.gov 403s without one).
 // Uses a generic contact; overridable via env. No personal data.
 const SEC_UA = process.env.SEC_CONTACT_UA || "robinhood-agent-research research@example.com";
-const CACHE_KEY = "quality:scores:v1";
+// v2: the composite now uses TRAILING-TWELVE-MONTH net income instead of the latest fiscal year.
+// The key MUST change with the output — otherwise the switch looks inert for a full TTL while
+// serving annual-based scores from the old key.
+const CACHE_KEY = "quality:scores:v2";
 const CACHE_TTL_SEC = 8 * 24 * 3600; // ~weekly refresh
-// Calendar periods to try, most-recent first: [balance-sheet instant, income duration].
-const PERIODS: Array<[string, string]> = [["CY2025Q4I", "CY2025"], ["CY2024Q4I", "CY2024"]];
+// A frame with fewer filers than this is treated as not yet published. Frames fill in per concept
+// and per period, so a sparse one would collapse the metric for the whole universe.
+const MIN_FILERS = 500;
+
+/**
+ * WHY TRAILING TWELVE MONTHS, AND WHY IT IS BUILT THIS WAY.
+ *
+ * Screening on the latest fiscal YEAR means that every Q1 this gate runs on 12-15 month old
+ * fundamentals: on 2 Jan 2022 it was still using FY2020, because FY2021 annuals were not filed
+ * until Feb-Mar 2022. Measured over 1999-2026 (docs/findings-bear-market-risk.md) that staleness
+ * cost 2.4 points of CAGR and 0.07 of Sharpe, and in 2022 specifically it excluded energy on its
+ * COVID-year losses in the January before energy became the year's only winning sector.
+ *
+ * The obvious construction — sum four quarterly frames — does NOT work. Companies file a 10-K for
+ * the year rather than a 10-Q for Q4, so the `CY{Y}Q4` DURATION frame is structurally sparse and
+ * would fail MIN_FILERS. Instead this uses the standard rolling construction, which needs no Q4
+ * quarter at all because Q4 is implicit in the annual:
+ *
+ *   TTM = annual{A} + Σ Q{i}{A+1} − Σ Q{i}{A}        for i = 1..k
+ *
+ * i.e. take the last full fiscal year, add the year-to-date quarters, and subtract the SAME
+ * quarters a year earlier. With k=2 the window ends at Q2 of the current year — about six months
+ * fresher than the annual it replaces.
+ *
+ * Periods are derived from the clock rather than hard-coded: the previous constant listed CY2025
+ * and CY2024 literally, which silently stops being current every January.
+ *
+ * FISCAL ALIGNMENT is SEC's, not ours. The frames API maps each filer's period into the nearest
+ * calendar frame, so a September-year-end company lands in the calendar quarter it best matches.
+ * That introduces some imprecision for off-calendar filers and is the price of one free call per
+ * concept instead of per-company requests across ~500 names.
+ */
+interface IncomeFrames {
+  ni: Record<number, number>;   // net income: TTM where computable, else the annual fallback
+  instant: string;              // which balance-sheet instant the equity/assets/liabilities come from
+  label: string;                // human-readable description of the income window
+  ttmCount: number;             // filers that got a real TTM figure
+  annualCount: number;          // filers that fell back to the annual figure
+}
 
 export interface QualityScore {
   quality: number;        // 0–1 cross-sectional percentile composite (higher = better)
@@ -56,6 +96,85 @@ function percentileFn(vals: number[]): (x: number) => number {
   };
 }
 
+/**
+ * Net income over the freshest computable twelve-month window, anchored on fiscal year `A`.
+ *
+ * Adds year-to-date quarters of A+1 and subtracts the same quarters of A, so no Q4 duration frame
+ * is needed (see the IncomeFrames doc for why that matters). Returns null when the anchor annual
+ * frame itself is not published yet, so the caller can try an older year.
+ *
+ * FAILS SAFE PER COMPANY. A filer missing ANY stub component keeps its ANNUAL figure rather than a
+ * partial sum. Treating an absent quarter as zero would fabricate a TTM that is wrong by a whole
+ * quarter of earnings — and it would be wrong in an unpredictable direction, understating a
+ * profitable name and flattering a loss-making one. A known-stale number beats an invented one.
+ */
+async function buildIncomeFrames(A: number): Promise<IncomeFrames | null> {
+  const annual = await frame("NetIncomeLoss", `CY${A}`);
+  if (Object.keys(annual).length <= MIN_FILERS) return null;
+
+  // How many quarters of A+1 are published? Walk forward from Q1 and stop at the first gap: the
+  // window must be CONTIGUOUS, since a hole would drop a quarter of earnings from the sum.
+  const cur: Array<Record<number, number>> = [];
+  const prior: Array<Record<number, number>> = [];
+  for (let q = 1; q <= 3; q++) {
+    const [c, p] = await Promise.all([
+      frame("NetIncomeLoss", `CY${A + 1}Q${q}`).catch(() => ({})),
+      frame("NetIncomeLoss", `CY${A}Q${q}`).catch(() => ({})),
+    ]);
+    if (Object.keys(c).length <= MIN_FILERS || Object.keys(p).length <= MIN_FILERS) break;
+    cur.push(c); prior.push(p);
+  }
+
+  const k = cur.length;
+  if (k === 0) {
+    // Nothing newer than the annual is published — this is exactly the old behaviour, and in Q1 of
+    // any year it is the expected state rather than a failure.
+    return { ni: annual, instant: `CY${A}Q4I`, label: `CY${A} (annual — no newer quarter published)`, ttmCount: 0, annualCount: Object.keys(annual).length };
+  }
+
+  const { ni, ttmCount, annualCount } = combineTtm(annual, cur, prior);
+  return {
+    ni,
+    instant: `CY${A + 1}Q${k}I`,
+    label: `TTM through CY${A + 1}Q${k} (CY${A} + ${k}Q stub)`,
+    ttmCount, annualCount,
+  };
+}
+
+/**
+ * The TTM arithmetic, split out as a PURE function so it can be tested without hitting SEC.
+ *
+ *   ttm(company) = annual + Σ (currentQ − priorQ)
+ *
+ * Exported for tests. The fail-safe is the part worth guarding: a company missing ANY quarter on
+ * either side keeps its ANNUAL figure. Summing the quarters that DO exist would be wrong by a whole
+ * quarter of earnings in an unpredictable direction — understating a profitable name, flattering a
+ * loss-making one — and nothing downstream could detect it.
+ */
+export function combineTtm(
+  annual: Record<number, number>,
+  cur: Array<Record<number, number>>,
+  prior: Array<Record<number, number>>,
+): { ni: Record<number, number>; ttmCount: number; annualCount: number } {
+  const k = Math.min(cur.length, prior.length);
+  const ni: Record<number, number> = {};
+  let ttmCount = 0, annualCount = 0;
+  for (const cikStr of Object.keys(annual)) {
+    const cik = Number(cikStr);
+    let stub = 0, complete = k > 0;
+    for (let i = 0; i < k; i++) {
+      const c = cur[i][cik], p = prior[i][cik];
+      if (typeof c !== "number" || !Number.isFinite(c) || typeof p !== "number" || !Number.isFinite(p)) {
+        complete = false; break;
+      }
+      stub += c - p;
+    }
+    if (complete) { ni[cik] = annual[cik] + stub; ttmCount++; }
+    else { ni[cik] = annual[cik]; annualCount++; }
+  }
+  return { ni, ttmCount, annualCount };
+}
+
 // Fetch fundamentals from SEC and compute quality scores for the whole tradable universe.
 export async function fetchQualityFromSEC(): Promise<QualityData> {
   const tickersJson = await secGet("https://www.sec.gov/files/company_tickers.json");
@@ -65,19 +184,27 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
     if (v?.ticker && typeof v?.cik_str === "number") tk2cik[v.ticker] = v.cik_str;
   }
 
-  // Try the most recent fiscal year that has data.
+  // Try the most recent fiscal year that has data, newest first, derived from the clock.
   let eq: Record<number, number> = {}, ast: Record<number, number> = {}, lia: Record<number, number> = {}, ni: Record<number, number> = {};
   let usedPeriod = "";
-  for (const [inst, dur] of PERIODS) {
+  const thisYear = new Date().getUTCFullYear();
+  for (const A of [thisYear - 1, thisYear - 2]) {
     try {
-      const [e, a, l, n] = await Promise.all([
-        frame("StockholdersEquity", inst), frame("Assets", inst), frame("Liabilities", inst), frame("NetIncomeLoss", dur),
+      const inc = await buildIncomeFrames(A);
+      if (!inc) continue;
+      const [e, a, l] = await Promise.all([
+        frame("StockholdersEquity", inc.instant), frame("Assets", inc.instant), frame("Liabilities", inc.instant),
       ]);
       // Require Equity, Assets AND NetIncome to be well-populated — frames publish per-concept and can
       // lag independently. Accepting a period with a sparse Assets frame would collapse ROA/leverage for
       // the whole universe (every name hits a==null) → empty eligible set. Fall back to the prior year.
-      if (Object.keys(e).length > 500 && Object.keys(a).length > 500 && Object.keys(n).length > 500) {
-        eq = e; ast = a; lia = l; ni = n; usedPeriod = dur; break;
+      if (Object.keys(e).length > MIN_FILERS && Object.keys(a).length > MIN_FILERS && Object.keys(inc.ni).length > MIN_FILERS) {
+        eq = e; ast = a; lia = l; ni = inc.ni; usedPeriod = inc.label;
+        console.log("QUALITY_PERIOD", {
+          income: inc.label, balanceSheet: inc.instant,
+          ttmFilers: inc.ttmCount, annualFallbackFilers: inc.annualCount,
+        });
+        break;
       }
     } catch { /* try older period */ }
   }
