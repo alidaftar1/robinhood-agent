@@ -16,7 +16,10 @@ const SEC_UA = process.env.SEC_CONTACT_UA || "robinhood-agent-research research@
 // v2: the composite now uses TRAILING-TWELVE-MONTH net income instead of the latest fiscal year.
 // The key MUST change with the output — otherwise the switch looks inert for a full TTL while
 // serving annual-based scores from the old key.
-const CACHE_KEY = "quality:scores:v2";
+// v3: three commits changed this output while the key stayed v2 (coverage 385 -> 410, new withheld/
+// degraded/basis fields, and now the contiguity guard). A surviving v2 entry would be served for up
+// to 8 days with `withheld` absent — making the buy/hold split silently inert while looking deployed.
+const CACHE_KEY = "quality:scores:v3";
 const CACHE_TTL_SEC = 8 * 24 * 3600; // ~weekly refresh
 // A frame with fewer filers than this is treated as not yet published. Frames fill in per concept
 // and per period, so a sparse one would collapse the metric for the whole universe.
@@ -101,16 +104,35 @@ async function secGet(url: string): Promise<any> {
  *  403 becomes the claim "SEC has not published this quarter" — a fact about us stated as a fact
  *  about SEC — and then gets cached for the full TTL. */
 const FRAME_FAILED = Symbol("frame-fetch-failed");
-async function frameOrFailed(concept: string, period: string): Promise<Record<number, number> | typeof FRAME_FAILED> {
+async function frameOrFailed(concept: string, period: string): Promise<Record<number, DatedValue> | typeof FRAME_FAILED> {
   try { return await frame(concept, period); } catch { return FRAME_FAILED; }
 }
 
-async function frame(concept: string, period: string): Promise<Record<number, number>> {
+/** A dated frame value. The DATES are load-bearing: without them a caller cannot tell whether an
+ *  annual period and a quarter actually abut, and the TTM construction silently produces a
+ *  twelve-month-DURATION sum with a hole in it for every off-calendar filer. */
+export interface DatedValue { val: number; start: string; end: string }
+
+async function frame(concept: string, period: string): Promise<Record<number, DatedValue>> {
   const d = await secGet(`https://data.sec.gov/api/xbrl/frames/us-gaap/${concept}/USD/${period}.json`);
-  const out: Record<number, number> = {};
-  for (const row of (d?.data ?? [])) if (typeof row?.val === "number") out[row.cik] = row.val;
+  const out: Record<number, DatedValue> = {};
+  for (const row of (d?.data ?? [])) {
+    if (typeof row?.val !== "number") continue;
+    out[row.cik] = {
+      val: row.val,
+      start: typeof row.start === "string" ? row.start : "",
+      end: typeof row.end === "string" ? row.end : "",
+    };
+  }
   return out;
 }
+
+/** Instants (balance-sheet concepts) need only the value. */
+const valuesOnly = (m: Record<number, DatedValue>): Record<number, number> => {
+  const out: Record<number, number> = {};
+  for (const k of Object.keys(m)) out[Number(k)] = m[Number(k)].val;
+  return out;
+};
 
 function percentileFn(vals: number[]): (x: number) => number {
   const s = [...vals].sort((a, b) => a - b);
@@ -220,13 +242,18 @@ export function ttmFromFacts(facts: ConceptFact[], asOf: string): { val: number;
  * exists, applied uniformly, so there is nothing to withhold relative to.
  */
 async function buildIncomeFrames(A: number): Promise<IncomeFrames | null> {
-  const annual = await frame("NetIncomeLoss", `CY${A}`);
+  // frameOrFailed, not frame: a THROW here was previously swallowed by the caller's bare catch, which
+  // fell through to the previous year with `degraded` still false — caching a year-stale window for
+  // 8 days with no signal. The one path finding 5's fix had not converted.
+  const annualRaw = await frameOrFailed("NetIncomeLoss", `CY${A}`);
+  if (annualRaw === FRAME_FAILED) return { ni: {}, instant: `CY${A}Q4I`, label: `CY${A} (annual frame FETCH FAILED)`, ttmCount: 0, withheldCount: 0, degraded: true };
+  const annual = annualRaw;
   if (Object.keys(annual).length <= MIN_FILERS) return null;
 
   // How many quarters of A+1 are published? Walk forward from Q1 and stop at the first gap: the
   // window must be CONTIGUOUS, since a hole would drop a quarter of earnings from the sum.
-  const cur: Array<Record<number, number>> = [];
-  const prior: Array<Record<number, number>> = [];
+  const cur: Array<Record<number, DatedValue>> = [];
+  const prior: Array<Record<number, DatedValue>> = [];
   let degraded = false;
   for (let q = 1; q <= 3; q++) {
     const [c, p] = await Promise.all([
@@ -247,14 +274,19 @@ async function buildIncomeFrames(A: number): Promise<IncomeFrames | null> {
     // Uniform annual: nothing is withheld because no company has anything fresher. This is the
     // expected state in Q1 of any year, and it is identical to the pre-TTM behaviour.
     return {
-      ni: annual, instant: `CY${A}Q4I`, ttmCount: 0, withheldCount: 0, degraded,
+      ni: valuesOnly(annual), instant: `CY${A}Q4I`, ttmCount: 0, withheldCount: 0, degraded,
       label: degraded
         ? `CY${A} (annual — a quarterly frame FETCH FAILED, so this window is short of what SEC has)`
         : `CY${A} (annual — no newer quarter published)`,
     };
   }
 
-  const { ni, ttmCount, withheldCount } = combineTtm(annual, cur, prior);
+  const { ni, ttmCount, withheldCount, misalignedCount } = combineTtm(annual, cur, prior);
+  if (misalignedCount > 0) {
+    // Off-calendar filers, withheld here on purpose. The per-company recovery pass reads their real
+    // fiscal periods and computes a correct window for them.
+    console.log("QUALITY_MISALIGNED_WITHHELD", { count: misalignedCount, note: "off-calendar filers -> per-company recovery" });
+  }
   return {
     ni,
     instant: `CY${A + 1}Q${k}I`,
@@ -274,50 +306,97 @@ async function buildIncomeFrames(A: number): Promise<IncomeFrames | null> {
  * loss-making one — and nothing downstream could detect it.
  */
 export function combineTtm(
-  annual: Record<number, number>,
-  cur: Array<Record<number, number>>,
-  prior: Array<Record<number, number>>,
-): { ni: Record<number, number>; ttmCount: number; withheldCount: number } {
+  annual: Record<number, DatedValue>,
+  cur: Array<Record<number, DatedValue>>,
+  prior: Array<Record<number, DatedValue>>,
+): { ni: Record<number, number>; ttmCount: number; withheldCount: number; misalignedCount: number } {
   const k = Math.min(cur.length, prior.length);
   const ni: Record<number, number> = {};
-  let ttmCount = 0, withheldCount = 0;
+  let ttmCount = 0, withheldCount = 0, misalignedCount = 0;
   for (const cikStr of Object.keys(annual)) {
     const cik = Number(cikStr);
-    let stub = 0, complete = k > 0;
+    const base = annual[cik];
+    let stub = 0, complete = k > 0, aligned = true;
+    let cursor = base.end;
     for (let i = 0; i < k; i++) {
       const c = cur[i][cik], p = prior[i][cik];
-      if (typeof c !== "number" || !Number.isFinite(c) || typeof p !== "number" || !Number.isFinite(p)) {
-        complete = false; break;
-      }
-      stub += c - p;
+      if (!c || !Number.isFinite(c.val) || !p || !Number.isFinite(p.val)) { complete = false; break; }
+      // CONTIGUITY, per name. The formula is only a trailing twelve months when each added quarter
+      // begins where the previous period ended. SEC assigns AAPL's FY2025 (2024-09-29 → 2025-09-27)
+      // to frame CY2025 and its NEXT quarter to CY2025Q4, which this loop never reads — so adding
+      // CY2026Q1/Q2 and subtracting CY2025Q1/Q2 operates INSIDE the base annual and yields a
+      // twelve-month-duration sum with a HOLE. Measured over live frames: 35 of 334 names, errors to
+      // 47.7%, 16 of them OVERSTATING earnings, and two (GIS, STZ) with negative gaps where the added
+      // quarter OVERLAPS the annual and double-counts. Those names are withheld here and picked up by
+      // the per-company recovery pass, which reads their real fiscal periods.
+      const gap = (Date.parse(c.start) - Date.parse(cursor)) / 86_400_000;
+      if (!Number.isFinite(gap) || gap < -2 || gap > 5) { aligned = false; break; }
+      stub += c.val - p.val;
+      cursor = c.end;
     }
+    if (!aligned) { misalignedCount++; withheldCount++; continue; }
     // WITHHELD, not defaulted. An absent entry means the name is never scored, so it can never be
     // bought on a quality reading we could not establish.
-    if (complete) { ni[cik] = annual[cik] + stub; ttmCount++; }
+    if (complete) { ni[cik] = base.val + stub; ttmCount++; }
     else { withheldCount++; }
   }
-  return { ni, ttmCount, withheldCount };
+  return { ni, ttmCount, withheldCount, misalignedCount };
 }
 
-/** One company's NetIncomeLoss facts. Returns [] on any failure — the caller then withholds. */
-async function conceptFacts(cik: number): Promise<ConceptFact[]> {
+/**
+ * One company's NetIncomeLoss facts.
+ *
+ * null = COULD NOT FETCH (network, 403/429, timeout, unparseable). [] = fetched fine, this company
+ * genuinely reports no NetIncomeLoss facts — confirmed real for CDNS, CTSH, ENPH, NXPI, which return
+ * `units: {}` with a 200.
+ *
+ * COLLAPSING THE TWO IS A BUG I HAVE NOW SHIPPED THREE TIMES TODAY (lib/news.ts fetchCompanyNews,
+ * lib/news.ts extractMaterialNews, and here). Both directions are wrong: treat a failure as empty and
+ * a transient outage silently shrinks the tradable universe; treat genuinely-empty as a failure and
+ * four always-empty companies mark every run degraded, so nothing is ever cached and the whole sweep
+ * repeats on every trade run forever.
+ */
+/**
+ * The shape decision, split out so it can be TESTED. null = could not establish; [] = established
+ * that there is nothing. Exported because I have now collapsed these two three times in one day and
+ * a comment has demonstrably not been enough.
+ */
+export function parseConceptUnits(usd: unknown): ConceptFact[] | null {
+  // Absent key: SEC returned 200 with `units: {}`. Confirmed genuine for CDNS, CTSH, ENPH, NXPI —
+  // those companies really do report no NetIncomeLoss. Cacheable.
+  if (usd == null) return [];
+  // Present but not an array: the payload is not the shape we believe, which is a failure about US,
+  // not a fact about the company. Never cache it.
+  if (!Array.isArray(usd)) return null;
+  return usd.map((f: any) => ({
+    start: typeof f?.start === "string" ? f.start : "",
+    end: typeof f?.end === "string" ? f.end : "",
+    val: typeof f?.val === "number" ? f.val : NaN,
+    filed: typeof f?.filed === "string" ? f.filed : "",
+  }));
+}
+
+async function conceptFacts(cik: number): Promise<ConceptFact[] | null> {
   const padded = String(cik).padStart(10, "0");
   try {
     const d = await secGet(`https://data.sec.gov/api/xbrl/companyconcept/CIK${padded}/us-gaap/NetIncomeLoss.json`);
-    return (d?.units?.USD ?? []).map((f: any) => ({
-      start: typeof f.start === "string" ? f.start : "",
-      end: typeof f.end === "string" ? f.end : "",
-      val: f.val, filed: typeof f.filed === "string" ? f.filed : "",
-    }));
-  } catch { return []; }
+    return parseConceptUnits(d?.units?.USD);
+  } catch { return null; }
 }
 
 /** Hard ceiling on the recovery pass. SEC asks for <10 requests/second, and this runs inside the
  *  trade route — an unbounded sweep over a wide universe could both breach fair-access and delay a
  *  live run. Anything past the cap simply stays withheld, which is the safe direction. */
-export const MAX_RECOVERY_FETCHES = 140;
-const RECOVERY_CONCURRENCY = 4;
-const RECOVERY_BUDGET_MS = 30_000;
+// Raised from 140: the contiguity guard now withholds ~35 off-calendar filers that the frames path
+// used to (wrongly) publish, and they all arrive here. Live candidate count is ~131.
+export const MAX_RECOVERY_FETCHES = 220;
+// 2, not 4, plus an explicit inter-batch pause. Concurrency alone is NOT a rate limit — the rate is
+// whatever latency allows, and measured from a laptop that was 18.6 req/sec against SEC's ~10/sec
+// fair-access guidance. A 403 here is swallowed into silent withholding, and an IP-level throttle
+// would also degrade lib/insider's EDGAR calls.
+const RECOVERY_CONCURRENCY = 2;
+const RECOVERY_MIN_BATCH_MS = 220;
+const RECOVERY_BUDGET_MS = 45_000;
 
 /**
  * Second pass for names the calendar frames could not serve. Fetches each company's own reported
@@ -335,20 +414,37 @@ async function recoverWithheld(
   symbols: string[],
   tk2cik: Record<string, number>,
   asOf: string,
-): Promise<{ ni: Record<number, number>; recovered: number; attempted: number }> {
+): Promise<{ ni: Record<number, number>; recovered: number; attempted: number; truncated: boolean; fetchFailures: number }> {
   const ni: Record<number, number> = {};
-  const targets = symbols.map(s => tk2cik[s]).filter((c): c is number => c != null).slice(0, MAX_RECOVERY_FETCHES);
+  const all = symbols.map(s => tk2cik[s]).filter((c): c is number => c != null);
+  const targets = all.slice(0, MAX_RECOVERY_FETCHES);
   const deadline = Date.now() + RECOVERY_BUDGET_MS;
-  let recovered = 0, attempted = 0;
+  let recovered = 0, attempted = 0, fetchFailures = 0;
+  // Capped BY COUNT counts as truncation too, not just by clock.
+  let truncated = all.length > targets.length;
   for (let i = 0; i < targets.length; i += RECOVERY_CONCURRENCY) {
-    if (Date.now() > deadline) break;
+    // Checked BEFORE the batch, so a batch starting just inside the deadline still runs to
+    // completion — the overrun is bounded by one request timeout, which is accounted for in the
+    // caller's worst case rather than hidden.
+    if (Date.now() > deadline) { truncated = true; break; }
+    const batchStart = Date.now();
     await Promise.all(targets.slice(i, i + RECOVERY_CONCURRENCY).map(async cik => {
       attempted++;
-      const ttm = ttmFromFacts(await conceptFacts(cik), asOf);
+      const facts = await conceptFacts(cik);
+      // null = could not ASK. That must mark the result degraded so it is never cached, otherwise a
+      // slow SEC morning silently makes a slice of the universe unbuyable for the full 8-day TTL.
+      // An EMPTY array is a different thing — the company reports no such concept, which is a stable
+      // fact about it and perfectly cacheable.
+      if (facts === null) { fetchFailures++; return; }
+      const ttm = ttmFromFacts(facts, asOf);
       if (ttm) { ni[cik] = ttm.val; recovered++; }
     }));
+    const elapsed = Date.now() - batchStart;
+    if (elapsed < RECOVERY_MIN_BATCH_MS && i + RECOVERY_CONCURRENCY < targets.length) {
+      await new Promise(r => setTimeout(r, RECOVERY_MIN_BATCH_MS - elapsed));
+    }
   }
-  return { ni, recovered, attempted };
+  return { ni, recovered, attempted, truncated, fetchFailures };
 }
 
 // Fetch fundamentals from SEC and compute quality scores for the whole tradable universe.
@@ -391,7 +487,7 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
         frameOrFailed("StockholdersEquity", inc.instant), frameOrFailed("Assets", inc.instant), frameOrFailed("Liabilities", inc.instant),
         frameOrFailed("StockholdersEquity", older), frameOrFailed("Assets", older), frameOrFailed("Liabilities", older),
       ]);
-      const ok = (x: Record<number, number> | typeof FRAME_FAILED) => (x === FRAME_FAILED ? {} : x);
+      const ok = (x: Record<number, DatedValue> | typeof FRAME_FAILED): Record<number, number> => (x === FRAME_FAILED ? {} : valuesOnly(x));
       const anyInstantFailed = [eN, aN, lN, eO, aO, lO].some(x => x === FRAME_FAILED);
       // Spread order matters: the NEWER instant wins where both have the name.
       const e = { ...ok(eO), ...ok(eN) };
@@ -425,10 +521,13 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
     const rec = await recoverWithheld(stillMissing, tk2cik, asOfDate);
     Object.assign(ni, rec.ni);
     recoveredPerCompany = rec.recovered;
+    // A truncated or partly-failed recovery is NOT a result: which names end up unbuyable would
+    // depend on how far the sweep got. Mark degraded so getQualityScores refuses to cache it.
+    if (rec.truncated || rec.fetchFailures > 0) degraded = true;
     console.log("QUALITY_RECOVERY", {
       candidates: stillMissing.length, attempted: rec.attempted, recovered: rec.recovered,
       stillWithheld: stillMissing.length - rec.recovered,
-      capped: stillMissing.length > MAX_RECOVERY_FETCHES,
+      truncated: rec.truncated, fetchFailures: rec.fetchFailures,
     });
   }
 
