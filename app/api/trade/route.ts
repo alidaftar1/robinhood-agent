@@ -27,7 +27,7 @@ import { getValuations, formatValuations } from "@/lib/valuation";
 import { formatConviction, convictionAuditNote, loadConvictionRun } from "@/lib/conviction";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
-import { fetchAgenticBalance } from "@/lib/robinhood-balance";
+import { fetchAgenticBalance, fetchAgenticPositions } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
 
@@ -56,34 +56,6 @@ const fetchAgenticBuyingPower = fetchAgenticBalance;
 
 // Pre-flight buy sizing lives in lib/buy-sizing.ts (pure + unit-tested in evals).
 
-async function fetchAgenticPositions(
-  anthropic: Anthropic,
-  accessToken: string
-): Promise<Array<{ symbol: string; quantity: string; avgCost: string }> | null> {
-  const controller = new AbortController();
-  const killTimer = setTimeout(() => controller.abort(), 30000);
-  try {
-    const res = await (anthropic.beta.messages as any).create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 512,
-      system: `Call get_equity_positions for account ${ACCOUNT}. Output exactly one line:
-AGENTIC_POSITIONS:[{"symbol":"XX","quantity":"X","avgCost":"XX.XX"}]
-Use instrument_symbol for symbol, quantity for quantity, average_buy_price for avgCost. If no positions, output AGENTIC_POSITIONS:[]. Output nothing else.`,
-      messages: [{ role: "user", content: `Fetch live positions for account ${ACCOUNT}.` }],
-      mcp_servers: [{ type: "url", url: "https://agent.robinhood.com/mcp/trading", name: "robinhood", authorization_token: accessToken }],
-      betas: ["mcp-client-2025-04-04"],
-    }, { signal: controller.signal });
-    clearTimeout(killTimer);
-    const text = res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-    const match = text.match(/^AGENTIC_POSITIONS:(.+)$/m);
-    if (!match) return null;
-    return JSON.parse(match[1]);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(killTimer);
-  }
-}
 
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
