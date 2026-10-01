@@ -736,7 +736,19 @@ export async function getQualityScores(force = false): Promise<QualityData | nul
     // highest-stakes invariant here, unpinned after three rounds. CLAUDE.md requires breaking a guard
     // and watching the test fail; that is only possible if the guard is reachable from a test.
     if (!shouldCache(data)) {
-      console.warn("QUALITY_DEGRADED_NOT_CACHED", { period: data.period, withheld: data.withheld.length });
+      // SEPARATE NAMES for the two refusals. The DECISION became !shouldCache(...) but this CLAIM did
+      // not follow it, so a run refused for an EMPTY SCORE SET still announced "degraded" — pointing
+      // the next investigation at SEC connectivity when the real cause is a broken ticker map. Exactly
+      // CLAUDE.md's "a predicate consumed by BOTH a machine decision and a human message: widening it
+      // for the decision silently widens the CLAIM". One extra branch keeps them independent.
+      if (data.degraded) {
+        console.warn("QUALITY_DEGRADED_NOT_CACHED", { period: data.period, withheld: data.withheld.length });
+      } else {
+        console.error("QUALITY_EMPTY_NOT_CACHED", {
+          period: data.period, scored: Object.keys(data.scores).length, withheld: data.withheld.length,
+          note: "scored NOBODY — a broken ticker map or universe lookup, NOT a SEC connectivity problem",
+        });
+      }
     } else {
       await redisSetEx(CACHE_KEY, JSON.stringify(data), CACHE_TTL_SEC).catch(() => {});
     }
