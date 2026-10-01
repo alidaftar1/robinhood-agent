@@ -4,6 +4,7 @@
  *   bun scripts/full-period.ts            # quality from annual filings (matches production)
  *   bun scripts/full-period.ts --ttm      # quality from trailing-twelve-months
  *   bun scripts/full-period.ts --no-quality
+ *   bun scripts/full-period.ts --ttm --cashflow   # quality on OPERATING CASH FLOW, not net income
  *
  * WHY THIS EXISTS, and it is a correction to how the bear test was being read. That test measured
  * four windows chosen FOR BEING THE WORST in 28 years, so "loses in 3 of 4" is true by construction
@@ -30,6 +31,8 @@ const TEST_TO = "2026-09-29";
 const argv = process.argv.slice(2);
 const useQuality = !argv.includes("--no-quality");
 const dimension = argv.includes("--ttm") ? "ART" : "ARY";
+// The numerator under test: net income (production) vs operating cash flow.
+const qualityBasis: "netinc" | "ncfo" = argv.includes("--cashflow") ? "ncfo" : "netinc";
 
 const pct = (n: number | null | undefined, d = 2) =>
   n == null || !Number.isFinite(n) ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(d)}%`;
@@ -111,7 +114,7 @@ function* dayStream(): Generator<import("../lib/feature-capture").CaptureDay> {
     let q: Map<string, number> | undefined;
     if (fundIndex) {
       const month = date.slice(0, 7);
-      if (month !== qMonth) { qCache = qualityAsOf(members, fundIndex, date).quality; qMonth = month; }
+      if (month !== qMonth) { qCache = qualityAsOf(members, fundIndex, date, qualityBasis).quality; qMonth = month; }
       q = qCache ?? undefined;
     }
     yield buildCaptureDayFromHistory(date, members, series, dateIdx, spy.get(date) ?? null, q);
@@ -156,7 +159,7 @@ const spyFirst = sp.find(v => v != null) as number;
 const spyLast = [...sp].reverse().find(v => v != null) as number;
 
 console.log(`\nFULL-CYCLE BACKTEST — ${LIVE_PROXY.id}`);
-console.log(`Quality: ${useQuality ? dimension : "OFF (momentum-only)"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · stop ${DEFAULT_BACKTEST.stopLossPct}% ${DEFAULT_BACKTEST.stopMode} · cost ${DEFAULT_BACKTEST.costBps}bps · ${LIVE_PROXY.config.maxPositions} positions`);
+console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF (momentum-only)"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · stop ${DEFAULT_BACKTEST.stopLossPct}% ${DEFAULT_BACKTEST.stopMode} · cost ${DEFAULT_BACKTEST.costBps}bps · ${LIVE_PROXY.config.maxPositions} positions`);
 console.log(`${r.from} → ${r.to}  (${r.days.toLocaleString()} trading days, ${years.toFixed(1)} years)\n`);
 if (!r.usable) console.log("⛔ NOT A RESULT — see notes below.\n");
 

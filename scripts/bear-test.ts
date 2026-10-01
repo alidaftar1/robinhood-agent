@@ -118,6 +118,8 @@ const useQuality = !argv.includes("--no-quality");
 // this flag exists to test: TTM removes the staleness that cost 22 points in 2022 WITHOUT giving
 // back quality's +10.4 in the GFC.
 const dimension = argv.includes("--ttm") ? "ART" : "ARY";
+// The numerator under test: net income (production) vs operating cash flow.
+const qualityBasis: "netinc" | "ncfo" = argv.includes("--cashflow") ? "ncfo" : "netinc";
 const wanted = argv.filter(a => !a.startsWith("--"));
 const runWindows = wanted.length ? WINDOWS.filter(w => wanted.includes(w.key)) : WINDOWS;
 
@@ -138,7 +140,7 @@ if (useQuality) {
 console.log(`\nBEAR-MARKET RISK TEST — ${LIVE_PROXY.id}`);
 console.log(`Screen: ${LIVE_PROXY.description}`);
 console.log(`Config: rebalance every ${DEFAULT_BACKTEST.rebalanceEveryDays}d, stop ${DEFAULT_BACKTEST.stopLossPct}%, cost ${DEFAULT_BACKTEST.costBps}bps, ${LIVE_PROXY.config.maxPositions} positions / ${LIVE_PROXY.config.maxPerSector} per sector`);
-console.log(`Quality gate: ${useQuality ? `ON — ${dimension} (point-in-time, keyed on FILING date)` : "OFF — momentum-only"}; stops on closes, not intraday.\n`);
+console.log(`Quality gate: ${useQuality ? `ON — ${dimension}/${qualityBasis} (point-in-time, keyed on FILING date)` : "OFF — momentum-only"}; stops on closes, not intraday.\n`);
 
 const rows: string[] = [];
 for (const w of runWindows) {
@@ -159,7 +161,7 @@ for (const w of runWindows) {
     let q: Map<string, number> | undefined;
     if (fundIndex) {
       const month = date.slice(0, 7);
-      if (month !== qMonth) { qCache = qualityAsOf(members, fundIndex, date).quality; qMonth = month; }
+      if (month !== qMonth) { qCache = qualityAsOf(members, fundIndex, date, qualityBasis).quality; qMonth = month; }
       q = qCache ?? undefined;
     }
     return buildCaptureDayFromHistory(date, members, series, dateIdx, spy.get(date) ?? null, q);

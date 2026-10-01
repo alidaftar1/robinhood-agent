@@ -41,7 +41,24 @@ export interface FundamentalRow {
   equity: number | null;
   liabilities: number | null;
   netinc: number | null;
+  /** Operating cash flow. The alternative numerator — see QualityBasis. */
+  ncfo: number | null;
 }
+
+/**
+ * Which earnings measure the quality composite divides by assets and equity.
+ *
+ * "netinc" mirrors production. "ncfo" is the hypothesis: a gate built on NET INCOME is structurally
+ * vulnerable to large NON-CASH charges, so any company taking an acquisition write-off or impairment
+ * reads as low-quality for four quarters regardless of its economics — hardest on acquisitive sectors,
+ * pharma especially.
+ *
+ * The live case that prompted this: MRK was sold 2026-10-01 after its TTM net income fell 18.25B →
+ * 3.17B, while its TTM operating cash flow ROSE to an all-time-high 19.97B. A ~15B non-cash gap in
+ * one half-year. The quality gate was not wrong — net income genuinely collapsed — but it could not
+ * distinguish "earnings deteriorated" from "took a write-off".
+ */
+export type QualityBasis = "netinc" | "ncfo";
 
 export interface QualityAsOf {
   /** symbol → composite percentile (0–1). */
@@ -107,12 +124,17 @@ export function qualityAsOf(
   cohort: Iterable<string>,
   index: FundamentalIndex,
   asOf: string,
+  basis: QualityBasis = "netinc",
 ): QualityAsOf {
   const raw = new Map<string, { roe: number | null; roa: number; lev: number | null }>();
   for (const sym of cohort) {
     const f = latestFilingAsOf(index.get(sym), asOf);
     if (!f) continue;
-    const a = f.assets, n = f.netinc, e = f.equity, l = f.liabilities;
+    const a = f.assets, e = f.equity, l = f.liabilities;
+    // The ONE substitution under test. Everything downstream — the ROE/leverage exclusions, the
+    // percentile composite, the median split — is identical, so any difference in results is
+    // attributable to the numerator and nothing else.
+    const n = basis === "ncfo" ? f.ncfo : f.netinc;
     if (a == null || n == null || a <= 0) continue;
     const sec = STOCK_SECTOR[sym];
     const isFin = sec === "XLF" || sec === "XLRE";
@@ -156,7 +178,7 @@ export function parseFundamentalsCsv(
   const ix = (name: string) => header.indexOf(name);
   const iTicker = ix("ticker"), iDim = ix("dimension"), iDate = ix("date"),
     iCal = ix("calendardate"), iAssets = ix("assets"), iEquity = ix("equity"),
-    iLiab = ix("liabilities"), iNet = ix("netinc");
+    iLiab = ix("liabilities"), iNet = ix("netinc"), iNcfo = ix("ncfo");
   // A missing required column means the file is not what we think it is. Returning [] here would
   // read downstream as "no fundamentals", i.e. the screen silently degrades to momentum-only and
   // the whole point of this module evaporates without an error. Fail loudly instead.
@@ -184,6 +206,8 @@ export function parseFundamentalsCsv(
       ticker, filed, period: iCal >= 0 ? f[iCal] : "",
       assets: num(f[iAssets]), equity: num(f[iEquity]),
       liabilities: num(f[iLiab]), netinc: num(f[iNet]),
+      // Absent column -> null, never 0. Zero operating cash flow is a real and terrible value.
+      ncfo: iNcfo >= 0 ? num(f[iNcfo]) : null,
     });
   }
   return out;

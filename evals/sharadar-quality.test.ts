@@ -14,7 +14,8 @@ import {
 const row = (
   ticker: string, filed: string, period: string,
   assets: number | null, equity: number | null, liabilities: number | null, netinc: number | null,
-): FundamentalRow => ({ ticker, filed, period, assets, equity, liabilities, netinc });
+  ncfo: number | null = null,
+): FundamentalRow => ({ ticker, filed, period, assets, equity, liabilities, netinc, ncfo });
 
 describe("trap 1: availability is decided by the FILING date, never the period end", () => {
   const list = [
