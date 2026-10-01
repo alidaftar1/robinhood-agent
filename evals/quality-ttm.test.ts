@@ -178,7 +178,7 @@ describe("the per-company fail-safe", () => {
 // for it, so the frames path withheld MSFT — excluding it for an accounting-calendar reason rather
 // than anything to do with quality. Its own 10-K covers 2025-07-01 → 2026-06-30 and is three months
 // old. These use MSFT's REAL reported facts, taken from the live SEC API.
-import { ttmFromFacts, parseConceptUnits, parseConceptResponse, MAX_WINDOW_AGE_DAYS, type ConceptFact } from "@/lib/quality";
+import { ttmFromFacts, parseConceptUnits, parseConceptResponse, shouldCache, resolveSecStatus, isUsableTickerMap, MIN_TICKER_MAP, MAX_WINDOW_AGE_DAYS, type ConceptFact, type QualityData } from "@/lib/quality";
 
 const f = (start: string, end: string, val: number, filed: string, form = "10-K"): ConceptFact =>
   ({ start, end, val, filed, form });
@@ -495,5 +495,116 @@ describe("non-financial-statement forms are dropped", () => {
       ff("2025-01-01", "2025-03-31", 20, "2025-05-01", "10-Q"),
     ];
     expect(ttmFromFacts(facts, "2026-09-01")!.val).toBe(110);
+  });
+});
+
+// ── The cache-write guard ────────────────────────────────────────────────────────────────────────
+// A mutation sweep found `if (data.degraded)` in getQualityScores could be DELETED with the entire
+// suite still green — the highest-stakes invariant in the module, unpinned through three review
+// rounds. Caching a degraded result freezes a transient fault for 8 days, and because WHICH names are
+// withheld depends on how much data arrived, it would redefine the tradable universe for that window.
+describe("shouldCache refuses to persist a result that is not an answer", () => {
+  const base = (over: Partial<QualityData> = {}): QualityData => ({
+    scores: { AAPL: { quality: 0.8, roe: 0.3, roa: 0.2, lev: null, eligible: true } },
+    median: 0.5, period: "TTM through CY2026Q2", asOf: "2026-09-30",
+    withheld: [], degraded: false,
+    basis: { ttmFromFrames: 4000, recoveredPerCompany: 100, withheld: 0, withheldNoCik: 0 },
+    ...over,
+  });
+
+  test("a healthy result IS cacheable", () => {
+    expect(shouldCache(base())).toBe(true);
+  });
+
+  test("a DEGRADED result is never cached, however complete it looks", () => {
+    expect(shouldCache(base({ degraded: true }))).toBe(false);
+  });
+
+  test("an EMPTY score set is never cached — that is what a broken ticker map looks like", () => {
+    // The concrete failure this closes: a 404 on company_tickers.json yielded an empty CIK map, so
+    // every name was withheld, `degraded` stayed false, and the empty result was cached for 8 days —
+    // after which the trade route tripped its shortlist floor and self-skipped every run for a week.
+    expect(shouldCache(base({ scores: {}, withheld: ["AAPL", "MSFT"] }))).toBe(false);
+  });
+
+  test("both conditions independently block — neither masks the other", () => {
+    expect(shouldCache(base({ degraded: true, scores: {} }))).toBe(false);
+  });
+});
+
+// Review 4's fifth unconstrained guard: ttmFromFacts has its OWN contiguity bound, and fixing the
+// bound in combineTtm left this one free — a mutant widening ±5 to ±50 survived the whole suite.
+// The recovery path now serves ~100 names including MSFT, so it is not a backwater.
+describe("ttmFromFacts' contiguity bound is pinned too", () => {
+  const q = (start: string, end: string, val: number, filed: string): ConceptFact =>
+    ({ start, end, val, filed, form: "10-Q" });
+  const annual: ConceptFact = { start: "2025-01-01", end: "2025-12-31", val: 100, filed: "2026-02-01", form: "10-K" };
+
+  test("a quarter starting 20 days after the fiscal year is NOT rolled in", () => {
+    // Inside a ±50 tolerance, outside ±5. Pins the bound against being widened.
+    const facts = [annual, q("2026-01-20", "2026-04-20", 30, "2026-06-01"), q("2025-01-20", "2025-04-20", 20, "2025-06-01")];
+    const r = ttmFromFacts(facts, "2026-09-01")!;
+    expect(r.quartersAdded).toBe(0);
+    expect(r.val).toBe(100);
+  });
+
+  test("a quarter starting 40 days BEFORE the year end is not rolled in either", () => {
+    const facts = [annual, q("2025-11-21", "2026-02-21", 30, "2026-04-01"), q("2024-11-21", "2025-02-21", 20, "2025-04-01")];
+    expect(ttmFromFacts(facts, "2026-09-01")!.quartersAdded).toBe(0);
+  });
+
+  test("the legitimate +1 day case still rolls", () => {
+    const facts = [annual, q("2026-01-01", "2026-04-01", 30, "2026-06-01"), q("2025-01-01", "2025-04-01", 20, "2025-06-01")];
+    expect(ttmFromFacts(facts, "2026-09-01")!.quartersAdded).toBe(1);
+  });
+});
+
+// ── The two H-1 guards, made testable ────────────────────────────────────────────────────────────
+// H-1: `secGet` returned the 404 sentinel UNCONDITIONALLY, which re-claimed meaning for a caller that
+// never tested for it. The tickers fetch then produced an empty CIK map (Object.keys(Symbol()) is [],
+// not a throw), every name was withheld, `degraded` stayed false, and that empty result was CACHED for
+// 8 days — after which the trade route tripped its shortlist floor and self-skipped every run for a
+// week while blaming "a Yahoo/SEC hiccup". Both guards lived in network-bound code no test could
+// reach, which is precisely how it shipped.
+describe("resolveSecStatus: 404 handling is OPT-IN", () => {
+  test("404 is 'not-found' ONLY when the caller asked for that", () => {
+    expect(resolveSecStatus(404, true)).toBe("not-found");
+    expect(resolveSecStatus(404, false)).toBe("error");
+  });
+
+  test("a 2xx is ok and other failures are errors, regardless of the flag", () => {
+    for (const ok of [true, false]) {
+      expect(resolveSecStatus(200, ok)).toBe("ok");
+      expect(resolveSecStatus(204, ok)).toBe("ok");
+      expect(resolveSecStatus(500, ok)).toBe("error");
+      expect(resolveSecStatus(429, ok)).toBe("error");
+      expect(resolveSecStatus(403, ok)).toBe("error");
+    }
+  });
+
+  test("notFoundOk does NOT soften anything other than 404", () => {
+    // The bug was a widening; this pins how narrow the widening is allowed to be.
+    expect(resolveSecStatus(410, true)).toBe("error");
+    expect(resolveSecStatus(451, true)).toBe("error");
+  });
+});
+
+describe("isUsableTickerMap refuses to score an empty universe", () => {
+  const mapOf = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`T${i}`, i + 1]));
+
+  test("an empty or tiny map is rejected — the concrete H-1 failure", () => {
+    expect(isUsableTickerMap({})).toBe(false);
+    expect(isUsableTickerMap(mapOf(1))).toBe(false);
+    expect(isUsableTickerMap(mapOf(999))).toBe(false);
+  });
+
+  test("a real-sized map passes", () => {
+    expect(isUsableTickerMap(mapOf(1000))).toBe(true);
+    expect(isUsableTickerMap(mapOf(10_000))).toBe(true);
+  });
+
+  test("the floor is high enough to catch a near-empty read, not merely a zero one", () => {
+    // A floor of 1 would pass a map containing a single junk entry.
+    expect(MIN_TICKER_MAP).toBeGreaterThan(100);
   });
 });

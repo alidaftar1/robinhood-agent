@@ -99,10 +99,29 @@ export const QUALITY_FRAMES_BUDGET_MS = 75_000;
  *  the whole run as "could not ask". */
 const SEC_NOT_FOUND = Symbol("sec-404");
 
-async function secGet(url: string): Promise<any> {
+/**
+ * `notFoundOk` is OPT-IN, deliberately. Returning the sentinel unconditionally re-claimed meaning for
+ * every caller: the tickers fetch does not test for it, and `Object.keys(Symbol())` is `[]` rather
+ * than a throw — so a 404 on company_tickers.json produced an empty CIK map, every name withheld,
+ * `degraded` still FALSE, and that empty result CACHED for 8 days. The trade route would then trip its
+ * shortlist floor and self-skip every run for a week while blaming "a Yahoo/SEC hiccup". Widening a
+ * condition without renaming it re-claims it for consumers who never asked.
+ */
+/**
+ * How an HTTP status should be read, split out as a PURE function so the OPT-IN is testable. The
+ * guards that matter here sit in network-bound code that no test reaches, which is exactly how the
+ * unconditional-sentinel bug survived into a commit.
+ */
+export function resolveSecStatus(status: number, notFoundOk: boolean): "ok" | "not-found" | "error" {
+  if (status === 404) return notFoundOk ? "not-found" : "error";
+  return status >= 200 && status < 300 ? "ok" : "error";
+}
+
+async function secGet(url: string, opts: { notFoundOk?: boolean } = {}): Promise<any> {
   const res = await fetch(url, { headers: { "User-Agent": SEC_UA }, signal: AbortSignal.timeout(SEC_REQUEST_TIMEOUT_MS) });
-  if (res.status === 404) return SEC_NOT_FOUND;
-  if (!res.ok) throw new Error(`SEC ${res.status} for ${url}`);
+  const verdict = resolveSecStatus(res.status, opts.notFoundOk === true);
+  if (verdict === "not-found") return SEC_NOT_FOUND;
+  if (verdict === "error") throw new Error(`SEC ${res.status} for ${url}`);
   return res.json();
 }
 
@@ -120,7 +139,8 @@ async function frameOrFailed(concept: string, period: string): Promise<Record<nu
 export interface DatedValue { val: number; start: string; end: string }
 
 async function frame(concept: string, period: string): Promise<Record<number, DatedValue>> {
-  const d = await secGet(`https://data.sec.gov/api/xbrl/frames/us-gaap/${concept}/USD/${period}.json`);
+  // 404 on a FRAME genuinely means "that period is not published yet" — verified against SEC.
+  const d = await secGet(`https://data.sec.gov/api/xbrl/frames/us-gaap/${concept}/USD/${period}.json`, { notFoundOk: true });
   // A 404 on a FRAME means that period is not published — genuinely sparse, which the caller's
   // MIN_FILERS gate already handles. Return empty rather than letting the sentinel leak into data.
   if (d === SEC_NOT_FOUND) return {};
@@ -428,7 +448,8 @@ export function parseConceptUnits(usd: unknown): ConceptFact[] | null {
 async function conceptFacts(cik: number): Promise<ConceptFact[] | null> {
   const padded = String(cik).padStart(10, "0");
   try {
-    const d = await secGet(`https://data.sec.gov/api/xbrl/companyconcept/CIK${padded}/us-gaap/NetIncomeLoss.json`);
+    // 404 here means the filer has never tagged the concept (SPG does this) — a fact about them.
+    const d = await secGet(`https://data.sec.gov/api/xbrl/companyconcept/CIK${padded}/us-gaap/NetIncomeLoss.json`, { notFoundOk: true });
     return parseConceptResponse(d === SEC_NOT_FOUND ? undefined : d?.units?.USD, d === SEC_NOT_FOUND);
   } catch { return null; }   // network, timeout, non-404 HTTP — a fact about US
 }
@@ -497,12 +518,25 @@ async function recoverWithheld(
 }
 
 // Fetch fundamentals from SEC and compute quality scores for the whole tradable universe.
+/** SEC lists ~10,000 filers. Anything near-empty is a broken read, not a small market — and without
+ *  this check ANY future way of producing an empty map scores nobody while looking perfectly healthy.
+ *  Pure so the floor is pinned by a test rather than only by a comment. */
+export const MIN_TICKER_MAP = 1000;
+export function isUsableTickerMap(m: Record<string, number>): boolean {
+  return Object.keys(m).length >= MIN_TICKER_MAP;
+}
+
 export async function fetchQualityFromSEC(): Promise<QualityData> {
+  // No notFoundOk: a 404 here must THROW, so getQualityScores returns null, the real alert fires, and
+  // the book keeps trading momentum-only — the behaviour before the sentinel existed.
   const tickersJson = await secGet("https://www.sec.gov/files/company_tickers.json");
   const tk2cik: Record<string, number> = {};
-  for (const k of Object.keys(tickersJson)) {
+  for (const k of Object.keys(tickersJson ?? {})) {
     const v = tickersJson[k];
     if (v?.ticker && typeof v?.cik_str === "number") tk2cik[v.ticker] = v.cik_str;
+  }
+  if (!isUsableTickerMap(tk2cik)) {
+    throw new Error(`SEC ticker map implausibly small (${Object.keys(tk2cik).length}) — refusing to score an empty universe`);
   }
 
   // Try the most recent fiscal year that has data, newest first, derived from the clock.
@@ -671,6 +705,20 @@ async function redisSetEx(key: string, value: string, ttl: number): Promise<void
 
 // Returns cached quality scores, refreshing from SEC if missing/expired. `force` bypasses the cache.
 // Fail-safe: on any SEC/Redis error returns null so callers can fall back to "no quality filter".
+/**
+ * Is this result fit to persist for CACHE_TTL_SEC? Pure and exported so the invariant is testable.
+ *
+ * Two refusals. `degraded` means some fetch failed rather than returning a real answer — caching that
+ * freezes a transient fault for 8 days, and because WHICH names are withheld depends on how much data
+ * arrived, it would redefine the tradable universe for the whole window. An EMPTY score set means we
+ * scored nobody, which is never a legitimate steady state and is what a broken ticker map looks like.
+ */
+export function shouldCache(data: QualityData): boolean {
+  if (data.degraded) return false;
+  if (Object.keys(data.scores).length === 0) return false;
+  return true;
+}
+
 export async function getQualityScores(force = false): Promise<QualityData | null> {
   try {
     if (!force) {
@@ -682,7 +730,12 @@ export async function getQualityScores(force = false): Promise<QualityData | nul
     // transient-becomes-persistent trap, and here it is worse than usual: which names are withheld
     // depends on how many quarters were retrieved, so one network flake would redefine the tradable
     // universe for the whole TTL. Recompute next run instead.
-    if (data.degraded) {
+    //
+    // The decision is `shouldCache`, a PURE function, because a review mutation-swept this module and
+    // found this `if` could be deleted outright with the whole suite still green — the single
+    // highest-stakes invariant here, unpinned after three rounds. CLAUDE.md requires breaking a guard
+    // and watching the test fail; that is only possible if the guard is reachable from a test.
+    if (!shouldCache(data)) {
       console.warn("QUALITY_DEGRADED_NOT_CACHED", { period: data.period, withheld: data.withheld.length });
     } else {
       await redisSetEx(CACHE_KEY, JSON.stringify(data), CACHE_TTL_SEC).catch(() => {});
