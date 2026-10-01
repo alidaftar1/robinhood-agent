@@ -445,13 +445,89 @@ export function parseConceptUnits(usd: unknown): ConceptFact[] | null {
   }));
 }
 
-async function conceptFacts(cik: number): Promise<ConceptFact[] | null> {
+/**
+ * Net income attributable to the PARENT, derived from a ProfitLoss series.
+ *
+ * WHY THIS EXISTS. conceptFacts asked only for us-gaap:NetIncomeLoss, and roughly a quarter of
+ * utilities and REITs never tag it — they tag ProfitLoss instead. The withheld set was therefore
+ * SECTOR-SHAPED: XLU 24%, XLB 21%, XLRE 19%, XLE 13%, and zero in XLK/XLV/XLP.
+ *
+ * WHY THE OBVIOUS FIX IS WORSE THAN THE BUG. NetIncomeLoss is attributable to the PARENT; ProfitLoss
+ * INCLUDES noncontrolling interests. Substituting one for the other inflates earnings for exactly the
+ * sectors it is meant to rescue — measured live: FCX's NCI is 46.9% of its ProfitLoss and SPG's is
+ * 13.7%, so a drop-in would nearly double Freeport. Fail-OPEN, on the names the bias already
+ * disadvantages, which is the worse direction.
+ *
+ *   parent = ProfitLoss − NCI
+ *
+ * NCI can be NEGATIVE (DOW: −7.3%, a loss attributable to minorities), where subtracting correctly
+ * RAISES parent income. The subtraction handles both signs; special-casing would not.
+ *
+ * WHEN THE SAME-PERIOD NCI IS MISSING the rule is explicit rather than convenient:
+ *   · no NCI fact anywhere → the filer has no minority interests → 0
+ *   · a stale NCI that is IMMATERIAL (<1% of that period's ProfitLoss) → 0 (V's is 0.00)
+ *   · a stale NCI that is MATERIAL → DROP THAT PERIOD. An adjustment we cannot size is not an
+ *     adjustment, and the unadjusted figure would overstate by exactly the amount that matters.
+ *
+ * DROPPING THE PERIOD, NOT THE FILER. The first version returned null for the whole company on any
+ * unsizable period, which withheld Visa — 210 ProfitLoss facts back to 2008, where one ancient
+ * small-value period failed the ratio against the all-time max NCI, despite every recent period
+ * being cleanly adjustable. Dropping is safe because ttmFromFacts requires CONTIGUITY: a missing
+ * period cannot be silently substituted, it just stops the roll or forces an older base.
+ */
+export const NCI_IMMATERIAL_FRACTION = 0.01;
+
+export function adjustForNci(profitLoss: ConceptFact[], nci: ConceptFact[]): ConceptFact[] | null {
+  if (profitLoss.length === 0) return null;
+  const byPeriod = new Map<string, ConceptFact>();
+  for (const n of nci) {
+    if (!n.start || !n.end || !Number.isFinite(n.val)) continue;
+    const k = `${n.start}|${n.end}`;
+    const prev = byPeriod.get(k);
+    if (!prev || n.filed > prev.filed) byPeriod.set(k, n);
+  }
+  // The largest |NCI| the filer has EVER reported — the yardstick for "does this company have
+  // minority interests at all", used only when the matching period is absent.
+  const everMaterial = nci.reduce((m, n) => (Number.isFinite(n.val) ? Math.max(m, Math.abs(n.val)) : m), 0);
+
+  const out: ConceptFact[] = [];
+  for (const pl of profitLoss) {
+    if (!pl.start || !pl.end || !Number.isFinite(pl.val)) continue;
+    const match = byPeriod.get(`${pl.start}|${pl.end}`);
+    if (match) { out.push({ ...pl, val: pl.val - match.val }); continue; }
+    if (everMaterial === 0) { out.push(pl); continue; }
+    const scale = Math.abs(pl.val);
+    if (scale > 0 && everMaterial / scale < NCI_IMMATERIAL_FRACTION) { out.push(pl); continue; }
+    continue;                                      // material but unsized → this PERIOD is unusable
+  }
+  return out.length > 0 ? out : null;
+}
+
+async function conceptFacts(cik: number, concept = "NetIncomeLoss"): Promise<ConceptFact[] | null> {
   const padded = String(cik).padStart(10, "0");
   try {
     // 404 here means the filer has never tagged the concept (SPG does this) — a fact about them.
-    const d = await secGet(`https://data.sec.gov/api/xbrl/companyconcept/CIK${padded}/us-gaap/NetIncomeLoss.json`, { notFoundOk: true });
+    const d = await secGet(`https://data.sec.gov/api/xbrl/companyconcept/CIK${padded}/us-gaap/${concept}.json`, { notFoundOk: true });
     return parseConceptResponse(d === SEC_NOT_FOUND ? undefined : d?.units?.USD, d === SEC_NOT_FOUND);
   } catch { return null; }   // network, timeout, non-404 HTTP — a fact about US
+}
+
+/**
+ * Parent-attributable income facts for one filer, preferring the directly-reported concept and
+ * falling back to the NCI-adjusted derivation. Returns null only when we COULD NOT ASK; an empty
+ * result means we asked and the filer reports nothing usable.
+ */
+async function parentIncomeFacts(cik: number): Promise<ConceptFact[] | null> {
+  const direct = await conceptFacts(cik, "NetIncomeLoss");
+  if (direct === null) return null;
+  if (direct.length > 0) return direct;
+  // Only now pay for the extra two requests, and only for the ~31 filers that need them.
+  const pl = await conceptFacts(cik, "ProfitLoss");
+  if (pl === null) return null;
+  if (pl.length === 0) return [];
+  const nci = await conceptFacts(cik, "NetIncomeLossAttributableToNoncontrollingInterest");
+  if (nci === null) return null;
+  return adjustForNci(pl, nci) ?? [];     // null from the adjuster = material-but-unsized → withhold
 }
 
 /** Hard ceiling on the recovery pass. SEC asks for <10 requests/second, and this runs inside the
@@ -500,7 +576,7 @@ async function recoverWithheld(
     const batchStart = Date.now();
     await Promise.all(targets.slice(i, i + RECOVERY_CONCURRENCY).map(async cik => {
       attempted++;
-      const facts = await conceptFacts(cik);
+      const facts = await parentIncomeFacts(cik);
       // null = could not ASK. That must mark the result degraded so it is never cached, otherwise a
       // slow SEC morning silently makes a slice of the universe unbuyable for the full 8-day TTL.
       // An EMPTY array is a different thing — the company reports no such concept, which is a stable
