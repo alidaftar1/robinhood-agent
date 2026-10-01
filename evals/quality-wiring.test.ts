@@ -187,3 +187,72 @@ describe("a degraded result is never WRITTEN to the cache", () => {
     expect(data!.degraded).toBe(true);
   });
 });
+
+// ── The ladder must gate on a USABLE WINDOW, not on fact COUNT ────────────────────────────────────
+// The first version short-circuited on `direct.length > 0`, so a filer with a handful of UNUSABLE
+// NetIncomeLoss facts never reached the ProfitLoss fallback — which is why the sector-bias fix barely
+// moved the numbers on its first attempt. Measured live: FCX has 11 such facts whose newest annual is
+// a DEF 14A (correctly rejected by the form allowlist) and AEP has 67 whose newest 10-K annual is from
+// 2013 (4,657 days stale). Both derive cleanly from ProfitLoss − NCI once the ladder is reached.
+describe("a filer with unusable NetIncomeLoss facts still reaches the ProfitLoss ladder", () => {
+  const annual = (val: number, year: number, form: string) => ({
+    start: `${year}-01-01`, end: `${year}-12-31`, val, filed: `${year + 1}-02-01`, form,
+  });
+
+  /** SEC stub: NetIncomeLoss present but unusable; ProfitLoss + NCI healthy and recent. */
+  const ladderStub = (url: string) => {
+    if (url.includes("company_tickers.json")) return json(tickerMap());
+    if (url.includes("/NetIncomeLoss.json")) {
+      // Present, plural — and all unusable: one ancient 10-K, one recent PROXY.
+      return json({ units: { USD: [annual(500, 2013, "10-K"), annual(900, 2025, "DEF 14A")] } });
+    }
+    if (url.includes("/ProfitLoss.json")) {
+      return json({ units: { USD: [annual(4_150_000_000, 2025, "10-K")] } });
+    }
+    if (url.includes("NoncontrollingInterest")) {
+      return json({ units: { USD: [annual(1_950_000_000, 2025, "10-K")] } });   // 47% NCI, FCX-shaped
+    }
+    if (url.includes("companyconcept")) return json({ units: { USD: [] } });
+    return json(frameFor(url));
+  };
+
+  /**
+   * Frames must be POPULATED (or the MIN_FILERS gate rejects the period and the function throws
+   * before recovery is ever reached — my first fixture did exactly that). So: income frames cover
+   * CIKs 100-700, which clears the floor but EXCLUDES AAPL's cik 1, while the balance-sheet instants
+   * cover 1-600 and include it. AAPL therefore has Assets but no income → a recovery candidate.
+   */
+  const framesExcludingAapl = (url: string) => {
+    const income = url.includes("/NetIncomeLoss/USD/CY");
+    const base = income ? 100 : 1;
+    const body = frameFor(url, 600);
+    body.data = body.data.map((r: any, i: number) => ({ ...r, cik: base + i }));
+    return json(body);
+  };
+
+  test("the derived series is used, and the NCI is subtracted rather than swallowed", async () => {
+    stub((url) => {
+      if (/\/USD\/CY/.test(url)) return framesExcludingAapl(url);
+      return ladderStub(url);
+    });
+    const d = await fetchQualityFromSEC();
+    // AAPL is the one universe symbol in the stubbed ticker map, and it is reachable ONLY via the
+    // recovery ladder here. If the ladder had been skipped there would be no score at all; if NCI
+    // were ignored the roa would be ~2x. The ratio pins both.
+    expect(d.scores["AAPL"]).toBeDefined();
+    const roa = d.scores["AAPL"].roa;
+    expect(roa).toBeCloseTo(2.2, 1);              // (4.15 − 1.95) / 1.0 assets
+    expect(roa).not.toBeCloseTo(4.15, 1);         // the un-adjusted, fail-open value
+  });
+
+  test("when NEITHER source yields a window the filer is withheld, not invented", async () => {
+    stub((url) => {
+      if (/\/USD\/CY/.test(url)) return framesExcludingAapl(url);
+      if (url.includes("/ProfitLoss.json")) return json({ units: { USD: [annual(100, 2013, "10-K")] } });  // stale
+      return ladderStub(url);
+    });
+    const d = await fetchQualityFromSEC();
+    expect(d.scores["AAPL"]).toBeUndefined();        // withheld, not invented from a stale series
+    expect(d.withheld).toContain("AAPL");
+  });
+});

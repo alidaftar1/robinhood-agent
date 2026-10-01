@@ -517,17 +517,27 @@ async function conceptFacts(cik: number, concept = "NetIncomeLoss"): Promise<Con
  * falling back to the NCI-adjusted derivation. Returns null only when we COULD NOT ASK; an empty
  * result means we asked and the filer reports nothing usable.
  */
-async function parentIncomeFacts(cik: number): Promise<ConceptFact[] | null> {
+async function parentIncomeFacts(cik: number, asOf: string): Promise<ConceptFact[] | null> {
   const direct = await conceptFacts(cik, "NetIncomeLoss");
   if (direct === null) return null;
-  if (direct.length > 0) return direct;
-  // Only now pay for the extra two requests, and only for the ~31 filers that need them.
+  // THE TEST IS "DOES THIS YIELD A USABLE WINDOW", NOT "ARE THERE ANY FACTS". The first version
+  // short-circuited on `direct.length > 0`, so a filer with a handful of unusable NetIncomeLoss facts
+  // never reached the ProfitLoss ladder at all — which is why the sector-bias fix barely moved the
+  // numbers. Measured: FCX has 11 such facts whose newest annual is a DEF 14A (correctly rejected by
+  // the form allowlist), and AEP has 67 whose newest 10-K annual is from 2013 (4,657 days old,
+  // correctly rejected by MAX_WINDOW_AGE_DAYS). Both then derived cleanly from ProfitLoss − NCI.
+  if (direct.length > 0 && ttmFromFacts(direct, asOf)) return direct;
+  // Only now pay for the extra two requests, and only for the filers that need them.
   const pl = await conceptFacts(cik, "ProfitLoss");
   if (pl === null) return null;
-  if (pl.length === 0) return [];
+  if (pl.length === 0) return direct;     // nothing better available; let the caller withhold
   const nci = await conceptFacts(cik, "NetIncomeLossAttributableToNoncontrollingInterest");
   if (nci === null) return null;
-  return adjustForNci(pl, nci) ?? [];     // null from the adjuster = material-but-unsized → withhold
+  const derived = adjustForNci(pl, nci);
+  // Prefer the DERIVED series only if it actually produces a window. Otherwise hand back `direct` so
+  // the outcome is unchanged rather than worse — the ladder must never lose ground.
+  if (derived && ttmFromFacts(derived, asOf)) return derived;
+  return direct;
 }
 
 /** Hard ceiling on the recovery pass. SEC asks for <10 requests/second, and this runs inside the
@@ -576,7 +586,7 @@ async function recoverWithheld(
     const batchStart = Date.now();
     await Promise.all(targets.slice(i, i + RECOVERY_CONCURRENCY).map(async cik => {
       attempted++;
-      const facts = await parentIncomeFacts(cik);
+      const facts = await parentIncomeFacts(cik, asOf);
       // null = could not ASK. That must mark the result degraded so it is never cached, otherwise a
       // slow SEC morning silently makes a slice of the universe unbuyable for the full 8-day TTL.
       // An EMPTY array is a different thing — the company reports no such concept, which is a stable
