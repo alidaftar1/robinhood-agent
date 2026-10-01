@@ -178,7 +178,7 @@ describe("the per-company fail-safe", () => {
 // for it, so the frames path withheld MSFT — excluding it for an accounting-calendar reason rather
 // than anything to do with quality. Its own 10-K covers 2025-07-01 → 2026-06-30 and is three months
 // old. These use MSFT's REAL reported facts, taken from the live SEC API.
-import { ttmFromFacts, parseConceptUnits, MAX_WINDOW_AGE_DAYS, type ConceptFact } from "@/lib/quality";
+import { ttmFromFacts, parseConceptUnits, parseConceptResponse, MAX_WINDOW_AGE_DAYS, type ConceptFact } from "@/lib/quality";
 
 const f = (start: string, end: string, val: number, filed: string): ConceptFact => ({ start, end, val, filed });
 
@@ -274,16 +274,25 @@ describe("ttmFromFacts recovers off-calendar filers", () => {
 // Treating genuinely-EMPTY as a failure marks every run degraded, so nothing is ever cached and the
 // full ~130-request sweep repeats on every trade run forever. A comment was not enough; this is a test.
 describe("parseConceptUnits distinguishes could-not-ask from genuinely-empty", () => {
-  test("a 200 with units:{} is EMPTY, not a failure — those companies really report nothing", () => {
-    // Confirmed real for CDNS, CTSH, ENPH, NXPI.
+  // SHAPES MEASURED AGAINST LIVE SEC on 2026-09-30, not assumed. The previous version of this suite
+  // asserted `parseConceptUnits({}) === null` — and `{}` is literally V's live payload, so the test
+  // LOCKED IN a bug that made every healthy run report degraded and disabled the cache entirely.
+  // An assertion is only as good as the observation behind it.
+  test("units.USD present as an EMPTY OBJECT is genuinely empty — V, VFC and CDNS really do this", () => {
+    expect(parseConceptUnits({})).toEqual([]);
+  });
+
+  test("an absent units.USD key is also genuinely empty", () => {
     expect(parseConceptUnits(undefined)).toEqual([]);
     expect(parseConceptUnits(null)).toEqual([]);
   });
 
-  test("a payload of the wrong SHAPE is a FAILURE, never an empty company", () => {
-    expect(parseConceptUnits({})).toBeNull();
-    expect(parseConceptUnits("nope")).toBeNull();
-    expect(parseConceptUnits(42)).toBeNull();
+  test("a scalar payload is still treated as nothing-reported, never as a transient failure", () => {
+    // Reserving null strictly for network/timeout/non-404 means no SHAPE can mark a run degraded.
+    // The cost of being wrong here is one unbuyable name; the cost of the other direction was the
+    // whole cache.
+    expect(parseConceptUnits("nope")).toEqual([]);
+    expect(parseConceptUnits(42)).toEqual([]);
   });
 
   test("a real array parses, and malformed rows degrade to unusable rather than throwing", () => {
@@ -303,5 +312,124 @@ describe("parseConceptUnits distinguishes could-not-ask from genuinely-empty", (
   test("a NaN-valued row cannot reach a TTM figure", () => {
     const facts = parseConceptUnits([{ start: "2025-01-01", end: "2025-12-31", val: null, filed: "2026-02-01" }])!;
     expect(ttmFromFacts(facts, "2026-06-01")).toBeNull();
+  });
+});
+
+// ── BOUNDARY constraints on the contiguity window ────────────────────────────────────────────────
+// Review 3 mutation-tested the shipped suite and found the guard's EXISTENCE was tested but its
+// NUMBERS were not: gapMax anywhere in 4..91 passed (including 80 — an 80-day hole), and gapMin
+// anywhere in -182..+1 passed (including -180 — a six-month OVERLAP, which is the exact GIS/STZ
+// double-count this guard exists to stop). There were no fixtures between +5 and +89, or between
+// -2 and -89. CLAUDE.md requires breaking a guard and seeing the test fail; for the boundaries that
+// was unmet. These pin them.
+describe("the contiguity window is pinned, not merely present", () => {
+  const C = 320193;
+  const dvv = (val: number, start: string, end: string) => ({ val, start, end });
+  const annual = { [C]: dvv(100, "2025-01-01", "2025-12-31") };
+  const prior = { [C]: dvv(20, "2025-01-01", "2025-03-31") };
+  /** A quarter starting `gap` days after the annual ends. */
+  const at = (gap: number) => {
+    const start = new Date(Date.parse("2025-12-31T00:00:00Z") + gap * 86_400_000).toISOString().slice(0, 10);
+    const end = new Date(Date.parse(start + "T00:00:00Z") + 90 * 86_400_000).toISOString().slice(0, 10);
+    return { [C]: dvv(30, start, end) };
+  };
+
+  test("accepts the real calendar-filer gap of +1 and the 53-week spread up to +5", () => {
+    for (const g of [0, 1, 2, 3, 4, 5]) {
+      const r = combineTtm(annual, [at(g)], [prior]);
+      expect(r.ni[C]).toBe(110);
+      expect(r.misalignedCount).toBe(0);
+    }
+  });
+
+  test("REJECTS +6, so the upper bound cannot be widened toward a real hole", () => {
+    // The smallest genuine hole measured live is 89 days, but a test that passes at gapMax=80 does
+    // not constrain anything. +6 must fail for the bound to mean +5.
+    for (const g of [6, 10, 45, 89, 92]) {
+      const r = combineTtm(annual, [at(g)], [prior]);
+      expect(r.ni[C]).toBeUndefined();
+      expect(r.misalignedCount).toBe(1);
+    }
+  });
+
+  test("REJECTS -3 and beyond, so overlap cannot creep back in", () => {
+    // -89 and -188 were GIS and STZ live: the added quarter overlapped the annual and double-counted.
+    for (const g of [-3, -10, -89, -188]) {
+      const r = combineTtm(annual, [at(g)], [prior]);
+      expect(r.ni[C]).toBeUndefined();
+      expect(r.misalignedCount).toBe(1);
+    }
+  });
+
+  test("tolerates -1 and -2 only — the documented slack, and no more", () => {
+    for (const g of [-1, -2]) expect(combineTtm(annual, [at(g)], [prior]).ni[C]).toBe(110);
+  });
+});
+
+// Review 3 also found QTR_MAX = 9999 passed every test, i.e. the duration filter in ttmFromFacts was
+// unconstrained, and that the "YTD facts are excluded" test was vacuous (it compared 133.75 against
+// 199.95, which almost any value satisfies).
+describe("ttmFromFacts duration bands are pinned", () => {
+  const g = (start: string, end: string, val: number, filed: string) => ({ start, end, val, filed });
+
+  test("a 183-day YTD fact is NOT treated as a quarter — asserted by VALUE, not by inequality", () => {
+    // annual 100 (ends 2025-12-31) + a real 91d quarter 30, netting a prior 91d quarter 20 → 110.
+    // A 183d YTD fact of 999 sits in the data and must be ignored entirely; if the duration band let
+    // it through, the result would be a specific wrong number, so assert the exact right one.
+    const facts = [
+      g("2025-01-01", "2025-12-31", 100, "2026-02-01"),
+      g("2026-01-01", "2026-03-31", 30, "2026-05-01"),
+      g("2025-01-01", "2025-03-31", 20, "2025-05-01"),
+      g("2026-01-01", "2026-06-30", 999, "2026-08-01"),   // YTD — must be invisible
+    ];
+    const r = ttmFromFacts(facts, "2026-09-01")!;
+    expect(r.val).toBe(110);
+    expect(r.quartersAdded).toBe(1);
+  });
+
+  test("a 180-day period is rejected as a quarter even when it is the ONLY candidate", () => {
+    const facts = [
+      g("2025-01-01", "2025-12-31", 100, "2026-02-01"),
+      g("2026-01-01", "2026-06-29", 50, "2026-08-01"),    // 179d — outside [80,100]
+      g("2025-01-01", "2025-06-29", 40, "2025-08-01"),
+    ];
+    const r = ttmFromFacts(facts, "2026-09-01")!;
+    expect(r.val).toBe(100);           // annual only; the half-year was not rolled in
+    expect(r.quartersAdded).toBe(0);
+  });
+
+  test("a 500-day period is rejected as an annual", () => {
+    const facts = [g("2025-01-01", "2026-05-15", 100, "2026-06-01")];   // ~500d
+    expect(ttmFromFacts(facts, "2026-09-01")).toBeNull();
+  });
+});
+
+// Two guards review-3's mutation sweep showed were unconstrained after the first fix round:
+// QTR_MIN could drop to 1 and the 404 path could flip to null, both with every test still green.
+describe("the remaining unconstrained guards are pinned", () => {
+  const g = (start: string, end: string, val: number, filed: string) => ({ start, end, val, filed });
+
+  test("a 30-day period is NOT a quarter — pins QTR_MIN, not just QTR_MAX", () => {
+    const facts = [
+      g("2025-01-01", "2025-12-31", 100, "2026-02-01"),
+      g("2026-01-01", "2026-01-31", 7, "2026-03-01"),    // 30d — a month, not a quarter
+      g("2025-01-01", "2025-01-31", 5, "2025-03-01"),
+    ];
+    const r = ttmFromFacts(facts, "2026-09-01")!;
+    expect(r.val).toBe(100);            // the month was not rolled in
+    expect(r.quartersAdded).toBe(0);
+  });
+
+  test("a 404 from SEC is genuinely-empty, NOT could-not-ask", () => {
+    // SPG returns 404 for us-gaap:NetIncomeLoss — it has simply never tagged the concept. Routing
+    // that to null marks the whole run degraded and disables the cache; routing it to [] withholds
+    // just that one name, which is correct and cacheable.
+    expect(parseConceptResponse(undefined, true)).toEqual([]);
+    expect(parseConceptResponse({ nonsense: 1 }, true)).toEqual([]);
+  });
+
+  test("a non-404 response still goes through the shape decision", () => {
+    expect(parseConceptResponse({}, false)).toEqual([]);
+    expect(parseConceptResponse([g("2025-01-01", "2025-12-31", 1, "2026-01-01")], false)!.length).toBe(1);
   });
 });

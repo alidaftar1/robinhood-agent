@@ -94,8 +94,14 @@ const SEC_REQUEST_TIMEOUT_MS = 10_000;
  *  none while becoming several times longer. */
 export const QUALITY_FRAMES_BUDGET_MS = 75_000;
 
+/** 404 from a companyconcept URL means the filer has never tagged that concept — a STABLE fact about
+ *  the company, not a failure to reach SEC. Distinguished so it can be cached rather than poisoning
+ *  the whole run as "could not ask". */
+const SEC_NOT_FOUND = Symbol("sec-404");
+
 async function secGet(url: string): Promise<any> {
   const res = await fetch(url, { headers: { "User-Agent": SEC_UA }, signal: AbortSignal.timeout(SEC_REQUEST_TIMEOUT_MS) });
+  if (res.status === 404) return SEC_NOT_FOUND;
   if (!res.ok) throw new Error(`SEC ${res.status} for ${url}`);
   return res.json();
 }
@@ -115,6 +121,9 @@ export interface DatedValue { val: number; start: string; end: string }
 
 async function frame(concept: string, period: string): Promise<Record<number, DatedValue>> {
   const d = await secGet(`https://data.sec.gov/api/xbrl/frames/us-gaap/${concept}/USD/${period}.json`);
+  // A 404 on a FRAME means that period is not published — genuinely sparse, which the caller's
+  // MIN_FILERS gate already handles. Return empty rather than letting the sentinel leak into data.
+  if (d === SEC_NOT_FOUND) return {};
   const out: Record<number, DatedValue> = {};
   for (const row of (d?.data ?? [])) {
     if (typeof row?.val !== "number") continue;
@@ -357,17 +366,29 @@ export function combineTtm(
  * repeats on every trade run forever.
  */
 /**
- * The shape decision, split out so it can be TESTED. null = could not establish; [] = established
- * that there is nothing. Exported because I have now collapsed these two three times in one day and
- * a comment has demonstrably not been enough.
+ * The shape decision, split out so it can be TESTED. null = could not establish (a fact about US);
+ * [] = established that there is nothing (a fact about the COMPANY, and therefore cacheable).
+ * Exported because I collapsed these two three times in one day and a comment was not enough.
+ *
+ * MEASURED SHAPES, checked directly against live SEC on 2026-09-30 rather than assumed — an earlier
+ * version of this comment asserted a shape I had not verified and got the discrimination BACKWARDS,
+ * which made every healthy run report `degraded` and silently disabled the entire cache:
+ *   · V, VFC, CDNS → HTTP 200 with `units.USD` PRESENT as an empty OBJECT `{}`
+ *   · SPG          → HTTP 404 (never tags us-gaap:NetIncomeLoss)
+ * Both are stable properties of those filers. Neither is a failure.
  */
+export function parseConceptResponse(usd: unknown, notFound: boolean): ConceptFact[] | null {
+  // 404 = this filer has never tagged the concept. A stable fact about the company, so [] (and
+  // therefore cacheable), NOT null. SPG does this live for us-gaap:NetIncomeLoss.
+  if (notFound) return [];
+  return parseConceptUnits(usd);
+}
+
 export function parseConceptUnits(usd: unknown): ConceptFact[] | null {
-  // Absent key: SEC returned 200 with `units: {}`. Confirmed genuine for CDNS, CTSH, ENPH, NXPI —
-  // those companies really do report no NetIncomeLoss. Cacheable.
+  // Absent key, or present-but-not-an-array (the live `{}` case): the filer reports nothing under
+  // this concept. That is an ANSWER, and caching it is correct.
   if (usd == null) return [];
-  // Present but not an array: the payload is not the shape we believe, which is a failure about US,
-  // not a fact about the company. Never cache it.
-  if (!Array.isArray(usd)) return null;
+  if (!Array.isArray(usd)) return [];
   return usd.map((f: any) => ({
     start: typeof f?.start === "string" ? f.start : "",
     end: typeof f?.end === "string" ? f.end : "",
@@ -380,8 +401,8 @@ async function conceptFacts(cik: number): Promise<ConceptFact[] | null> {
   const padded = String(cik).padStart(10, "0");
   try {
     const d = await secGet(`https://data.sec.gov/api/xbrl/companyconcept/CIK${padded}/us-gaap/NetIncomeLoss.json`);
-    return parseConceptUnits(d?.units?.USD);
-  } catch { return null; }
+    return parseConceptResponse(d === SEC_NOT_FOUND ? undefined : d?.units?.USD, d === SEC_NOT_FOUND);
+  } catch { return null; }   // network, timeout, non-404 HTTP — a fact about US
 }
 
 /** Hard ceiling on the recovery pass. SEC asks for <10 requests/second, and this runs inside the
@@ -470,6 +491,12 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
     try {
       const inc = await buildIncomeFrames(A);
       if (!inc) continue;
+      // Hoisted ABOVE the population gate on purpose. The previous version assigned `degraded` only
+      // inside the success branch below, so an annual-frame FETCH FAILURE — which returns ni:{} and
+      // therefore fails that gate — fell through to the prior year with degraded still FALSE and got
+      // cached for 8 days on a window ~9 months staler than available. The fix was inert: it moved
+      // the throw into a return value that the caller discarded.
+      if (inc.degraded) degraded = true;
       // BOTH instants, newer preferred PER NAME.
       //
       // Moving the balance sheet from CY{A}Q4I to the newer CY{A+1}Q{k}I to match the TTM window was
@@ -498,7 +525,7 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
       // the whole universe (every name hits a==null) → empty eligible set. Fall back to the prior year.
       if (Object.keys(e).length > MIN_FILERS && Object.keys(a).length > MIN_FILERS && Object.keys(inc.ni).length > MIN_FILERS) {
         eq = e; ast = a; lia = l; ni = inc.ni; usedPeriod = inc.label;
-        degraded = inc.degraded || anyInstantFailed;
+        degraded = degraded || inc.degraded || anyInstantFailed;
         ttmFromFrames = inc.ttmCount;
         console.log("QUALITY_PERIOD", {
           income: inc.label, balanceSheet: `${inc.instant} (falling back per name to ${older})`,
