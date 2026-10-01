@@ -83,7 +83,7 @@ export interface QualityData {
   /** True when a FETCH failed rather than a frame being genuinely unpublished. A degraded result is
    *  never cached: "we could not ask" must not be frozen for a TTL as "SEC has not published". */
   degraded: boolean;
-  basis: { ttmFromFrames: number; recoveredPerCompany: number; withheld: number };
+  basis: { ttmFromFrames: number; recoveredPerCompany: number; withheld: number; withheldNoCik: number };
 }
 
 /** Per-request ceiling. Was 25s, which stacked: ~11 sequential waits put the worst case at 275s
@@ -160,7 +160,30 @@ export interface ConceptFact {
   end: string;     // period end
   val: number;
   filed: string;   // when this figure became public
+  form: string;    // the filing it came from — see FINANCIAL_STATEMENT_FORMS
 }
+
+/**
+ * Only forms that carry audited/reviewed FINANCIAL STATEMENTS are usable.
+ *
+ * A proxy statement (DEF 14A) is filed AFTER the 10-K and restates the same figures — frequently
+ * SCALED, in millions or thousands, because it is prose for shareholders rather than XBRL financial
+ * data. Keeping "the latest filed value" therefore let proxies override annual reports. Verified on
+ * FedEx: the SAME period 2025-06-01 → 2026-05-31 appears as 10-K `4433000000` (filed 2026-07-20) and
+ * DEF 14A `4433` (filed 2026-08-17). The proxy won, and FDX's net income resolved to $4,433 — a
+ * factor of a million out. 39 of 131 recovery candidates were anchored on a proxy fact; FDX, MDT and
+ * ED were scale-corrupted.
+ *
+ * The direction was understatement, so those names were wrongly EXCLUDED from buying, which is the
+ * safe side of the buy decision. But they were still SCORED, which makes them "measured and failed"
+ * rather than quality-unknown — so a HELD one drops out of `retained`, reads as "fell off the
+ * shortlist", and lib/sell-rail accepts that as a code-verifiable exit. A units error could
+ * authorise a liquidation.
+ */
+export const FINANCIAL_STATEMENT_FORMS = new Set([
+  "10-K", "10-K/A", "10-KT", "10-Q", "10-Q/A", "10-QT",
+  "20-F", "20-F/A", "40-F", "40-F/A",
+]);
 
 /** Days between two YYYY-MM-DD dates; NaN when either is unparseable. */
 const dayspan = (a: string, b: string) => (Date.parse(b) - Date.parse(a)) / 86_400_000;
@@ -196,6 +219,10 @@ export function ttmFromFacts(facts: ConceptFact[], asOf: string): { val: number;
   for (const f of facts) {
     if (!f.start || !f.end || typeof f.val !== "number" || !Number.isFinite(f.val)) continue;
     if (f.end > asOf) continue;                       // not yet a closed period as of asOf
+    // Proxies and other non-financial-statement forms are DROPPED, not merely out-ranked. A period
+    // reported only by a proxy is not usable: the scale cannot be trusted, and a silently 10^6-wrong
+    // figure is worse than withholding the name. See FINANCIAL_STATEMENT_FORMS.
+    if (!FINANCIAL_STATEMENT_FORMS.has(f.form)) continue;
     const k = `${f.start}|${f.end}`;
     const prev = byPeriod.get(k);
     if (!prev || f.filed > prev.filed) byPeriod.set(k, f);
@@ -394,6 +421,7 @@ export function parseConceptUnits(usd: unknown): ConceptFact[] | null {
     end: typeof f?.end === "string" ? f.end : "",
     val: typeof f?.val === "number" ? f.val : NaN,
     filed: typeof f?.filed === "string" ? f.filed : "",
+    form: typeof f?.form === "string" ? f.form : "",
   }));
 }
 
@@ -598,10 +626,28 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
   // Universe names we could NOT establish quality for. Reported so the caller can keep them out of
   // the BUY allowlist WITHOUT making a held one look like it fell off the shortlist.
   const withheld = Object.keys(STOCK_SECTOR).filter(sym => scores[sym] == null);
+  // SPLIT THE REPORTING, because these are different problems wearing the same symptom. A name with
+  // no CIK in SEC's ticker file is not "unmeasurable" — it has LEFT the market (ANSS acquired by
+  // Synopsys, CDAY renamed Dayforce, JNPR acquired by HPE, IPG merged into Omnicom), and its presence
+  // means the hardcoded STOCK_SECTOR universe is stale. Lumping it in with genuine data gaps hides
+  // that and inflates the withheld count. Both still go into `withheld` — a dead ticker cannot be
+  // held, so there is no behaviour to change, and keeping it there preserves the safe direction.
+  const noCik = withheld.filter(sym => tk2cik[sym] == null);
+  if (noCik.length > 0) {
+    console.log("QUALITY_STALE_UNIVERSE", {
+      count: noCik.length, symbols: noCik.slice(0, 30),
+      note: "no CIK in SEC's ticker file — delisted/renamed/acquired, not a data gap. STOCK_SECTOR needs pruning.",
+    });
+  }
   return {
     scores, median, period: usedPeriod, asOf: new Date().toISOString().slice(0, 10),
     withheld, degraded,
-    basis: { ttmFromFrames, recoveredPerCompany, withheld: withheld.length },
+    basis: {
+      ttmFromFrames, recoveredPerCompany,
+      withheld: withheld.length,
+      // Of those, how many are simply gone from the market rather than unmeasurable.
+      withheldNoCik: noCik.length,
+    },
   };
 }
 

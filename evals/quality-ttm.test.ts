@@ -180,7 +180,8 @@ describe("the per-company fail-safe", () => {
 // old. These use MSFT's REAL reported facts, taken from the live SEC API.
 import { ttmFromFacts, parseConceptUnits, parseConceptResponse, MAX_WINDOW_AGE_DAYS, type ConceptFact } from "@/lib/quality";
 
-const f = (start: string, end: string, val: number, filed: string): ConceptFact => ({ start, end, val, filed });
+const f = (start: string, end: string, val: number, filed: string, form = "10-K"): ConceptFact =>
+  ({ start, end, val, filed, form });
 
 // Abridged from data.sec.gov companyconcept CIK0000789019 NetIncomeLoss, values in $B.
 const MSFT: ConceptFact[] = [
@@ -370,7 +371,7 @@ describe("the contiguity window is pinned, not merely present", () => {
 // unconstrained, and that the "YTD facts are excluded" test was vacuous (it compared 133.75 against
 // 199.95, which almost any value satisfies).
 describe("ttmFromFacts duration bands are pinned", () => {
-  const g = (start: string, end: string, val: number, filed: string) => ({ start, end, val, filed });
+  const g = (start: string, end: string, val: number, filed: string, form = "10-K") => ({ start, end, val, filed, form });
 
   test("a 183-day YTD fact is NOT treated as a quarter — asserted by VALUE, not by inequality", () => {
     // annual 100 (ends 2025-12-31) + a real 91d quarter 30, netting a prior 91d quarter 20 → 110.
@@ -407,7 +408,7 @@ describe("ttmFromFacts duration bands are pinned", () => {
 // Two guards review-3's mutation sweep showed were unconstrained after the first fix round:
 // QTR_MIN could drop to 1 and the 404 path could flip to null, both with every test still green.
 describe("the remaining unconstrained guards are pinned", () => {
-  const g = (start: string, end: string, val: number, filed: string) => ({ start, end, val, filed });
+  const g = (start: string, end: string, val: number, filed: string, form = "10-K") => ({ start, end, val, filed, form });
 
   test("a 30-day period is NOT a quarter — pins QTR_MIN, not just QTR_MAX", () => {
     const facts = [
@@ -431,5 +432,68 @@ describe("the remaining unconstrained guards are pinned", () => {
   test("a non-404 response still goes through the shape decision", () => {
     expect(parseConceptResponse({}, false)).toEqual([]);
     expect(parseConceptResponse([g("2025-01-01", "2025-12-31", 1, "2026-01-01")], false)!.length).toBe(1);
+  });
+});
+
+// ── Proxy statements must never override the financial statements ────────────────────────────────
+// Verified on FedEx: the SAME period 2025-06-01 → 2026-05-31 appears as 10-K `4433000000` (filed
+// 2026-07-20) and DEF 14A `4433` (filed 2026-08-17). Proxies restate figures in millions because they
+// are prose for shareholders, and they are filed LATER — so "keep the latest filed value" picked the
+// proxy and FDX's net income resolved to $4,433, a factor of a million out. 39 of 131 recovery
+// candidates were anchored on a proxy fact.
+//
+// Why that was dangerous rather than merely wrong: understatement wrongly EXCLUDES from buying (the
+// safe side), but the name is still SCORED — so it is "measured and failed", not quality-unknown, and
+// a HELD one drops out of `retained`, reads as "fell off the shortlist", and lib/sell-rail accepts
+// that as a code-verifiable exit. A units error could authorise a liquidation.
+describe("non-financial-statement forms are dropped", () => {
+  const ff = (start: string, end: string, val: number, filed: string, form: string): ConceptFact =>
+    ({ start, end, val, filed, form });
+
+  test("THE FDX CASE: a later DEF 14A does not override the 10-K for the same period", () => {
+    const facts = [
+      ff("2025-06-01", "2026-05-31", 4_433_000_000, "2026-07-20", "10-K"),
+      ff("2025-06-01", "2026-05-31", 4_433, "2026-08-17", "DEF 14A"),     // filed LATER, scaled
+    ];
+    const r = ttmFromFacts(facts, "2026-09-30")!;
+    expect(r.val).toBe(4_433_000_000);
+    expect(r.val).not.toBe(4_433);
+  });
+
+  test("a period reported ONLY by a proxy is unusable — withheld, not scaled-guessed", () => {
+    // Trusting it would mean publishing a figure whose units we cannot verify.
+    const facts = [ff("2025-06-01", "2026-05-31", 4_433, "2026-08-17", "DEF 14A")];
+    expect(ttmFromFacts(facts, "2026-09-30")).toBeNull();
+  });
+
+  test("8-K, S-1 and ARS are dropped too — the allowlist is forms, not a DEF 14A special case", () => {
+    for (const form of ["8-K", "S-1", "ARS", "DEFA14A", ""]) {
+      expect(ttmFromFacts([ff("2025-01-01", "2025-12-31", 100, "2026-02-01", form)], "2026-06-01")).toBeNull();
+    }
+  });
+
+  test("the real statement forms all pass, including foreign filers and amendments", () => {
+    for (const form of ["10-K", "10-K/A", "10-Q", "20-F", "40-F", "10-KT"]) {
+      const r = ttmFromFacts([ff("2025-01-01", "2025-12-31", 100, "2026-02-01", form)], "2026-06-01");
+      expect(r?.val).toBe(100);
+    }
+  });
+
+  test("a 10-K/A amendment still wins over an earlier 10-K — restatements are legitimate", () => {
+    const facts = [
+      ff("2025-01-01", "2025-12-31", 100, "2026-02-01", "10-K"),
+      ff("2025-01-01", "2025-12-31", 120, "2026-05-01", "10-K/A"),
+    ];
+    expect(ttmFromFacts(facts, "2026-09-01")!.val).toBe(120);
+  });
+
+  test("a proxy does not block the roll-forward either — quarters are form-filtered too", () => {
+    const facts = [
+      ff("2025-01-01", "2025-12-31", 100, "2026-02-01", "10-K"),
+      ff("2026-01-01", "2026-03-31", 30, "2026-05-01", "10-Q"),
+      ff("2026-01-01", "2026-03-31", 30_000_000, "2026-06-01", "DEF 14A"),   // same quarter, scaled up
+      ff("2025-01-01", "2025-03-31", 20, "2025-05-01", "10-Q"),
+    ];
+    expect(ttmFromFacts(facts, "2026-09-01")!.val).toBe(110);
   });
 });
