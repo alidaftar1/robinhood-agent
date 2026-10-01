@@ -67,11 +67,18 @@ describe("a quality-UNKNOWN held name is retained, never treated as fallen off",
   });
 
   test("retained stays sorted by momentum, and buy is unaffected by the unknown set", () => {
+    // shortlistSize is REQUIRED here. With the default, `buy` absorbs every eligible name and
+    // `retained` comes back EMPTY — which made the original version of this assertion vacuous: a
+    // sort check over zero elements passes no matter what the code does. Caught by inspecting the
+    // actual retained length rather than trusting a green test.
     const eligible = new Set(["AAPL", "NVDA", "JPM", "KO", "DUK"]);
-    const a = buildV1Shortlist(stocks, eligible, { held: new Set(["AAPL", "NVDA"]) });
-    const b = buildV1Shortlist(stocks, eligible, { held: new Set(["AAPL", "NVDA"]), qualityUnknown: new Set(["MSFT"]) });
+    const held = new Set(["MSFT", "NVDA", "JPM", "KO"]);
+    const a = buildV1Shortlist(stocks, eligible, { held, shortlistSize: 1 });
+    const b = buildV1Shortlist(stocks, eligible, { held, shortlistSize: 1, qualityUnknown: new Set(["MSFT"]) });
     expect(b.buy.map(s => s.symbol)).toEqual(a.buy.map(s => s.symbol));
     const moms = b.retained.map(s => s.mom12_1 as number);
+    expect(moms.length).toBeGreaterThan(1);                      // the assertion below must bite
     expect([...moms].sort((x, y) => y - x)).toEqual(moms);
+    expect(b.retained.map(s => s.symbol)).toContain("MSFT");     // the unknown held name is in there
   });
 });
