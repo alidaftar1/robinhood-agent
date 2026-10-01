@@ -28,7 +28,11 @@ import { runBacktest, DEFAULT_BACKTEST } from "../lib/backtest";
 import { LIVE_PROXY } from "../lib/strategy-variant";
 import { parseFundamentalsCsv, buildFundamentalIndex, qualityAsOf } from "../lib/sharadar-quality";
 
-const CACHE = "/Users/ali/.cache/sharadar";
+// NOT hardcoded to one machine. scripts/sharadar-extract.sh already honours SHARADAR_CACHE_DIR and
+// falls back to $HOME, but these runners did not — so on GitHub Actions the extract wrote to
+// /home/runner/.cache/sharadar while the backtest read /Users/ali/..., and died instantly.
+const CACHE = process.env.SHARADAR_CACHE_DIR
+  ?? `${process.env.HOME ?? process.env.USERPROFILE ?? "."}/.cache/sharadar`;
 
 interface Window { key: string; label: string; from: string; to: string; }
 

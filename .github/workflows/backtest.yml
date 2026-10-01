@@ -92,10 +92,15 @@ jobs:
         run: bun run test:unit
 
       - name: Run backtests
+        # pipefail is REQUIRED here. `bun scripts/... | tee` takes tee's exit code, so a script that
+        # died instantly still reported SUCCESS — which is exactly what happened on run #1: the
+        # backtest never ran (hardcoded cache path) and every step showed green.
+        shell: bash
         env:
           TEST: ${{ github.event.inputs.test }}
           QUALITY: ${{ github.event.inputs.quality }}
         run: |
+          set -euo pipefail
           case "$QUALITY" in
             annual) FLAG="" ;;
             ttm)    FLAG="--ttm" ;;
