@@ -882,7 +882,11 @@ export async function getStoredAutopilotConcerns(date: string): Promise<Record<s
 // would themselves be re-escaped.
 export const SUMMARY_EMAIL_LIMIT = 6000;
 
-function escapeHtml(text: string): string {
+// Exported because the summary is NOT the only model-written field interpolated into the email:
+// the skeptical reviewer's title/detail are LLM prose AND the reviewer is fed the run summary
+// (lib/autopilot-review.ts), so the very `<` this neutralizes comes straight back through there and
+// would swallow the rest of the concerns list — a higher-priority section than the summary itself.
+export function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 

@@ -702,6 +702,61 @@ export function resolvePrevClose(
 // Lightweight single-symbol quote (price + 1-day % change). Lets the stop-check
 // detect drops from just the held positions instead of fetching the full universe,
 // so it can run frequently (hourly) without hammering Yahoo.
+/** A daily bar series keyed for "what was the first close available AFTER time T". */
+export interface DatedBars { ts: number[]; closes: (number | null)[] }
+
+/**
+ * The first close STRICTLY AFTER `afterEpochSec`, with the session date it belongs to.
+ *
+ * "Strictly after" is the whole point and is not a rounding detail: a video published at 7pm ET
+ * must be baselined against the NEXT session's close, because that is the first price anyone could
+ * have acted on. Using the publish day's close instead would credit the recommender with a move
+ * that happened BEFORE the recommendation existed — the same look-ahead the per-channel credit fix
+ * exists to remove, reintroduced one layer down. A pre-market video correctly baselines at that
+ * same day's close, since the session had not happened yet.
+ *
+ * The bar timestamp is the session OPEN, and the rule is `t > afterEpochSec` — the first session
+ * that OPENED after the video. This is deliberately CONSERVATIVE at the two boundaries:
+ *   · published exactly AT an open      → that session is skipped, the next one is used
+ *   · published MID-session (after open)→ that session is skipped, the next one is used
+ * In both cases the close was arguably still actionable, so this can under-credit by one session.
+ * That is the safe direction: the entire purpose here is to stop over-crediting, and a baseline one
+ * session late can only ever make a recommender look WORSE, never better. Do not "improve" this to
+ * compare against the session CLOSE without re-reading that trade-off — loosening it reintroduces
+ * look-ahead at exactly the boundary nobody tests by hand.
+ *
+ * Pure, so the boundary is unit-testable without a network call.
+ */
+export function firstCloseAfter(bars: DatedBars, afterEpochSec: number): { date: string; close: number } | null {
+  for (let i = 0; i < bars.ts.length; i++) {
+    const t = bars.ts[i];
+    const c = bars.closes[i];
+    if (t == null || c == null) continue;   // Yahoo holes: skip, never interpolate
+    if (t <= afterEpochSec) continue;
+    return { date: new Date(t * 1000).toISOString().slice(0, 10), close: c };
+  }
+  return null; // no session has closed yet after that moment
+}
+
+/** Daily bars for the last month — enough to baseline anything published inside the lookback. */
+export async function fetchDailyBars(symbol: string): Promise<DatedBars | null> {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const data = await res.json() as {
+      chart?: { result?: Array<{ timestamp?: number[]; indicators?: { quote?: Array<{ close?: (number | null)[] }> } }> };
+    };
+    const r = data?.chart?.result?.[0];
+    const ts = r?.timestamp ?? [];
+    const closes = r?.indicators?.quote?.[0]?.close ?? [];
+    if (!ts.length || ts.length !== closes.length) return null; // misaligned → unusable, don't guess
+    return { ts, closes };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchQuoteLite(symbol: string): Promise<{ price: number; change1d: number } | null> {
   try {
     // range=5d (not 1d) so a real prior daily close exists to fall back to when Yahoo

@@ -3,7 +3,7 @@ import { requireCronAuth } from "@/lib/auth";
 import { parseTradeDecision, isFullExit } from "@/lib/trade-decision";
 import { dashboardPublicUrl, dashboardLoginUrl, mintLoginToken, EMAIL_LOGIN_TOKEN_TTL_SECONDS } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
-import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, formatSummaryForEmail } from "@/lib/run-store";
+import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, formatSummaryForEmail, escapeHtml } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
@@ -602,7 +602,8 @@ export async function GET(request: Request) {
     <ul style="margin:8px 0 0;padding-left:20px">${reviewConcerns
       .map((c) => {
         const tag = c.severity === "high" ? "🔴" : c.severity === "medium" ? "🟠" : "⚪";
-        return `<li><strong>${tag} ${c.title}</strong> — ${c.detail}</li>`;
+        // escaped: both fields are LLM prose that quotes the run summary back (see escapeHtml)
+        return `<li><strong>${tag} ${escapeHtml(c.title)}</strong> — ${escapeHtml(c.detail)}</li>`;
       })
       .join("")}</ul>
   </div>`
@@ -614,7 +615,8 @@ export async function GET(request: Request) {
     <ul style="margin:8px 0 0;padding-left:20px">${reconcileFindings
       .map((f) => {
         const tag = f.severity === "high" ? "🔴" : f.severity === "medium" ? "🟠" : "⚪";
-        return `<li><strong>${tag} ${f.title}</strong> — ${f.detail}</li>`;
+        // deterministic text today, but it interpolates symbols and free-form detail — same rule
+        return `<li><strong>${tag} ${escapeHtml(f.title)}</strong> — ${escapeHtml(f.detail)}</li>`;
       })
       .join("")}</ul>
   </div>`
@@ -641,7 +643,7 @@ export async function GET(request: Request) {
       : `<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
       <tr style="color:#6b7280"><td style="padding:3px 8px">Channel</td><td style="padding:3px 8px;text-align:right">Picks</td><td style="padding:3px 8px;text-align:right">Hit</td><td style="padding:3px 8px;text-align:right">Avg ret</td><td style="padding:3px 8px;text-align:right">vs SPY</td></tr>
       ${agedChannels.slice(0, 8).map((c) =>
-        `<tr><td style="padding:3px 8px">${c.channel}${c.picks < 4 ? ` <span style="color:#9ca3af;font-size:11px">thin</span>` : ""}</td><td style="padding:3px 8px;text-align:right">${c.picks}</td><td style="padding:3px 8px;text-align:right">${c.hitRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;color:${c.avgReturnPct >= 0 ? "#059669" : "#dc2626"}">${c.avgReturnPct >= 0 ? "+" : ""}${c.avgReturnPct.toFixed(1)}%</td><td style="padding:3px 8px;text-align:right;font-weight:bold;color:${c.avgAlphaPct == null ? "#9ca3af" : c.avgAlphaPct >= 0 ? "#059669" : "#dc2626"}">${c.avgAlphaPct != null ? `${c.avgAlphaPct >= 0 ? "+" : ""}${c.avgAlphaPct.toFixed(1)}%` : "—"}</td></tr>`
+        `<tr><td style="padding:3px 8px">${c.channel}${c.picks < 4 ? ` <span style="color:#9ca3af;font-size:11px">thin</span>` : ""}${c.inheritedPicks > 0 ? ` <span style="color:#9ca3af;font-size:11px" title="credited from the ticker's first sighting, not this channel's own first mention">${c.inheritedPicks}/${c.picks} inherited</span>` : ""}${c.alphaPicks < c.picks ? ` <span style="color:#9ca3af;font-size:11px" title="picks with a SPY baseline; the rest are excluded from vs SPY">${c.alphaPicks}/${c.picks} vs-SPY</span>` : ""}</td><td style="padding:3px 8px;text-align:right">${c.picks}</td><td style="padding:3px 8px;text-align:right">${c.hitRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;color:${c.avgReturnPct >= 0 ? "#059669" : "#dc2626"}">${c.avgReturnPct >= 0 ? "+" : ""}${c.avgReturnPct.toFixed(1)}%</td><td style="padding:3px 8px;text-align:right;font-weight:bold;color:${c.avgAlphaPct == null ? "#9ca3af" : c.avgAlphaPct >= 0 ? "#059669" : "#dc2626"}">${c.avgAlphaPct != null ? `${c.avgAlphaPct >= 0 ? "+" : ""}${c.avgAlphaPct.toFixed(1)}%` : "—"}</td></tr>`
       ).join("")}
     </table>
     <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>vs SPY</strong> = average return above/below the S&amp;P over each pick's own window — the real edge, stripped of the market's move (channels are ranked by it). Small, correlated samples — a ranking hint, not a verdict; "thin" = very few picks.</p>`}
