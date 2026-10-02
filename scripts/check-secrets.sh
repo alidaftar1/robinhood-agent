@@ -119,6 +119,24 @@ report "Account number literal"      '[Aa]ccount[sS]?[^0-9]{0,24}[0-9]{8,}'
 # REVIEWED=1 on deploys). Undeclared degradation FAILS. A caller that forgets cannot get a pass.
 MIN_ACCOUNT_ID_LEN=6
 
+# Normalize one account-ID value from any source. Strips a CRLF \r, a trailing inline `# comment`,
+# optional surrounding quotes, and leading/trailing whitespace; then REJECTS (empties) anything not
+# ID-shaped, because a value that cannot match a real account number would let the strongest check
+# "run" while being incapable of finding a leak. A \r or an inline comment is enough to get there,
+# and both are invisible in an editor.
+sanitize_account_id() {
+  local val="$1"
+  val="${val%$'\r'}"
+  val="${val%%[[:space:]]#*}"
+  val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  case "$val" in
+    *[!0-9A-Za-z-]*|"") val="" ;;
+  esac
+  printf '%s' "$val"
+}
+
 # Load from .env.local (untracked; see .gitignore) so the check does not depend on the caller
 # remembering `set -a; source .env.local`. An explicitly exported value always wins.
 ENV_LOCAL=".env.local"
@@ -129,7 +147,7 @@ if [ -f "$ENV_LOCAL" ]; then
     line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${v}=" "$ENV_LOCAL" | tail -1 || true)
     [ -z "$line" ] && continue
     val="${line#*=}"
-    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"   # strip optional quotes
+    val="$(sanitize_account_id "$val")"
     if [ -n "$val" ]; then
       export "$v=$val"
     else
@@ -137,6 +155,22 @@ if [ -f "$ENV_LOCAL" ]; then
     fi
   done
 fi
+
+# Sanitize EVERY source, not just .env.local. The first version of this guard lived inside the
+# branch above, below `[ -n "${!v:-}" ] && continue` — so an already-EXPORTED value skipped it
+# entirely, which is exactly the path the CI callers use (autopilot-automerge.yml,
+# deploy-on-merge.yml pass these as Actions secrets). A stray space, quote or \r there would pass
+# the length check below, be grepped as a pattern that cannot match any real account number, and
+# still print "account IDs value-checked" — the same false confidence, one code path over. The
+# whole point of this gate is that a degraded scan must be distinguishable from a complete one.
+for v in PERSONAL_ACCOUNT_ID AGENTIC_ACCOUNT_ID; do
+  raw="${!v:-}"
+  [ -z "$raw" ] && continue
+  clean="$(sanitize_account_id "$raw")"
+  if [ "$clean" != "$raw" ]; then
+    export "$v=$clean"   # may be empty, which the UNUSABLE check below then refuses on
+  fi
+done
 
 # Unusable = absent, blank, or too short to match anything real. A 1-char value would let the check
 # "run" while being incapable of finding a leak — the same false confidence as skipping it.

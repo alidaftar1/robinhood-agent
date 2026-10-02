@@ -135,7 +135,7 @@ const spy = await loadSpy();
 let fundIndex: ReturnType<typeof buildFundamentalIndex> | null = null;
 if (useQuality) {
   const tickers = new Set(sp500Rows.map(r => r.ticker));
-  const rows = parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fund_all.csv`).text(), { dimension, tickers });
+  const rows = parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fund_all.csv`).text(), { dimension, tickers, basis: qualityBasis });
   fundIndex = buildFundamentalIndex(rows);
   const label = dimension === "ART" ? "as-reported TTM (quarterly refresh)" : "as-reported ANNUAL (yearly refresh)";
   console.log(`Quality: ${rows.length} ${label} filings across ${fundIndex.size} tickers (point-in-time, keyed on filing date).`);

@@ -227,6 +227,40 @@ describe("computeCloseReturns — transfers, trades, and withholding", () => {
     expect(r[0].bookReturn).toBeCloseTo(0.01, 10);
   });
 
+  // The dedupe DIRECTION was untestable before: both fixtures above are byte-identical, so keeping
+  // the earlier or the later copy looked the same. getCloseSnapshots returns newest-first, so the
+  // old code kept the one captured EARLIEST — discarding a correction written by a retry (the
+  // already_captured guard is a read-then-write, not atomic).
+  it("keeps the LATER capture of a duplicate date, so a correction wins", () => {
+    const stale = { ...snap("2026-10-01", 760, 1000, [pos("AAA", 10, 100, 100)]), capturedAt: "2026-10-01T21:10:00.000Z" };
+    const fixed = { ...snap("2026-10-01", 760, 1000, [pos("AAA", 10, 100, 50)]),  capturedAt: "2026-10-01T22:30:00.000Z" };
+    // newest-first, as the store returns them
+    const r = computeCloseReturns([
+      snap("2026-10-02", 760, 1010, [pos("AAA", 10, 100, 101)]),
+      fixed,
+      stale,
+    ], new Map());
+    expect(r).toHaveLength(1);
+    // The corrected baseline must be the one used. With the stale copy (AAA @100, equity 1000)
+    // the next day at @101 is +1%; with the correction (@50, equity 500) the same next day is a
+    // large positive move. Asserting the VALUE pins which copy survived.
+    expect(r[0].bookReturn).not.toBeCloseTo(0.01, 6);
+    expect(r[0].bookReturn!).toBeGreaterThan(0.5);
+  });
+
+  // This test used byte-identical fixtures at first, which made it vacuous in precisely the way
+  // the comment above describes: whichever copy survived, bookReturn was the same, so it could not
+  // fail if the tie-break inverted. The fixtures now DIFFER, so the resolution is pinned.
+  it("resolves a capturedAt tie deterministically to the last-seen copy", () => {
+    const first  = { ...snap("2026-10-01", 760, 1000, [pos("AAA", 10, 100, 100)]), capturedAt: "2026-10-01T21:10:00.000Z" };
+    const second = { ...snap("2026-10-01", 760, 1000, [pos("AAA", 10, 100,  50)]), capturedAt: "2026-10-01T21:10:00.000Z" };
+    const r = computeCloseReturns([first, second, snap("2026-10-02", 760, 1010, [pos("AAA", 10, 100, 101)])], new Map());
+    expect(r).toHaveLength(1);
+    // Tie → the later-encountered copy wins (equity 500 @50), so the next day at @101 is a large
+    // positive move rather than +1%. An inverted tie-break changes this number.
+    expect(r[0].bookReturn!).toBeGreaterThan(0.5);
+  });
+
   it("sorts out-of-order snapshots rather than producing a negative gap", () => {
     const r = computeCloseReturns([
       snap("2026-10-02", 760, 1010, [pos("AAA", 10, 100, 101)]),

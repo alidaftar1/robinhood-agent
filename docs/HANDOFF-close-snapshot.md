@@ -47,8 +47,8 @@ it would and measured the opposite (SPY vol 0.533% on the 10:30 clock vs 0.605% 
 | `lib/close-snapshot.ts` | types, ET clock (`etParts`/`isAfterUsEquityClose`), `validateCloseSnapshot`, `computeCloseReturns`, `summarizeCloseReturns` |
 | `app/api/close-snapshot/route.ts` | the cron; guards + withhold logic; writes observations only |
 | `app/api/close-returns/route.ts` | derives the series on read (nothing persisted) |
-| `evals/close-snapshot.test.ts` | 33 tests, wired into `test:unit` (now 27 files / 497 tests) |
-| `vercel.json` | new cron `/api/close-snapshot` at `10 21 * * 1-5` |
+| `evals/close-snapshot.test.ts` | 35 tests, wired into `test:unit` (suite is now 30 files / 544 tests as of 2026-10-02) |
+| `vercel.json` | **UNCHANGED — no cron was added.** See the CORRECTION at the top; enabling it is a one-line addition, guarded by the config-invariant test |
 | `lib/robinhood-balance.ts` | **moved** `fetchAgenticPositions` here from the trade route |
 | `app/api/trade/route.ts` | now imports that shared function instead of its local copy |
 
@@ -101,7 +101,27 @@ the scheduled time is post-close in January *and* July.
   trade-window off-by-ones, removed gap guard, removed dedupe, unpriceable-as-0%, withheld-as-flat,
   unscaled σ band, removed sort)
 
-## Reconstruction results (2026-10-01, 30 stored dates 08-20 → 10-01)
+## ⚠ Reconstruction results below are STALE — regenerate before quoting them
+
+A review on 2026-10-02 found three defects in `scripts/close-reconstruct.ts` that all corrupt the
+series these numbers came from, so every figure in this section was produced by the buggy script:
+
+1. Same-date runs were collapsed LAST-WINS, and because `/api/runs` returns raw runs newest-first
+   and the sort is stable, the survivor was the OLDEST run — dropping the other run's trades, so an
+   intraday sell's proceeds booked as P&L.
+2. The main-book loop had NO gap guard, so dates withheld for a missing Sharadar close compounded
+   into one oversized "daily" return — inflating `sd(active)` and deflating exactly the Sharpe, IR
+   and t reported here. (The 10:30 loop had a related defect: its SPY leg spanned the gap while the
+   stored return was a single day.)
+3. `repriceAtClose` returned `[]` for a run with no positions snapshot, turning "unknown" into
+   "flat" — which reads the prior day's whole equity book as a loss.
+
+All three are fixed. Re-run `bun --env-file=.env.local scripts/close-reconstruct.ts` and replace
+this section. The QUALITATIVE conclusion is not expected to change — the comparison has no power at
+n≈29 either way, and that argument rests on the standard error, not on the point estimates — but the
+specific numbers should not be quoted until regenerated.
+
+## Reconstruction results (2026-10-01, 30 stored dates 08-20 → 10-01) — SUPERSEDED, see above
 
 All 30 dates reconstructed cleanly — Sharadar had closes for all 24 symbols ever held, and zero
 dates were withheld. Both clocks, 29 paired days:
@@ -148,8 +168,11 @@ statistic quoted without its clock is meaningless at this sample size.
 
 - **Deploy gate not run.** `/code-review` → fix → `bun run check:secrets` → `REVIEWED=1 … deploy --prod`.
 - **Not pushed** (needs approval; remote is currently level at `f52e43c`).
-- **The series starts empty.** First snapshot lands on the next weekday after deploy; the first
-  *return* needs two snapshots, so ~2 trading days before `/api/close-returns` shows anything.
+- **The series is empty and STAYS empty.** No cron writes it (see the CORRECTION at the top), so
+  `/api/close-returns` returns nothing and will keep doing so until the cron is deliberately added.
+  This bullet previously said the first snapshot "lands on the next weekday after deploy", which
+  contradicted that correction. If the cron is ever enabled, the first *return* needs two
+  snapshots, so allow ~2 trading days before the endpoint shows anything.
 - **No dashboard surface yet** — the data is only at `/api/close-returns`. Deliberate: worth seeing
   real values before deciding how to present two parallel series without confusing them.
 - **Not in the 8am email** or `lib/dashboard-reconcile.ts`. A reconciler check comparing the two

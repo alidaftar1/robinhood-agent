@@ -101,7 +101,7 @@ const universe = buildUniverseIndex(sp500Rows);
 let fundIndex: ReturnType<typeof buildFundamentalIndex> | null = null;
 if (useQuality) {
   const tickers = new Set(sp500Rows.map(r => r.ticker));
-  const rows = parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fund_all.csv`).text(), { dimension, tickers });
+  const rows = parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fund_all.csv`).text(), { dimension, tickers, basis: qualityBasis });
   fundIndex = buildFundamentalIndex(rows);
   console.error(`quality: ${rows.length.toLocaleString()} ${dimension} filings / ${fundIndex.size} tickers`);
 }

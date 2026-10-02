@@ -205,3 +205,41 @@ describe("dimension freshness: ARY is stale in Q1 where ART is not", () => {
       .toBe(latestFilingAsOf(art.get("DVN"), "2021-03-01")!.netinc);
   });
 });
+
+describe("parseFundamentalsCsv — the ncfo column is required when it is the basis", () => {
+  // Latent, but the harm is a cash-flow-quality VERDICT that is really an unlabelled momentum-only
+  // run: with basis "ncfo" and no column, every ncfo is null -> empty quality map -> LIVE_PROXY
+  // reads a null median as "momentum only" for every name, while full-period.ts still prints
+  // "Quality: ARY/ncfo".
+  const noNcfo = [
+    "ticker,dimension,date,calendardate,assets,equity,liabilities,netinc",
+    "AAPL,ARY,2020-10-30,2020-09-30,323888000000,65339000000,258549000000,57411000000",
+  ].join("\n");
+
+  test("throws when basis is ncfo and the column is absent", () => {
+    expect(() => parseFundamentalsCsv(noNcfo, { basis: "ncfo" })).toThrow(/"ncfo" column/);
+  });
+
+  test("does NOT throw for the netinc basis, which does not read that column", () => {
+    expect(() => parseFundamentalsCsv(noNcfo, { basis: "netinc" })).not.toThrow();
+    expect(() => parseFundamentalsCsv(noNcfo)).not.toThrow(); // basis omitted = netinc default
+  });
+
+  test("parses ncfo when present and the basis requires it", () => {
+    const withNcfo = [
+      "ticker,dimension,date,calendardate,assets,equity,liabilities,netinc,ncfo",
+      "AAPL,ARY,2020-10-30,2020-09-30,323888000000,65339000000,258549000000,57411000000,80674000000",
+    ].join("\n");
+    const rows = parseFundamentalsCsv(withNcfo, { basis: "ncfo" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ncfo).toBe(80674000000);
+  });
+
+  test("keeps ncfo null rather than 0 when the cell is empty — zero cash flow is a real value", () => {
+    const emptyCell = [
+      "ticker,dimension,date,calendardate,assets,equity,liabilities,netinc,ncfo",
+      "AAPL,ARY,2020-10-30,2020-09-30,323888000000,65339000000,258549000000,57411000000,",
+    ].join("\n");
+    expect(parseFundamentalsCsv(emptyCell, { basis: "ncfo" })[0].ncfo).toBeNull();
+  });
+});

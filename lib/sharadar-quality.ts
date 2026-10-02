@@ -169,7 +169,7 @@ export function qualityAsOf(
 /** Parse the SF1 bulk CSV, keeping ONLY as-reported annual rows. See trap #2. */
 export function parseFundamentalsCsv(
   csv: string,
-  opts: { dimension?: string; tickers?: Set<string> } = {},
+  opts: { dimension?: string; tickers?: Set<string>; basis?: QualityBasis } = {},
 ): FundamentalRow[] {
   const dim = opts.dimension ?? "ARY";
   const lines = csv.split("\n");
@@ -184,6 +184,16 @@ export function parseFundamentalsCsv(
   // the whole point of this module evaporates without an error. Fail loudly instead.
   if ([iTicker, iDim, iDate, iAssets, iEquity, iLiab, iNet].some(i => i < 0)) {
     throw new Error(`SF1 CSV missing required columns; header had: ${header.slice(0, 12).join(",")}…`);
+  }
+  // `ncfo` is required ONLY when it is the basis being measured — and then it is just as required
+  // as netinc. Omitting it from the guard was the same silent-degradation hole the guard exists to
+  // close, one basis over: with basis "ncfo" and no column, every row's ncfo is null, qualityAsOf
+  // returns an EMPTY quality map, LIVE_PROXY reads a null median as "no quality data → momentum
+  // only" for every name, and full-period.ts still prints "Quality: ARY/ncfo". A cash-flow-quality
+  // verdict would then be an unlabelled momentum-only run. The whole-row extract supplies ncfo
+  // today, so this is latent — until someone trims the extract or upstream renames the field.
+  if (opts.basis === "ncfo" && iNcfo < 0) {
+    throw new Error(`SF1 CSV missing the "ncfo" column, which basis "ncfo" measures; header had: ${header.slice(0, 12).join(",")}…`);
   }
   const num = (s: string | undefined) => {
     if (s == null || s === "") return null;

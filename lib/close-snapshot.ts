@@ -173,10 +173,22 @@ export function computeCloseReturns(
     .filter((s) => typeof s.date === "string" && s.date.length === 10)
     .sort((a, b) => a.date.localeCompare(b.date));
   // One snapshot per date; a duplicate write must not create a 0% day between two copies.
+  //
+  // Which duplicate SURVIVES is a real decision, not a formality. getCloseSnapshots returns
+  // newest-first and the sort above is stable, so within a date the old "overwrite with each
+  // subsequent entry" kept the one written EARLIEST — and the `already_captured` guard is a
+  // read-then-write, not atomic, so a retry or a race CAN write a corrected snapshot for a date.
+  // Keeping the earlier one discards the correction. `capturedAt` is stored precisely so this can
+  // be ordered by when it was taken rather than by array position; the later capture wins, with a
+  // missing/equal capturedAt falling back to the previous behaviour instead of throwing.
   const deduped: CloseSnapshot[] = [];
   for (const s of chron) {
-    if (deduped.length > 0 && deduped[deduped.length - 1].date === s.date) deduped[deduped.length - 1] = s;
-    else deduped.push(s);
+    const last = deduped.length > 0 ? deduped[deduped.length - 1] : null;
+    if (last && last.date === s.date) {
+      if (!(last.capturedAt > (s.capturedAt ?? ""))) deduped[deduped.length - 1] = s;
+    } else {
+      deduped.push(s);
+    }
   }
 
   const out: CloseReturn[] = [];

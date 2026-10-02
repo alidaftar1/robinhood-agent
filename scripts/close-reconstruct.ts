@@ -16,13 +16,17 @@
  * tested for the day observed closes are wanted going forward; it is deliberately not scheduled.
  *
  * WHAT IS DERIVED VS OBSERVED. Quantities, cash and trades are OBSERVED (stored per run). Closing
- * prices come from Sharadar. The one assumption is that cash does not move between 10:30 and the
- * close — true on any day no intraday drop-check sold, which is every day in the current history
- * (checked: 0 of 30 dates carry a second run). On a day it is false the error enters only through the
- * denominator, since the P&L itself is position-level.
+ * prices come from Sharadar. The remaining assumption is that cash does not move after the LAST run
+ * of the day — not after 10:30, which is what this said before taking the cash leg from whichever
+ * run supplied the positions (see cashSourceByDate). An intraday drop-check sell is therefore now
+ * handled rather than assumed away: its positions AND its cash are both read from that later run.
+ * What is still assumed away is a cash move after the day's final run, and on such a day the error
+ * enters only through the denominator, since the P&L itself is position-level.
+ * Today this is moot either way — 0 of 30 dates carry a second run — but the merge exists precisely
+ * so that stops being true safely.
  */
-import { computeDailyReturn, computeSleeveReturns, type PositionSnapshot, type TradeSnapshot } from "../lib/run-store";
-import { computeCloseReturns, summarizeCloseReturns, type CloseSnapshot } from "../lib/close-snapshot";
+import { computeDailyReturn, computeSleeveReturns, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, type TradeRun } from "../lib/run-store";
+import { computeCloseReturns, summarizeCloseReturns, MAX_PAIR_GAP_DAYS, type CloseSnapshot } from "../lib/close-snapshot";
 
 const argv = process.argv.slice(2);
 const runsFileArg = argv.indexOf("--runs");
@@ -33,7 +37,10 @@ const pct = (n: number | null | undefined, d = 2) =>
 const num = (n: number | null | undefined, d = 2) =>
   n == null || !Number.isFinite(n) ? "—" : n.toFixed(d);
 
+// The STORED shape is TradeRun. Fields are optional here only because /api/runs history predates
+// some of them; `timestamp` is required because mergeRunsByDate orders same-date runs by it.
 interface StoredRun {
+  timestamp: string;
   date: string;
   spyPrice?: number;
   portfolioAfter?: { totalValue?: string; cash?: string; equity?: string; unsettledCash?: string };
@@ -133,11 +140,37 @@ function stats(book: number[], spy: number[]): Stats {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 const runs = (await loadRuns()).filter(r => r.date).sort((a, b) => a.date.localeCompare(b.date));
-// One run per date. The current history has none, but a drop-check that sells writes a second run
-// for the same date, and the LAST one holds that day's final positions.
+// One run per date, MERGED — not collapsed. The previous `byDate.set(r.date, r)` was wrong twice
+// over: /api/runs returns raw runs NEWEST-first and a sort by date is stable, so within a date the
+// surviving ("last") entry was the OLDEST run — the opposite of what the old comment claimed — and
+// the other run's TRADES were dropped entirely. On a date carrying both the 10:30 rotation and an
+// intraday drop-check/earnings-exit, that kept the 10:30 positions (still listing a symbol sold
+// intraday) with no offsetting sell, so computeDailyReturn saw phantom equity with no trade cash
+// and booked the sale proceeds as P&L.
+//
+// mergeRunsByDate is the shared, tested merger /api/close-returns already uses: it unions trades,
+// overlays the most-recent NON-EMPTY positions snapshot, and orders by `timestamp` rather than by
+// array position, so it is immune to the input ordering that broke this.
+const merged = mergeRunsByDate(runs as unknown as TradeRun[]) as unknown as StoredRun[];
 const byDate = new Map<string, StoredRun>();
-for (const r of runs) byDate.set(r.date, r);
+for (const r of merged) byDate.set(r.date, r);
 const dates = [...byDate.keys()].sort();
+
+// POSITIONS and CASH must come from the SAME run. mergeRunsByDate overlays the latest non-empty
+// `positions` but leaves `portfolioAfter` with preferRun's winner — the 10:30 run, since that is
+// the one carrying agenticDailyReturn. On the very day this merge was added for (a 10:30 rotation
+// plus an intraday drop-check sell) that mixes clocks: positions are POST-sale while cash is
+// PRE-sale, so totalValue understates the book by the sale proceeds. computeDailyReturn is
+// position-level so the P&L stays right, but that date's totalValue is the NEXT pair's denominator
+// and the residual surfaces as a phantom impliedTransfer of roughly minus the proceeds.
+// So take the cash leg from whichever run supplied the positions, using mergeRunsByDate's own rule:
+// the latest-timestamped run with a non-empty snapshot.
+const cashSourceByDate = new Map<string, StoredRun>();
+for (const r of runs) {
+  if ((r.positions?.length ?? 0) === 0) continue;
+  const cur = cashSourceByDate.get(r.date);
+  if (!cur || r.timestamp > cur.timestamp) cashSourceByDate.set(r.date, r);
+}
 console.error(`runs: ${runs.length} across ${dates.length} dates (${dates[0]} → ${dates[dates.length - 1]})`);
 
 const symbols = [...new Set(dates.flatMap(d => (byDate.get(d)!.positions ?? []).map(p => p.symbol)))].filter(Boolean);
@@ -147,8 +180,20 @@ const closes = await loadCloses(symbols, dates[0]);
 const missing = symbols.filter(s => !closes.has(s));
 if (missing.length > 0) console.error(`⚠ no Sharadar closes for: ${missing.join(" ")} — dates holding these are withheld`);
 
-/** Reprice a run's positions at that date's CLOSE. Returns null if any holding is unpriceable. */
+/**
+ * Reprice a run's positions at that date's CLOSE. Returns null if any holding is unpriceable,
+ * OR if the run carries no positions snapshot at all.
+ *
+ * The `?? []` used to turn "we have no snapshot" into "the book was FLAT", which is the fail-open
+ * direction: the resulting snapshot has equity 0, so computeDailyReturn reads the prior day's
+ * entire equity book as a loss. mergeRunsByDate's own comment records that thin intraday runs
+ * store empty positions, so this is reachable in combination with a same-date merge. An absent or
+ * empty snapshot is UNKNOWN and must be withheld, exactly as validateCloseSnapshot already does
+ * for the cron path. A genuinely flat book is indistinguishable here and is also withheld — the
+ * agent has never been flat, and withholding one real day costs less than inventing a −100%.
+ */
 function repriceAtClose(run: StoredRun): PositionSnapshot[] | null {
+  if (!run.positions?.length) return null;
   const out: PositionSnapshot[] = [];
   for (const p of run.positions ?? []) {
     const c = closes.get(p.symbol)?.get(run.date);
@@ -169,8 +214,10 @@ for (const date of dates) {
     skipped.push(`${date}(${priced == null ? "position" : "spy"})`);
     continue;
   }
-  const cash = parseFloat(run.portfolioAfter?.cash ?? "0") || 0;
-  const unsettled = parseFloat(run.portfolioAfter?.unsettledCash ?? "0") || 0;
+  // Same run as the positions (see cashSourceByDate) — never the merged winner's cash.
+  const cashRun = cashSourceByDate.get(date) ?? run;
+  const cash = parseFloat(cashRun.portfolioAfter?.cash ?? "0") || 0;
+  const unsettled = parseFloat(cashRun.portfolioAfter?.unsettledCash ?? "0") || 0;
   const equity = priced.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
   snapshots.push({
     date,
@@ -186,6 +233,35 @@ console.error(`reconstructed snapshots: ${snapshots.length}\n`);
 const tradesByDate = new Map<string, TradeSnapshot[]>();
 for (const d of dates) tradesByDate.set(d, byDate.get(d)!.trades ?? []);
 
+/**
+ * Calendar days between two YYYY-MM-DD dates. Used to withhold OVERSIZED pairs.
+ *
+ * computeCloseReturns already withholds pairs more than MAX_PAIR_GAP_DAYS apart, because
+ * "compounding a multi-week move into a 'daily' series would corrupt the volatility and every
+ * statistic built on it". The two loops below pair ADJACENT ARRAY ELEMENTS, which is not the same
+ * as adjacent days: dates drop out whenever Sharadar has no close for a held symbol (a crypto or
+ * SPAC like BTC/SPCX), and a cron outage drops them too. A hole of even a few days then enters the
+ * series as one oversized "daily" observation, inflating sd(active) and deflating the Sharpe, IR
+ * and t that this script reports as its verdict. The total-book path inherits the guard; these two
+ * had none.
+ */
+function gapDays(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
+}
+// Tagged by SERIES, because the two loops do not test the same pairs: the 10:30 loop walks every
+// merged run date while the close loop walks `snapshots`, a strict subset (withheld dates dropped).
+// One undifferentiated list would leave a reader unable to tell which column's n shrank — the exact
+// thing this warning exists to make visible.
+const withheldPairs: string[] = [];
+function pairUsable(series: string, prev: string, cur: string): boolean {
+  const g = gapDays(prev, cur);
+  if (g > 0 && g <= MAX_PAIR_GAP_DAYS) return true;
+  // A non-increasing gap is a DIFFERENT fault from an oversized one (duplicate or unsorted dates,
+  // unreachable today given sorted unique inputs) and must not be reported as its opposite.
+  withheldPairs.push(`${series}:${prev}→${cur} (${g}d, ${g > 0 ? "oversized" : "non-increasing"})`);
+  return false;
+}
+
 // ── TOTAL BOOK, both clocks ──────────────────────────────────────────────────
 const closeReturns = computeCloseReturns(snapshots, tradesByDate);
 const closeSummary = summarizeCloseReturns(closeReturns);
@@ -197,6 +273,7 @@ const closeTotal = stats(pairedClose.map(r => r.bookReturn!), pairedClose.map(r 
 const snapBook: number[] = [], snapSpy: number[] = [], snapMain: number[] = [], snapMainSpy: number[] = [];
 for (let i = 1; i < dates.length; i++) {
   const cur = byDate.get(dates[i])!, prev = byDate.get(dates[i - 1])!;
+  if (!pairUsable("10:30", dates[i - 1], dates[i])) continue;
   if (!(cur.spyPrice! > 0) || !(prev.spyPrice! > 0)) continue;
   const s = cur.spyPrice! / prev.spyPrice! - 1;
   if (typeof cur.agenticDailyReturn === "number") { snapBook.push(cur.agenticDailyReturn); snapSpy.push(s); }
@@ -211,6 +288,7 @@ const snapTotal = stats(snapBook, snapSpy);
 const closeMain: number[] = [], closeMainSpy: number[] = [];
 for (let i = 1; i < snapshots.length; i++) {
   const prev = snapshots[i - 1], cur = snapshots[i];
+  if (!pairUsable("close-main", prev.date, cur.date)) continue;
   const curRun = byDate.get(cur.date)!, prevRun = byDate.get(prev.date)!;
   const inflOf = (run: StoredRun, snap: CloseSnapshot) => {
     const want = new Set((run.influencerPositions ?? []).map(p => p.symbol));
@@ -230,6 +308,13 @@ for (let i = 1; i < snapshots.length; i++) {
 }
 const closeMainStats = stats(closeMain, closeMainSpy);
 const snapMainStats = stats(snapMain, snapMainSpy);
+
+// Never withhold silently. A dropped pair shrinks n, which widens every interval printed below —
+// a reader comparing two runs of this script needs to see that the sample changed, not just that
+// the numbers did. Deduped because both loops test the same date pairs.
+if (withheldPairs.length > 0) {
+  console.error(`⚠ pairs withheld (max gap ${MAX_PAIR_GAP_DAYS}d; an oversized pair would compound into a "daily" return): ${withheldPairs.join(" ")}`);
+}
 
 // ── report ───────────────────────────────────────────────────────────────────
 const row = (label: string, a: string, b: string) =>

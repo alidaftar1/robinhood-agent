@@ -1,11 +1,22 @@
 /**
  * CLOSING-BELL SNAPSHOT CRON — records the book and SPY at the official close.
  *
- * Scheduled at 21:10 UTC weekdays, which lands after the close in BOTH halves of the year: 17:10 ET
- * under EDT and 16:10 ET under EST (the close itself is 20:00 UTC in EDT, 21:00 UTC in EST). A single
- * fixed-UTC cron is therefore correct year-round without a DST-aware scheduler. The handler still
- * verifies the ET clock itself rather than trusting the schedule — a manual call, a retry, or a
- * platform change in cron semantics must not be able to write a mid-session mark into the series.
+ * NOT SCHEDULED. vercel.json carries no cron for this route and that is deliberate — the only
+ * consumer is a periodic live-vs-backtest comparison, which scripts/close-reconstruct.ts serves
+ * better because it needs no write path into live-money data and covers the EXISTING run history a
+ * forward-only capture can never reach. Nothing writes this series today, so do not read
+ * /api/close-returns as a running record. (The header previously claimed it WAS scheduled, which
+ * would lead a reader — or the autopilot, which reads these files — to believe a close series is
+ * being captured when nothing writes it.)
+ *
+ * To ENABLE it, add `{ "path": "/api/close-snapshot", "schedule": "10 21 * * 1-5" }` to vercel.json.
+ * 21:10 UTC lands after the close in BOTH halves of the year: 17:10 ET under EDT and 16:10 ET under
+ * EST (the close itself is 20:00 UTC in EDT, 21:00 UTC in EST), so one fixed-UTC cron is correct
+ * year-round without a DST-aware scheduler. evals/close-snapshot.test.ts guards that line: its
+ * config-invariant test asserts the scheduled time is post-close in January AND July *if* the cron
+ * is present. The handler verifies the ET clock itself rather than trusting the schedule — a manual
+ * call, a retry, or a platform change in cron semantics must not be able to write a mid-session
+ * mark into the series.
  *
  * This route NEVER trades. It holds the MCP token only for two read-only calls (get_portfolio,
  * get_equity_positions) and no untrusted input reaches a model at any point.
