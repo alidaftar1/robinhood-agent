@@ -48,6 +48,10 @@ jobs:
           done
           echo "bun install failed after 3 attempts"; exit 1
       - name: Secret/PII scan (gate)
+        # See the matching note in autopilot-automerge.yml: the runner has no account IDs, so the
+        # weaker generic-pattern-only mode is declared explicitly rather than happening silently.
+        env:
+          ALLOW_NO_ACCOUNT_IDS: "1"
         run: bun run check:secrets
       - name: Typecheck + build (gate)
         run: bunx tsc --noEmit && bun run build

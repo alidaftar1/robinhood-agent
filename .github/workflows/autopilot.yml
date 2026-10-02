@@ -38,6 +38,12 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+      # check-secrets fails closed when it cannot match the account IDs by VALUE, and this runner
+      # has no PERSONAL_ACCOUNT_ID / AGENTIC_ACCOUNT_ID (they are not repo secrets). Without this
+      # declaration the autopilot's own `bun run check:secrets` gate would exit 1 and it would
+      # refuse to commit, reading a missing config as a leak. The generic account-number pattern
+      # still runs. Add the two IDs as Actions secrets and remove this to get full coverage.
+      ALLOW_NO_ACCOUNT_IDS: "1"
       # PAT (not GITHUB_TOKEN) for `gh pr create` + branch push, so the resulting pull_request
       # events actually TRIGGER autopilot-automerge + deploy-on-merge. GitHub deliberately suppresses
       # workflow runs triggered by GITHUB_TOKEN-created events (recursion guard) — which is why

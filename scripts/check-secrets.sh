@@ -14,9 +14,11 @@
 #   - run manually any time:   bun run check:secrets
 #
 # NOTE: this file never hardcodes a real secret/account number (that would just
-# re-commit it). Exact account IDs are matched only when exported in the env
-# ($PERSONAL_ACCOUNT_ID / $AGENTIC_ACCOUNT_ID); otherwise the generic patterns
-# below catch credential- and account-shaped literals by structure.
+# re-commit it). Exact account IDs are matched by value from $PERSONAL_ACCOUNT_ID /
+# $AGENTIC_ACCOUNT_ID, auto-loaded from .env.local when present. If they are missing,
+# blank, or implausibly short the scan now FAILS rather than quietly downgrading to the
+# generic patterns — a caller that cannot supply them must say so with
+# ALLOW_NO_ACCOUNT_IDS=1. See the long comment at the account-ID block for why.
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -uo pipefail
@@ -101,17 +103,69 @@ report "Personal email address"     '[A-Za-z0-9._%+-]+@(gmail|yahoo|hotmail|outl
 # the " (" before the digits — slipped straight through and reached the public repo.
 report "Account number literal"      '[Aa]ccount[sS]?[^0-9]{0,24}[0-9]{8,}'
 
-# Exact account IDs — only matched by VALUE when the env vars are present (they are never
-# committed to this file). When they're absent the check above is the only account-number
-# defense, so say so LOUDLY: a silent skip here is exactly what let two account numbers reach
-# the public repo (2026-08-21) — a green scan must never be mistaken for "IDs verified".
-if [ -z "${PERSONAL_ACCOUNT_ID:-}" ] || [ -z "${AGENTIC_ACCOUNT_ID:-}" ]; then
-  MISSING=""
-  [ -z "${PERSONAL_ACCOUNT_ID:-}" ] && MISSING="PERSONAL_ACCOUNT_ID"
-  [ -z "${AGENTIC_ACCOUNT_ID:-}" ]  && MISSING="${MISSING:+$MISSING, }AGENTIC_ACCOUNT_ID"
-  echo "⚠️  check-secrets: exact account-ID matching DISABLED for: ${MISSING}."
-  echo "    Relying on the generic 'Account number literal' pattern only. Export the real ID(s)"
-  echo "    (env or .env.local) to also match your account numbers by exact value."
+# Exact account IDs — matched by VALUE, never committed to this file.
+#
+# This block used to WARN and continue when the vars were absent, which made a degraded scan
+# indistinguishable from a complete one in the only output anyone reads: the exit code. Three ways
+# that bit:
+#   1. `vercel env pull` writes every Sensitive var back as an EMPTY assignment, so .env.local ends
+#      up DECLARING `AGENTIC_ACCOUNT_ID=` with no value. "Named but blank" then looked exactly like
+#      "never configured", and the strongest check was off on the one machine meant to run it.
+#   2. Both CI callers (autopilot-automerge.yml, deploy-on-merge.yml) have never exported these, so
+#      exact matching has been off in CI since it was wired up — silently.
+#   3. A green ✅ reads as "IDs verified" to a human, and a silent skip here is precisely what let
+#      two account numbers reach the public repo (2026-08-21).
+# So: the weak mode must now be DECLARED by the caller via ALLOW_NO_ACCOUNT_IDS=1 (same idiom as
+# REVIEWED=1 on deploys). Undeclared degradation FAILS. A caller that forgets cannot get a pass.
+MIN_ACCOUNT_ID_LEN=6
+
+# Load from .env.local (untracked; see .gitignore) so the check does not depend on the caller
+# remembering `set -a; source .env.local`. An explicitly exported value always wins.
+ENV_LOCAL=".env.local"
+BLANK_IN_ENV_FILE=""
+if [ -f "$ENV_LOCAL" ]; then
+  for v in PERSONAL_ACCOUNT_ID AGENTIC_ACCOUNT_ID; do
+    [ -n "${!v:-}" ] && continue
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${v}=" "$ENV_LOCAL" | tail -1 || true)
+    [ -z "$line" ] && continue
+    val="${line#*=}"
+    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"   # strip optional quotes
+    if [ -n "$val" ]; then
+      export "$v=$val"
+    else
+      BLANK_IN_ENV_FILE="${BLANK_IN_ENV_FILE:+$BLANK_IN_ENV_FILE, }$v"
+    fi
+  done
+fi
+
+# Unusable = absent, blank, or too short to match anything real. A 1-char value would let the check
+# "run" while being incapable of finding a leak — the same false confidence as skipping it.
+UNUSABLE=""
+for v in PERSONAL_ACCOUNT_ID AGENTIC_ACCOUNT_ID; do
+  val="${!v:-}"
+  if [ -z "$val" ] || [ "${#val}" -lt "$MIN_ACCOUNT_ID_LEN" ]; then
+    UNUSABLE="${UNUSABLE:+$UNUSABLE, }$v"
+  fi
+done
+
+if [ -n "$UNUSABLE" ]; then
+  if [ "${ALLOW_NO_ACCOUNT_IDS:-}" = "1" ]; then
+    echo "⚠️  check-secrets: exact account-ID matching DISABLED for: ${UNUSABLE}."
+    echo "    Running in DECLARED generic-pattern-only mode (ALLOW_NO_ACCOUNT_IDS=1). A pass here"
+    echo "    does NOT mean your account IDs were checked by value."
+  else
+    echo "❌ check-secrets: cannot verify account IDs by value: ${UNUSABLE}"
+    if [ -n "$BLANK_IN_ENV_FILE" ]; then
+      echo "   DECLARED BUT EMPTY in .env.local: ${BLANK_IN_ENV_FILE} — the usual cause is"
+      echo "   \`vercel env pull\`, which writes Sensitive vars back as blanks. Paste the real value in."
+    else
+      echo "   Set them in .env.local (untracked) or export them in the environment."
+    fi
+    echo "   If a caller genuinely cannot have them (CI, a contributor's clone), it must OPT IN"
+    echo "   explicitly:  ALLOW_NO_ACCOUNT_IDS=1 bun run check:secrets"
+    echo "   Refusing to report a clean scan that silently skipped its strongest check."
+    exit 1
+  fi
 fi
 [ -n "${PERSONAL_ACCOUNT_ID:-}" ] && report "Personal account ID (\$PERSONAL_ACCOUNT_ID)" "${PERSONAL_ACCOUNT_ID}"
 [ -n "${AGENTIC_ACCOUNT_ID:-}" ]  && report "Agentic account ID (\$AGENTIC_ACCOUNT_ID)"   "${AGENTIC_ACCOUNT_ID}"
@@ -121,5 +175,10 @@ if [ "$hits" -ne 0 ]; then
   echo "   Remove it (env-var it), or if it's a false positive refine scripts/check-secrets.sh."
   exit 1
 fi
-echo "✅ check-secrets: no secrets or personal info detected in tracked files."
+# The success line names the MODE. A bare ✅ is what let a degraded scan read as a complete one.
+if [ -n "$UNUSABLE" ]; then
+  echo "✅ check-secrets: no secrets detected — generic patterns only (account IDs NOT value-checked)."
+else
+  echo "✅ check-secrets: no secrets or personal info detected in tracked files (account IDs value-checked)."
+fi
 exit 0

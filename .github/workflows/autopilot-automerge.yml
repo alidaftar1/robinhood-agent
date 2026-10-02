@@ -53,6 +53,13 @@ jobs:
           done
           echo "bun install failed after 3 attempts"; exit 1
       - name: Secret/PII scan (gate)
+        # The runner has no account IDs (they are not repo secrets), so exact value-matching cannot
+        # run here and must be DECLARED — otherwise the scanner fails closed. This preserves the
+        # behaviour CI has always had; it only stops that degradation from being silent. To close
+        # the gap properly, add PERSONAL_ACCOUNT_ID / AGENTIC_ACCOUNT_ID as Actions secrets, pass
+        # them as env here, and drop this flag.
+        env:
+          ALLOW_NO_ACCOUNT_IDS: "1"
         run: bun run check:secrets
       - name: Typecheck + build (gate)
         run: bunx tsc --noEmit && bun run build

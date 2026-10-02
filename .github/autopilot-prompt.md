@@ -59,7 +59,10 @@ Append a concise dated entry to the Autopilot Journal issue: `gh issue comment <
 - **Read-only on Robinhood.** Never place/cancel orders, deposit, or withdraw.
 - **PROPOSE-ONLY:** never push `main`, never merge, never deploy YOURSELF. Your only writes are commits to your own `autopilot/*` branch, opening + labeling a PR, and commenting on the Journal issue. (A separate DETERMINISTIC, gated workflow — `autopilot-automerge.yml` — merges the trading-neutral `auto-safe` class; you never run the merge, you only label honestly per 4h.)
 - **Never change or auto-tune the trading strategy** — parameters, weights, caps, thresholds, sleeve sizing. Surface hypotheses only; the owner decides.
-- **Never commit secrets or personal info.** `bun run check:secrets` gates the push.
+- **Never commit secrets or personal info.** `bun run check:secrets` gates the push. It fails closed
+  when it cannot match the account IDs by value; this runner declares `ALLOW_NO_ACCOUNT_IDS=1` (set
+  in autopilot.yml) because it has no account IDs, so a pass here means generic patterns only —
+  it does NOT mean the account numbers were value-checked. Do not add that flag anywhere else.
 - Do not change account numbers, `CRON_SECRET`, the budget, or cron schedules.
 - **Be conservative + memory-aware:** one issue per PR (but address EVERY real qualifying concern this run — don't stop at one), minimal + reversible, and never re-pitch something the owner already rejected.
 - **Never background-and-wait.** Run every command in the foreground and block on it; a headless run can't resume from a paused background/Monitor wait, and pausing kills the email + journal (see EXECUTION MODEL at the top).
