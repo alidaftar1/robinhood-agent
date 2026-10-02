@@ -862,3 +862,33 @@ export async function getStoredAutopilotConcerns(date: string): Promise<Record<s
     return null;
   }
 }
+
+// The run summary carries the model's ACTUAL reasoning, and the 8am email is the only place most of
+// it is ever read. The email's old `slice(0, 800)` was wrong in two compounding ways: 800 chars is
+// less than the main-book hold/sell review alone, and that review prints FIRST — so the INFLUENCER
+// and BUY reasoning, the part explaining why a name was bought over its competitors, was reliably
+// the part cut. On 2026-10-02 the email ended mid-word ("- No h") and the AVGO-vs-MU decision
+// (MU scored 6, AVGO 4, one sleeve slot free) was never shown at all.
+//
+// Truncation and ESCAPING are deliberately one function rather than two composable ones, so the
+// unescaped variant is not available to a future caller. The summary is model-written prose
+// interpolated into email HTML, and nothing in this repo escaped it before: a single `<` in a line
+// like "P/E <18 but momentum broke" makes the mail client swallow everything up to the next `>` —
+// which is the section's own `</p>`. That silently deletes the rest of the reasoning, i.e. exactly
+// the failure this function exists to prevent, and widening 800 → 6000 widened the exposure with it.
+//
+// Order matters: truncate on the RAW text so the dropped-char count is honest, then escape (escaping
+// first would let the cut land inside an entity). `&` must be replaced before `<`/`>` or the escapes
+// would themselves be re-escaped.
+export const SUMMARY_EMAIL_LIMIT = 6000;
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+export function formatSummaryForEmail(summary: string, limit: number = SUMMARY_EMAIL_LIMIT): string {
+  const truncated = summary.length <= limit
+    ? summary
+    : `${summary.slice(0, limit)}\n\n[… truncated ${summary.length - limit} of ${summary.length} chars — open the dashboard for the full reasoning]`;
+  return escapeHtml(truncated);
+}

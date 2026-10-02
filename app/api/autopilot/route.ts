@@ -3,7 +3,7 @@ import { requireCronAuth } from "@/lib/auth";
 import { parseTradeDecision, isFullExit } from "@/lib/trade-decision";
 import { dashboardPublicUrl, dashboardLoginUrl, mintLoginToken, EMAIL_LOGIN_TOKEN_TTL_SECONDS } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
-import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns } from "@/lib/run-store";
+import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, formatSummaryForEmail } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
@@ -673,7 +673,7 @@ export async function GET(request: Request) {
   ${todayRun?.summary
     ? `<div style="background:#f3f4f6;padding:12px 16px;border-radius:4px;margin-bottom:16px">
     <strong>Run summary:</strong>
-    <p style="margin:8px 0 0;white-space:pre-wrap;font-size:13px">${todayRun.summary.slice(0, 800)}</p>
+    <p style="margin:8px 0 0;white-space:pre-wrap;font-size:13px">${formatSummaryForEmail(todayRun.summary)}</p>
   </div>`
     : ""}
 
