@@ -507,7 +507,7 @@ describe("shouldCache refuses to persist a result that is not an answer", () => 
   const base = (over: Partial<QualityData> = {}): QualityData => ({
     scores: { AAPL: { quality: 0.8, roe: 0.3, roa: 0.2, lev: null, eligible: true } },
     median: 0.5, period: "TTM through CY2026Q2", asOf: "2026-09-30",
-    withheld: [], degraded: false,
+    withheld: [], degraded: false, staleUniverse: [], staleUniverseSuspect: false,
     basis: { ttmFromFrames: 4000, recoveredPerCompany: 100, withheld: 0, withheldNoCik: 0 },
     ...over,
   });

@@ -475,7 +475,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
 
       <div style={{ background: "#111", border: "1px solid #222", borderLeft: "3px solid #3b6ea5", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13, lineHeight: 1.6, color: "#bbb" }}>
         <span style={{ color: "#e5e5e5", fontWeight: 700 }}>Strategy update · 2026-07-09 — </span>
-        the main book switched to a <span style={{ color: "#e5e5e5", fontWeight: 600 }}>quality-momentum</span> strategy: rank the S&amp;P 500 by 12-month momentum (skipping the most recent month), keep only above-median-quality names (profitability &amp; low debt, from SEC filings), cap any single sector at 40%, and hold ~6 high-conviction names. The YouTube-influencer sleeve is unchanged.
+        the main book switched to a <span style={{ color: "#e5e5e5", fontWeight: 600 }}>quality-momentum</span> strategy: rank the S&amp;P 500 by 12-month momentum (skipping the most recent month), keep only above-median-quality names (profitability &amp; low debt, from SEC filings), cap any single sector at 40%, and hold ~6 high-conviction names chosen from that shortlist with insider buys, analyst actions, fresh news and sector rotation as tie-breakers. The YouTube-influencer sleeve is unchanged.
       </div>
 
       {runs.length >= 2 && (

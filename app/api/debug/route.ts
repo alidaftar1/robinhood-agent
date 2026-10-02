@@ -275,7 +275,19 @@ export async function GET(request: Request) {
     try {
       const q = await getQualityScores(true);
       const elig = q ? Object.values(q.scores).filter(s => s.eligible).length : 0;
-      results.refreshQuality = q ? `refreshed: ${Object.keys(q.scores).length} scored, ${elig} eligible (period ${q.period})` : "failed (SEC/Redis unavailable)";
+      // Name the DEAD universe entries, not just count them. Pruning SP500_UNIVERSE needs owner
+      // approval, and the list only ever existed in a log line Vercel does not retain, so the prune
+      // was unapprovable in practice. These have no CIK in SEC's ticker file — acquired, renamed or
+      // delisted — and each burns a Yahoo quote every run.
+      // Capped at 30 like the log line it mirrors (lib/quality.ts) — in the truncated-ticker-map
+      // case this list can be the WHOLE universe, and a debug payload is not the place to dump it.
+      // The suspect flag leads, because acting on a suspect list deletes LIVE names.
+      results.refreshQuality = q
+        ? `refreshed: ${Object.keys(q.scores).length} scored, ${elig} eligible (period ${q.period}); ` +
+          (q.staleUniverseSuspect
+            ? `⚠ ${q.staleUniverse.length} symbols have no CIK — IMPLAUSIBLE, suspect a truncated SEC ticker map. Do NOT prune on this.`
+            : `stale universe (${q.staleUniverse.length}): ${q.staleUniverse.slice(0, 30).join(" ") || "none"}${q.staleUniverse.length > 30 ? " …" : ""}`)
+        : "failed (SEC/Redis unavailable)";
     } catch (e) {
       results.refreshQuality = `error: ${e}`;
     }

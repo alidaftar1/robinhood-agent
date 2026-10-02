@@ -84,6 +84,22 @@ export interface QualityData {
    *  never cached: "we could not ask" must not be frozen for a TTL as "SEC has not published". */
   degraded: boolean;
   basis: { ttmFromFrames: number; recoveredPerCompany: number; withheld: number; withheldNoCik: number };
+  /** The symbols behind basis.withheldNoCik: universe entries with NO CIK in SEC's ticker file, i.e.
+   *  companies that have LEFT the market (acquired/renamed/delisted) rather than data gaps. Carried
+   *  as a LIST, not just a count, because pruning the universe requires owner approval and nobody
+   *  could approve a prune of 20 symbols that only existed as a number in a log line Vercel no
+   *  longer retains. Each one also burns a Yahoo quote every run. Harmless to carry: a dead ticker
+   *  cannot be held, so there is no behaviour attached to it.
+   *
+   *  Measured against Object.keys(STOCK_SECTOR), which is NOT identical to SP500_UNIVERSE (they
+   *  differ by PLTR) — a prune must be applied to the list it was measured against. */
+  staleUniverse: string[];
+  /** True when staleUniverse is implausibly large — read it as "investigate the ticker map", NOT as
+   *  a prune list. isUsableTickerMap only requires 1000 entries against a real SEC file of ~10k, so
+   *  a TRUNCATED-but-"usable" map makes hundreds of LIVE tickers look CIK-less. Since this list
+   *  exists to drive a manual DELETION from the tradable universe, a false entry gets a live name
+   *  removed — so an implausible count is reported as a suspected map problem, not as candidates. */
+  staleUniverseSuspect: boolean;
 }
 
 /** Per-request ceiling. Was 25s, which stacked: ~11 sequential waits put the worst case at 275s
@@ -612,6 +628,17 @@ export function isUsableTickerMap(m: Record<string, number>): boolean {
   return Object.keys(m).length >= MIN_TICKER_MAP;
 }
 
+/** A handful of dead tickers is normal attrition; a large fraction means a broken ticker map.
+ *  isUsableTickerMap's floor (1000 of SEC's ~10k) is far too loose to catch a truncated read, and
+ *  this list drives DELETIONS from the tradable universe, so the expensive mistake is believing a
+ *  truncated map. 5% of ~450 is ~22 — above the ~20 genuinely-dead names observed, far below what a
+ *  real truncation produces (a stubbed map printed 449, the whole universe). Pure, so it is tested. */
+export const NO_CIK_SUSPECT_FRACTION = 0.05;
+export function isNoCikImplausible(noCikCount: number, universeSize: number): boolean {
+  if (universeSize <= 0) return true; // nothing to measure against — never claim "stale"
+  return noCikCount / universeSize > NO_CIK_SUSPECT_FRACTION;
+}
+
 export async function fetchQualityFromSEC(): Promise<QualityData> {
   // No notFoundOk: a 404 here must THROW, so getQualityScores returns null, the real alert fires, and
   // the book keeps trading momentum-only — the behaviour before the sentinel existed.
@@ -753,15 +780,21 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
   // that and inflates the withheld count. Both still go into `withheld` — a dead ticker cannot be
   // held, so there is no behaviour to change, and keeping it there preserves the safe direction.
   const noCik = withheld.filter(sym => tk2cik[sym] == null);
+  const universeSize = Object.keys(STOCK_SECTOR).length;
+  const noCikSuspect = isNoCikImplausible(noCik.length, universeSize);
   if (noCik.length > 0) {
     console.log("QUALITY_STALE_UNIVERSE", {
-      count: noCik.length, symbols: noCik.slice(0, 30),
-      note: "no CIK in SEC's ticker file — delisted/renamed/acquired, not a data gap. STOCK_SECTOR needs pruning.",
+      count: noCik.length, universeSize, symbols: noCik.slice(0, 30), suspect: noCikSuspect,
+      note: noCikSuspect
+        ? "IMPLAUSIBLY MANY missing CIKs — suspect a TRUNCATED ticker map, NOT a stale universe. Do NOT prune on this."
+        : "no CIK in SEC's ticker file — delisted/renamed/acquired, not a data gap. STOCK_SECTOR needs pruning.",
     });
   }
   return {
     scores, median, period: usedPeriod, asOf: new Date().toISOString().slice(0, 10),
     withheld, degraded,
+    staleUniverse: noCik,
+    staleUniverseSuspect: noCikSuspect,
     basis: {
       ttmFromFrames, recoveredPerCompany,
       withheld: withheld.length,
@@ -809,7 +842,17 @@ export async function getQualityScores(force = false): Promise<QualityData | nul
   try {
     if (!force) {
       const cached = await redisGet(CACHE_KEY);
-      if (cached) return JSON.parse(cached) as QualityData;
+      if (cached) {
+        const hit = JSON.parse(cached) as QualityData;
+        // A cache entry written BEFORE staleUniverse existed has no such field, and the TTL is 8
+        // days — so for over a week every consumer would see `undefined` where the type promises an
+        // array. `q.staleUniverse.length` in /api/debug would throw on a cache HIT, i.e. the common
+        // path, and only on the common path. Normalising on read is the whole fix; the alternative
+        // (reaching for `?.` at each call site) re-opens the same hole for the next consumer.
+        if (!Array.isArray(hit.staleUniverse)) hit.staleUniverse = [];
+        if (typeof hit.staleUniverseSuspect !== "boolean") hit.staleUniverseSuspect = false;
+        return hit;
+      }
     }
     const data = await fetchQualityFromSEC();
     // NEVER cache a degraded result. A failed fetch cached for 8 days is the documented
