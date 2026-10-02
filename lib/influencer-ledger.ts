@@ -16,7 +16,7 @@
 // pre-ledger history is unrecoverable — the cache didn't keep it).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { fetchQuoteLite, fetchDailyBars, firstCloseAfter } from "@/lib/market-data";
+import { fetchQuoteLite, fetchDailyBars, firstCloseAfter, type DatedBars } from "@/lib/market-data";
 import { getRuns } from "@/lib/run-store";
 import { netScores, INFLUENCER_BUY_FLOOR } from "@/lib/influencer-signals";
 import type { InfluencerCache } from "@/lib/influencer-signals";
@@ -30,6 +30,18 @@ const LEDGER_KEY = "robinhood:influencer-ledger";
 // what the strategy would act on. Below the floor the strategy never buys, so tracking would
 // just add noise to the channel stats.
 const MIN_SCORE = INFLUENCER_BUY_FLOOR;
+// WHAT THIS LEDGER MEASURES, stated because the two readings diverge and the old comment above
+// claimed only one of them. MIN_SCORE keeps WHICH picks are TRACKED in lock-step with the buy
+// floor. It does NOT make the BASELINE an executable entry price: `net` is computed over the whole
+// ~7-day cache, so a ticker can sit below the floor for days and cross it only today, while its
+// earliest credited video is days old. The baseline is that video's first close, so the pick can
+// report a run-up the SLEEVE could never have taken (it would not have bought until the floor was
+// crossed).
+// That is deliberate: this ledger answers "which CHANNELS have edge", and a channel that called a
+// name before it ran deserves the credit for exactly that. The "what could the strategy actually
+// capture" question is answered by the SIGNAL ledger (lib/signal-ledger.ts), which measures our
+// real buys. Do not reconcile these two numbers — they are different questions, and conflating
+// them is what made the influencer scorecard wrong twice before.
 
 // Per-CHANNEL baseline. A channel is credited only from ITS OWN first mention forward.
 // Before this existed, every channel on a ticker inherited the pick-level baseline, so a channel
@@ -150,6 +162,37 @@ function perTicker(cache: InfluencerCache): Map<string, { channels: Map<string, 
   return byTicker;
 }
 
+// Baseline for ONE channel's call: the first SETTLED close after its earliest video on this
+// ticker. Returns null when no session has closed yet, and the caller WITHHOLDS the credit.
+//
+// There is deliberately NO live-price fallback, and that is the whole correctness argument.
+// This cron runs at 13:00 UTC — THIRTY MINUTES BEFORE the 13:30 UTC open. So for any video
+// published since the previous close (i.e. every genuinely fresh pick) today's bar does not
+// exist yet. A live-price fallback would baseline the channel at a PRE-MARKET price and credit
+// it with the entire day's move, permanently — the next run short-circuits on
+// `channelEntries[ch]` and never revisits it. That is the look-ahead firstCloseAfter exists to
+// remove, reintroduced on the most common path, which is strictly worse than being a day late.
+//
+// Withholding self-heals: the video stays inside the ~7-day search window, so the NEXT run finds
+// a settled close and credits the channel from it. Worked example — a Friday-evening video is
+// withheld Monday (Monday's bar not open yet) and credited Tuesday from MONDAY's close, 4 days
+// old and still in-window. The cost is a credit appearing a day late; the benefit is that it is
+// never measured from a price that preceded the call.
+//
+// A ticker Yahoo has no daily bars for (an odd symbol, some crypto) is therefore never credited.
+// That is the honest outcome — we cannot measure it — and the withheld counter plus
+// INFLUENCER_LEDGER_CREDIT_WITHHELD make it visible rather than silent.
+export function baselineForCall(
+  bars: DatedBars | null | undefined,
+  publishedAt: string | undefined,
+): ChannelEntry | null {
+    const published = publishedAt ? Date.parse(publishedAt) : NaN;
+    if (!bars || !Number.isFinite(published)) return null;
+    const hit = firstCloseAfter(bars, Math.floor(published / 1000));
+    if (!hit || !(hit.close > 0)) return null;
+    return { firstSeenDate: hit.date, priceAtSignal: hit.close, baselineSource: "publish" };
+}
+
 // Back-fill per-channel entries for a row written before they existed. PURE and exported so the
 // flagging rule is unit-testable — it decides which history is trustworthy, and getting it wrong in
 // either direction is costly: over-flagging permanently mislabels correctly-measured picks as
@@ -204,36 +247,17 @@ export async function recordPicks(
     const credited = new Set(Object.keys(existing.channelEntries ?? {}).length ? Object.keys(existing.channelEntries!) : existing.channels);
     return [...e.channels.keys()].some((ch) => !credited.has(ch));
   });
-  // Live price (the fallback) AND the month of daily bars used to resolve each channel's
-  // publish-date baseline. Both are fetched once per ticker, in parallel, so adding publish-date
-  // baselining costs one extra request per NEW credit rather than one per channel.
+  // A month of daily bars per ticker needing a new credit — one request each, in parallel. No live
+  // quote: it is not a usable baseline here (see baselineFor), so fetching one would only invite
+  // its reintroduction as a fallback.
   const quotes = new Map(
     await Promise.all(
-      needsPrice.map(async ([t]) => {
-        const [live, bars] = await Promise.all([fetchQuoteLite(t), fetchDailyBars(t)]);
-        return [t, { live: live?.price ?? null, bars }] as const;
-      }),
+      needsPrice.map(async ([t]) => [t, { bars: await fetchDailyBars(t) }] as const),
     ),
   );
 
-  // Baseline for ONE channel's call: the first close AFTER its earliest video on this ticker.
-  // Falls back to the refresh date + live price when that cannot be resolved — a consistent pair,
-  // flagged so it is never read as a publish-date baseline. Returns null only when neither exists,
-  // which is the fail-closed case the caller counts as withheld.
-  const baselineFor = (ticker: string, publishedAt: string | undefined): ChannelEntry | null => {
-    const q = quotes.get(ticker);
-    const published = publishedAt ? Date.parse(publishedAt) : NaN;
-    if (q?.bars && Number.isFinite(published)) {
-      const hit = firstCloseAfter(q.bars, Math.floor(published / 1000));
-      if (hit && hit.close > 0) {
-        return { firstSeenDate: hit.date, priceAtSignal: hit.close, baselineSource: "publish" };
-      }
-    }
-    if (q?.live != null && q.live > 0) {
-      return { firstSeenDate: today, priceAtSignal: q.live, baselineSource: "refresh" };
-    }
-    return null;
-  };
+  const baselineFor = (ticker: string, publishedAt: string | undefined): ChannelEntry | null =>
+    baselineForCall(quotes.get(ticker)?.bars, publishedAt);
 
   for (const [ticker, e] of byTicker) {
     const score = net[ticker] ?? 0;
@@ -256,6 +280,17 @@ export async function recordPicks(
       }
       // channels[] stays in lock-step with what is actually credited, so the two can't disagree.
       existing.channels = Object.keys(existing.channelEntries);
+      // Keep the ticker-level baseline at the EARLIEST credited channel call. A channel credited
+      // later can easily have published EARLIER (a video reaching the cache a day late, or a
+      // ticker that only just crossed the score floor), and without this the pick-level return
+      // would be measured from a LATER baseline than one of its own credited channels — the same
+      // pick-vs-channel mismatch the new-row branch is careful to avoid.
+      const earliestEntry = Object.values(existing.channelEntries)
+        .reduce<ChannelEntry | null>((a, b) => (a == null || b.firstSeenDate < a.firstSeenDate ? b : a), null);
+      if (earliestEntry && earliestEntry.firstSeenDate < existing.firstSeenDate) {
+        existing.firstSeenDate = earliestEntry.firstSeenDate;
+        existing.priceAtSignal = earliestEntry.priceAtSignal;
+      }
       existing.maxScore = Math.max(existing.maxScore, score);
       if (CONF_RANK[e.conf] > CONF_RANK[existing.maxConfidence]) existing.maxConfidence = e.conf;
       existing.lastSeenDate = today;
@@ -366,7 +401,26 @@ export async function computeAttribution(
   // runs → no market baseline → alpha stays null and only the raw return shows.
   const runs = await getRuns(120).catch(() => []);
   const spyByDate = new Map<string, number>();
-  for (const r of runs) if (typeof r.spyPrice === "number") spyByDate.set(r.date, r.spyPrice);
+  // SPY's own daily CLOSES first, because a baseline is now a session close (firstCloseAfter) while
+  // a run's stored `spyPrice` is an INTRADAY mark captured when /api/trade fires at 14:30 UTC.
+  // Mixing them puts the two alpha legs on different clocks — a systematic open-to-close SPY error
+  // in the very metric channels are RANKED on. The repo has measured that gap: the 10:30 and close
+  // clocks correlate only 0.668 on SPY, and SPY's own annualised Sharpe flips SIGN between them
+  // over the same 29 days (docs/HANDOFF-close-snapshot.md). Same-clock on both legs is not a nicety.
+  const spyBars = await fetchDailyBars("SPY");
+  if (spyBars) {
+    for (let i = 0; i < spyBars.ts.length; i++) {
+      const c = spyBars.closes[i];
+      if (c == null) continue;
+      spyByDate.set(new Date(spyBars.ts[i] * 1000).toISOString().slice(0, 10), c);
+    }
+  }
+  // Run marks only fill dates the bar window does not reach (it is ~1 month; the ledger is older).
+  // Those are the mixed-clock ones; they are a biased fallback, but a missing baseline drops the
+  // pick from alpha entirely and `.sort()` would then rank on a smaller subset still.
+  for (const r of runs) {
+    if (typeof r.spyPrice === "number" && !spyByDate.has(r.date)) spyByDate.set(r.date, r.spyPrice);
+  }
   // "now" for SPY must be LIVE (like each pick's current price), so the window matches: firstSeen→now
   // on both legs. Fall back to the latest run's close if the live quote fails.
   const spyNow = (await fetchQuoteLite("SPY").catch(() => null))?.price

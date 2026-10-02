@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { firstCloseAfter, type DatedBars } from "../lib/market-data";
+import { baselineForCall } from "../lib/influencer-ledger";
 
 // A daily bar's timestamp is the session OPEN (~13:30 UTC in EDT), not the close. So "the first
 // close after time T" means the first bar whose session had not yet started when T happened.
@@ -54,5 +55,68 @@ describe("firstCloseAfter — no look-ahead on the baseline", () => {
     const hit = firstCloseAfter(bars, d("2026-10-01T23:00:00Z"))!;
     expect(hit.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(hit.date).toBe("2026-10-02");
+  });
+});
+
+describe("firstCloseAfter — outside the bar window", () => {
+  const d2 = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const bars: DatedBars = {
+    ts: [d2("2026-10-01T13:30:00Z"), d2("2026-10-02T13:30:00Z")],
+    closes: [100, 110],
+  };
+
+  test("a moment on an EARLIER DAY than the oldest bar yields null, not the oldest bar", () => {
+    // Otherwise a stale publishedAt silently gets a baseline up to a month after the call while
+    // still being labelled baselineSource "publish".
+    expect(firstCloseAfter(bars, d2("2026-09-01T12:00:00Z"))).toBeNull();
+  });
+
+  test("PRE-MARKET on the oldest bar's OWN day still resolves — no session is missed", () => {
+    expect(firstCloseAfter(bars, d2("2026-10-01T10:00:00Z"))).toEqual({ date: "2026-10-01", close: 100 });
+  });
+});
+
+// ── The no-fallback rule ───────────────────────────────────────────────────────────────────────
+// The cache cron runs at 13:00 UTC, THIRTY MINUTES BEFORE the 13:30 UTC open, so for every fresh
+// pick today's bar does not exist yet. The first version of this code fell back to the live
+// (pre-market) price, which baselined the channel BEFORE the session and credited it with the whole
+// day's move — permanently, because the next run short-circuits on an existing entry. There must be
+// no fallback: withhold, and let the next run find a settled close.
+describe("baselineForCall — withholds rather than guessing", () => {
+  const d3 = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const bars: DatedBars = {
+    ts: [d3("2026-10-01T13:30:00Z"), d3("2026-10-02T13:30:00Z")],
+    closes: [100, 110],
+  };
+
+  test("a video published after the LAST stored close is WITHHELD, not priced pre-market", () => {
+    // This is the pre-market-cron case: the only honest answer is "not yet".
+    expect(baselineForCall(bars, "2026-10-02T23:00:00Z")).toBeNull();
+  });
+
+  test("once that session has closed, the SAME call resolves from its close", () => {
+    const next: DatedBars = { ts: [...bars.ts, d3("2026-10-05T13:30:00Z")], closes: [100, 110, 120] };
+    expect(baselineForCall(next, "2026-10-02T23:00:00Z")).toEqual({
+      firstSeenDate: "2026-10-05", priceAtSignal: 120, baselineSource: "publish",
+    });
+  });
+
+  test("it NEVER returns a refresh/live-price baseline — the field is always \"publish\"", () => {
+    const out = baselineForCall(bars, "2026-10-01T10:00:00Z");
+    expect(out?.baselineSource).toBe("publish");
+  });
+
+  test("missing bars withhold (an unsupported symbol is simply unmeasurable)", () => {
+    expect(baselineForCall(null, "2026-10-01T10:00:00Z")).toBeNull();
+    expect(baselineForCall(undefined, "2026-10-01T10:00:00Z")).toBeNull();
+  });
+
+  test("a missing or unparseable publishedAt withholds rather than defaulting to now", () => {
+    expect(baselineForCall(bars, undefined)).toBeNull();
+    expect(baselineForCall(bars, "not-a-date")).toBeNull();
+  });
+
+  test("a zero/negative close withholds instead of producing an infinite return", () => {
+    expect(baselineForCall({ ts: bars.ts, closes: [0, 0] }, "2026-10-01T10:00:00Z")).toBeNull();
   });
 });

@@ -728,6 +728,17 @@ export interface DatedBars { ts: number[]; closes: (number | null)[] }
  * Pure, so the boundary is unit-testable without a network call.
  */
 export function firstCloseAfter(bars: DatedBars, afterEpochSec: number): { date: string; close: number } | null {
+  // If the moment predates the window we cannot know the first close after it — sessions we do not
+  // hold may sit in between, and returning the oldest bar we happen to have would hand back a
+  // baseline up to a month AFTER the call while looking like a real publish-date baseline,
+  // indistinguishable from a correct one downstream.
+  //
+  // The test is on the DATE, not the timestamp: a PRE-MARKET moment on the oldest bar's own day is
+  // legitimately before that bar's open with no session missed in between, and is the case that
+  // must keep working. Only an EARLIER DAY means we may be blind to sessions.
+  if (!bars.ts.length) return null;
+  const dayOf = (sec: number) => new Date(sec * 1000).toISOString().slice(0, 10);
+  if (dayOf(afterEpochSec) < dayOf(bars.ts[0])) return null;
   for (let i = 0; i < bars.ts.length; i++) {
     const t = bars.ts[i];
     const c = bars.closes[i];
