@@ -210,3 +210,64 @@ describe("rollupChannels — per-channel constituents", () => {
     expect(c.tickerReturns.map(t => t.ticker)).toEqual(["AAA"]);
   });
 });
+
+// A channel that recommends a name and LATER says avoid used to keep an open credit forever — so it
+// was charged with the crash it warned about, while an avoid before a rally earned the rally. The
+// bias ran against exactly the behaviour worth rewarding.
+describe("rollupChannels — a credit closed by the channel's own AVOID", () => {
+  const spy = new Map([["2026-09-01", 500], ["2026-09-20", 520], ["2026-10-01", 560]]);
+  const mk = (over: Partial<PickOutcome> = {}): PickOutcome => ({
+    ticker: "AAA", channels: ["Ch"], maxScore: 4, maxConfidence: "high",
+    firstSeenDate: "2026-09-01", lastSeenDate: "2026-10-01", priceAtSignal: 100,
+    currentPrice: 60, returnPct: -40, marketReturnPct: null, alphaPct: null, daysElapsed: 30,
+    channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100 } },
+    ...over,
+  });
+
+  test("the return stops at the close — the channel is not charged with the later crash", () => {
+    const closed = mk({ channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100, closedDate: "2026-09-20", closePrice: 130 } } });
+    const [c] = rollupChannels([closed], spy, 560);
+    expect(c.avgReturnPct).toBeCloseTo(30, 6);   // 100 -> 130 at the avoid, NOT 100 -> 60
+    expect(c.closedPicks).toBe(1);
+    expect(c.hitRatePct).toBe(100);
+  });
+
+  test("alpha uses the SPY mark at the CLOSE, not today's — both legs share the window", () => {
+    const closed = mk({ channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100, closedDate: "2026-09-20", closePrice: 130 } } });
+    const [c] = rollupChannels([closed], spy, 560);
+    // 30% − (520/500−1 = 4%) = 26%.  Using spyNow=560 would give 30 − 12 = 18%.
+    expect(c.avgAlphaPct!).toBeCloseTo(26, 4);
+  });
+
+  test("an OPEN credit still marks to today", () => {
+    const [c] = rollupChannels([mk()], spy, 560);
+    expect(c.avgReturnPct).toBeCloseTo(-40, 6);
+    expect(c.closedPicks).toBe(0);
+  });
+
+  test("a closed pick is flagged in the constituent list", () => {
+    const closed = mk({ channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100, closedDate: "2026-09-20", closePrice: 130 } } });
+    const [c] = rollupChannels([closed], spy, 560);
+    expect(c.tickerReturns[0].closed).toBe(true);
+  });
+
+  test("a zero/negative close price is ignored rather than zeroing the return", () => {
+    const bad = mk({ channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100, closedDate: "2026-09-20", closePrice: 0 } } });
+    const [c] = rollupChannels([bad], spy, 560);
+    expect(c.avgReturnPct).toBeCloseTo(-40, 6); // falls back to the live mark
+    expect(c.closedPicks).toBe(0);
+  });
+
+  test("closing one channel does not close another's credit on the same ticker", () => {
+    const two = mk({
+      channels: ["Early", "Late"],
+      channelEntries: {
+        Early: { firstSeenDate: "2026-09-01", priceAtSignal: 100, closedDate: "2026-09-20", closePrice: 130 },
+        Late: { firstSeenDate: "2026-09-01", priceAtSignal: 100 },
+      },
+    });
+    const rows = rollupChannels([two], spy, 560);
+    expect(rows.find(r => r.channel === "Early")!.avgReturnPct).toBeCloseTo(30, 6);
+    expect(rows.find(r => r.channel === "Late")!.avgReturnPct).toBeCloseTo(-40, 6);
+  });
+});

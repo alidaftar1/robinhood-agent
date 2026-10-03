@@ -61,6 +61,21 @@ export interface ChannelEntry {
   // pair stays internally consistent either way; this says which, so a fallback is never read as a
   // real publish-date baseline. Absent on rows written before publish-date baselining existed.
   baselineSource?: "publish" | "refresh";
+  /** Set when THIS channel later told people to AVOID the name. The credit is frozen here: return is
+   *  measured firstSeenDate → closedDate, not → now.
+   *
+   *  Without this a channel that correctly calls the exit is charged with the crash it warned
+   *  about, while one that says avoid before a rally is credited with the rally — the bias runs
+   *  against exactly the behaviour worth rewarding. Nothing else in the ledger closes a position,
+   *  so an avoid was previously invisible: it lowers the NET score, and once net drops below the
+   *  buy floor recordPicks skips the ticker entirely, which stops UPDATING the row while leaving
+   *  the credit open and accruing forever.
+   *
+   *  One-way on purpose. A later re-recommendation does NOT reopen it: this store holds one row per
+   *  ticker and cannot represent two episodes, so reopening would silently splice two separate
+   *  calls into one return. A re-entry is a second episode and needs a model that has them. */
+  closedDate?: string;
+  closePrice?: number;
 }
 
 export interface LedgerPick {
@@ -99,7 +114,9 @@ export interface ChannelStats {
    *  unreadable without this: a channel's "27 picks" turned out to be one watchlist video naming 17
    *  tickers at once, and nothing in the table said so. Showing the constituents makes a hit rate
    *  auditable against what the channel actually named. */
-  tickerReturns: Array<{ ticker: string; retPct: number }>;
+  tickerReturns: Array<{ ticker: string; retPct: number; closed?: true }>;
+  /** Credits frozen because the channel later said AVOID. Measured to that close, not to now. */
+  closedPicks: number;
   // How many of `picks` actually have a SPY baseline, i.e. contribute to avgAlphaPct. Channels are
   // RANKED on alpha, and per-channel baselines multiplied the number of dates that must be present
   // in the run history (one per channel-per-ticker, not one per ticker), so a channel can now be
@@ -219,6 +236,24 @@ export function migratedChannelEntries(existing: LedgerPick): Record<string, Cha
   );
 }
 
+/** Per-ticker AVOID mentions: channel -> earliest publishedAt that warned against it. Mirrors
+ *  perTicker, reading sig.avoidTickers instead of sig.tickers. Kept separate because an avoid must
+ *  be processed even when the ticker no longer clears the buy floor — avoids are what push it
+ *  below, so folding this into the score-gated path would make a closing signal unreachable
+ *  exactly when it fires hardest. */
+function avoidsPerTicker(cache: InfluencerCache): Map<string, Map<string, string>> {
+  const out = new Map<string, Map<string, string>>();
+  for (const sig of cache.signals) {
+    for (const t of sig.avoidTickers ?? []) {
+      const e = out.get(t) ?? new Map<string, string>();
+      const prev = e.get(sig.channelName);
+      if (!prev || (sig.publishedAt && sig.publishedAt < prev)) e.set(sig.channelName, sig.publishedAt);
+      out.set(t, e);
+    }
+  }
+  return out;
+}
+
 // Upsert one OPEN episode per ticker from a freshly-refreshed cache. New qualifying
 // tickers are logged with today's price as the baseline; already-tracked tickers just
 // accumulate channels / bump score / extend lastSeen (baseline price is preserved, so
@@ -245,6 +280,14 @@ export async function recordPicks(
   // A price is needed for any ticker that is NEW, *or* that an already-tracked ticker gained a NEW
   // CHANNEL on — the new channel needs its OWN baseline, taken at its own call. Fetching only for
   // new tickers (the pre-fix behaviour) is what forced late mentions onto the original baseline.
+  const avoidsByTicker = avoidsPerTicker(cache);
+  // A ticker needs bars if it may gain a credit OR may CLOSE one. Closable = already in the ledger,
+  // with an open entry for a channel that has since warned against it.
+  const closableTickers = [...avoidsByTicker.entries()].filter(([t, chans]) => {
+    const row = ledger[t];
+    if (!row?.channelEntries) return false;
+    return [...chans.keys()].some(ch => row.channelEntries![ch] && row.channelEntries![ch].closedDate == null);
+  }).map(([t]) => t);
   const needsPrice = [...byTicker.entries()].filter(([t, e]) => {
     if ((net[t] ?? 0) < MIN_SCORE) return false;
     const existing = ledger[t];
@@ -255,14 +298,38 @@ export async function recordPicks(
   // A month of daily bars per ticker needing a new credit — one request each, in parallel. No live
   // quote: it is not a usable baseline here (see baselineFor), so fetching one would only invite
   // its reintroduction as a fallback.
+  const barTickers = [...new Set([...needsPrice.map(([t]) => t), ...closableTickers])];
   const quotes = new Map(
     await Promise.all(
-      needsPrice.map(async ([t]) => [t, { bars: await fetchDailyBars(t) }] as const),
+      barTickers.map(async (t) => [t, { bars: await fetchDailyBars(t) }] as const),
     ),
   );
 
   const baselineFor = (ticker: string, publishedAt: string | undefined): ChannelEntry | null =>
     baselineForCall(quotes.get(ticker)?.bars, publishedAt);
+
+  // CLOSE first, and OUTSIDE the score gate. Avoids are what push a ticker below the buy floor, so
+  // closing inside the gated loop would make this unreachable precisely when the signal is
+  // strongest — the `continue` below skips the ticker entirely.
+  let closed = 0;
+  for (const [ticker, chans] of avoidsByTicker) {
+    const row = ledger[ticker];
+    if (!row?.channelEntries) continue;
+    for (const [ch, avoidAt] of chans) {
+      const entry = row.channelEntries[ch];
+      if (!entry || entry.closedDate != null) continue; // not credited, or already closed (one-way)
+      // An avoid published BEFORE this channel's own entry is not a reversal of it — it belongs to
+      // an earlier episode this one-row-per-ticker store cannot represent. Ignore rather than
+      // closing a position at a price that predates it, which would invert the sign of the result.
+      if (!avoidAt || avoidAt.slice(0, 10) < entry.firstSeenDate) continue;
+      const close = baselineForCall(quotes.get(ticker)?.bars, avoidAt);
+      if (!close) continue; // no settled close after the warning yet — retry next run
+      entry.closedDate = close.firstSeenDate;
+      entry.closePrice = close.priceAtSignal;
+      closed++;
+    }
+  }
+  if (closed > 0) console.log("INFLUENCER_LEDGER_CREDITS_CLOSED", { closed, today });
 
   for (const [ticker, e] of byTicker) {
     const score = net[ticker] ?? 0;
@@ -346,7 +413,7 @@ export function rollupChannels(
   spyByDate: Map<string, number>,
   spyNow: number | null,
 ): ChannelStats[] {
-  const byChannel = new Map<string, { ret: number; alpha: number | null; ticker: string; inherited: boolean }[]>();
+  const byChannel = new Map<string, { ret: number; alpha: number | null; ticker: string; inherited: boolean; closed: boolean }[]>();
   for (const p of picks) {
     if (p.currentPrice == null) continue;
     for (const ch of p.channels) {
@@ -358,13 +425,22 @@ export function rollupChannels(
       const baseDate = entry?.firstSeenDate ?? p.firstSeenDate;
       const inherited = entry ? entry.inherited === true : true;
       if (!(base > 0)) continue;
-      const ret = (p.currentPrice / base - 1) * 100;
+      // A CLOSED credit is measured to its close, not to now: the channel told people out, so the
+      // move after that is not theirs. BOTH legs must use the same end — taking the price at the
+      // close while measuring SPY to today would leave the market's subsequent move inside alpha,
+      // which is the same clock mismatch already fixed on the baseline side.
+      const closedAt = entry?.closedDate && entry.closePrice != null && entry.closePrice > 0
+        ? { date: entry.closedDate, price: entry.closePrice }
+        : null;
+      const endPrice = closedAt ? closedAt.price : p.currentPrice;
+      const spyEnd = closedAt ? (spyByDate.get(closedAt.date) ?? null) : spyNow;
+      const ret = (endPrice / base - 1) * 100;
       const spyThen = spyByDate.get(baseDate) ?? null;
-      const alpha = spyNow != null && spyThen != null && spyThen > 0
-        ? ret - (spyNow / spyThen - 1) * 100
+      const alpha = spyEnd != null && spyThen != null && spyThen > 0
+        ? ret - (spyEnd / spyThen - 1) * 100
         : null;
       const arr = byChannel.get(ch) ?? [];
-      arr.push({ ret, alpha, ticker: p.ticker, inherited });
+      arr.push({ ret, alpha, ticker: p.ticker, inherited, closed: closedAt != null });
       byChannel.set(ch, arr);
     }
   }
@@ -383,7 +459,8 @@ export function rollupChannels(
         bestPick: `${best.ticker} ${best.ret >= 0 ? "+" : ""}${best.ret.toFixed(1)}%`,
         worstPick: `${worst.ticker} ${worst.ret >= 0 ? "+" : ""}${worst.ret.toFixed(1)}%`,
         inheritedPicks: rows.filter((r) => r.inherited).length,
-        tickerReturns: rows.map((r) => ({ ticker: r.ticker, retPct: r.ret })).sort((a, b) => b.retPct - a.retPct),
+        closedPicks: rows.filter((r) => r.closed).length,
+        tickerReturns: rows.map((r) => ({ ticker: r.ticker, retPct: r.ret, ...(r.closed ? { closed: true as const } : {}) })).sort((a, b) => b.retPct - a.retPct),
         alphaPicks: alphas.length,
       };
     })
