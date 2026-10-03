@@ -95,6 +95,11 @@ export interface ChannelStats {
   // inheritedPicks === picks means the whole row is still the OLD measure; 0 means it is fully
   // credited from the channel's own first mentions.
   inheritedPicks: number;
+  /** Every pick credited to this channel with its own return, best first. The aggregates alone are
+   *  unreadable without this: a channel's "27 picks" turned out to be one watchlist video naming 17
+   *  tickers at once, and nothing in the table said so. Showing the constituents makes a hit rate
+   *  auditable against what the channel actually named. */
+  tickerReturns: Array<{ ticker: string; retPct: number }>;
   // How many of `picks` actually have a SPY baseline, i.e. contribute to avgAlphaPct. Channels are
   // RANKED on alpha, and per-channel baselines multiplied the number of dates that must be present
   // in the run history (one per channel-per-ticker, not one per ticker), so a channel can now be
@@ -378,6 +383,7 @@ export function rollupChannels(
         bestPick: `${best.ticker} ${best.ret >= 0 ? "+" : ""}${best.ret.toFixed(1)}%`,
         worstPick: `${worst.ticker} ${worst.ret >= 0 ? "+" : ""}${worst.ret.toFixed(1)}%`,
         inheritedPicks: rows.filter((r) => r.inherited).length,
+        tickerReturns: rows.map((r) => ({ ticker: r.ticker, retPct: r.ret })).sort((a, b) => b.retPct - a.retPct),
         alphaPicks: alphas.length,
       };
     })

@@ -173,3 +173,40 @@ describe("rollupChannels — alpha coverage", () => {
     expect(rows[0].alphaPicks).toBe(1); // ranked on half its credits — now visible
   });
 });
+
+// The email now lists each channel's actual picks, because the aggregates alone were unauditable:
+// a channel's "27 picks" turned out to be one watchlist video naming 17 tickers at once.
+describe("rollupChannels — per-channel constituents", () => {
+  const base = {
+    maxScore: 4, maxConfidence: "high" as const, lastSeenDate: "2026-10-01",
+    marketReturnPct: null, alphaPct: null, daysElapsed: 30,
+  };
+  const row = (ticker: string, cur: number) => ({
+    ...base, ticker, channels: ["Ch"], firstSeenDate: "2026-09-01", priceAtSignal: 100,
+    currentPrice: cur, returnPct: cur - 100,
+    channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100 } },
+  });
+
+  test("lists every credited pick with its own return", () => {
+    const [c] = rollupChannels([row("AAA", 150), row("BBB", 90)], new Map(), null);
+    expect(c.tickerReturns.map(t => t.ticker)).toEqual(["AAA", "BBB"]);
+    expect(c.tickerReturns[0].retPct).toBeCloseTo(50, 6);
+    expect(c.tickerReturns[1].retPct).toBeCloseTo(-10, 6);
+  });
+
+  test("sorted best-first, so the email leads with the winners", () => {
+    const [c] = rollupChannels([row("LOSS", 80), row("WIN", 200), row("MID", 110)], new Map(), null);
+    expect(c.tickerReturns.map(t => t.ticker)).toEqual(["WIN", "MID", "LOSS"]);
+  });
+
+  test("the constituent count matches the headline pick count — no silent drops", () => {
+    const [c] = rollupChannels([row("AAA", 150), row("BBB", 90), row("CCC", 101)], new Map(), null);
+    expect(c.tickerReturns.length).toBe(c.picks);
+  });
+
+  test("an unpriced pick is absent from BOTH the count and the list", () => {
+    const [c] = rollupChannels([row("AAA", 150), { ...row("BBB", 0), currentPrice: null }], new Map(), null);
+    expect(c.picks).toBe(1);
+    expect(c.tickerReturns.map(t => t.ticker)).toEqual(["AAA"]);
+  });
+});

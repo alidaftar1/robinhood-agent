@@ -30,6 +30,11 @@ interface VerifyResult {
 // the reviewer can't push the whole autopilot over the limit (Pro allows it).
 export const maxDuration = 200;
 
+// How many of a channel's picks the ledger table lists. Enough to audit a hit rate against the
+// actual names, few enough that one watchlist video (Everything Money named 17 tickers in a single
+// video) does not swamp the email. The overflow is always counted, never silently truncated.
+const LEDGER_PICKS_SHOWN = 14;
+
 function todayPT(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
 }
@@ -643,7 +648,15 @@ export async function GET(request: Request) {
       : `<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
       <tr style="color:#6b7280"><td style="padding:3px 8px">Channel</td><td style="padding:3px 8px;text-align:right">Picks</td><td style="padding:3px 8px;text-align:right">Hit</td><td style="padding:3px 8px;text-align:right">Avg ret</td><td style="padding:3px 8px;text-align:right">vs SPY</td></tr>
       ${agedChannels.slice(0, 8).map((c) =>
-        `<tr><td style="padding:3px 8px">${escapeHtml(c.channel)}${c.picks < 4 ? ` <span style="color:#9ca3af;font-size:11px">thin</span>` : ""}${c.inheritedPicks > 0 ? ` <span style="color:#9ca3af;font-size:11px" title="credited from the ticker's first sighting, not this channel's own first mention">${c.inheritedPicks}/${c.picks} inherited</span>` : ""}${c.alphaPicks < c.picks ? ` <span style="color:#9ca3af;font-size:11px" title="picks with a SPY baseline; the rest are excluded from vs SPY">${c.alphaPicks}/${c.picks} vs-SPY</span>` : ""}</td><td style="padding:3px 8px;text-align:right">${c.picks}</td><td style="padding:3px 8px;text-align:right">${c.hitRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;color:${c.avgReturnPct >= 0 ? "#059669" : "#dc2626"}">${c.avgReturnPct >= 0 ? "+" : ""}${c.avgReturnPct.toFixed(1)}%</td><td style="padding:3px 8px;text-align:right;font-weight:bold;color:${c.avgAlphaPct == null ? "#9ca3af" : c.avgAlphaPct >= 0 ? "#059669" : "#dc2626"}">${c.avgAlphaPct != null ? `${c.avgAlphaPct >= 0 ? "+" : ""}${c.avgAlphaPct.toFixed(1)}%` : "—"}</td></tr>`
+        `<tr><td style="padding:3px 8px">${escapeHtml(c.channel)}${c.picks < 4 ? ` <span style="color:#9ca3af;font-size:11px">thin</span>` : ""}${c.inheritedPicks > 0 ? ` <span style="color:#9ca3af;font-size:11px" title="credited from the ticker's first sighting, not this channel's own first mention">${c.inheritedPicks}/${c.picks} inherited</span>` : ""}${c.alphaPicks < c.picks ? ` <span style="color:#9ca3af;font-size:11px" title="picks with a SPY baseline; the rest are excluded from vs SPY">${c.alphaPicks}/${c.picks} vs-SPY</span>` : ""}</td><td style="padding:3px 8px;text-align:right">${c.picks}</td><td style="padding:3px 8px;text-align:right">${c.hitRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;color:${c.avgReturnPct >= 0 ? "#059669" : "#dc2626"}">${c.avgReturnPct >= 0 ? "+" : ""}${c.avgReturnPct.toFixed(1)}%</td><td style="padding:3px 8px;text-align:right;font-weight:bold;color:${c.avgAlphaPct == null ? "#9ca3af" : c.avgAlphaPct >= 0 ? "#059669" : "#dc2626"}">${c.avgAlphaPct != null ? `${c.avgAlphaPct >= 0 ? "+" : ""}${c.avgAlphaPct.toFixed(1)}%` : "—"}</td></tr>` +
+        // The constituents, so a hit rate can be checked against what the channel actually named.
+        // Winners first; green/red per pick. Capped so one watchlist video naming 17 tickers cannot
+        // swamp the email — the overflow count stays visible rather than the list silently ending.
+        `<tr><td colspan="5" style="padding:0 8px 6px 8px;font-size:11px;color:#6b7280;line-height:1.6">${
+          c.tickerReturns.slice(0, LEDGER_PICKS_SHOWN).map(t =>
+            `<span style="color:${t.retPct >= 0 ? "#059669" : "#dc2626"}">${escapeHtml(t.ticker)} ${t.retPct >= 0 ? "+" : ""}${t.retPct.toFixed(0)}%</span>`
+          ).join(" · ")
+        }${c.tickerReturns.length > LEDGER_PICKS_SHOWN ? ` <span style="color:#9ca3af">+${c.tickerReturns.length - LEDGER_PICKS_SHOWN} more</span>` : ""}</td></tr>`
       ).join("")}
     </table>
     <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>vs SPY</strong> = average return above/below the S&amp;P over each pick's own window — the real edge, stripped of the market's move (channels are ranked by it). Small, correlated samples — a ranking hint, not a verdict; "thin" = very few picks.</p>`}
