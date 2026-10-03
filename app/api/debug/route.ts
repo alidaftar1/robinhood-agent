@@ -3,6 +3,7 @@ import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, co
 import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
+import { prunePicksByFirstSeen } from "@/lib/influencer-ledger";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -271,6 +272,23 @@ export async function GET(request: Request) {
 
   // Force-refresh the SEC quality scores from source (bypasses the ~weekly cache). Use after a change
   // to the quality screen so the next trade run picks it up immediately instead of waiting out the TTL.
+  // Surgical ledger prune by first-seen date. The ledger is ONE Redis key holding a JSON object, so
+  // the Upstash console can only delete the whole thing — which is the full reset the owner chose
+  // against. Gated by requireCronAuth like everything else here.
+  const pruneDates = url.searchParams.get("pruneLedgerDates");
+  if (pruneDates) {
+    try {
+      const r = await prunePicksByFirstSeen(pruneDates.split(",").map(d => d.trim()));
+      results.pruneLedgerDates = r.skipped
+        ? "skipped — ledger read failed; refusing to write (would wipe history)"
+        : r.refused
+          ? `refused: ${r.refused}`
+          : `removed ${r.removed.length}: ${r.removed.join(" ") || "none"} — ${r.remaining} picks remain`;
+    } catch (e) {
+      results.pruneLedgerDates = `error: ${e}`;
+    }
+  }
+
   if (url.searchParams.get("refreshQuality")) {
     try {
       const q = await getQualityScores(true);

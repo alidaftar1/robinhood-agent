@@ -450,3 +450,50 @@ export async function computeAttribution(
   picks.sort((a, b) => (b.returnPct ?? -Infinity) - (a.returnPct ?? -Infinity));
   return { picks, channels };
 }
+
+/**
+ * Pure: which tickers in `ledger` were first SEEN on one of `dates`.
+ *
+ * The launch cohort (2026-07-28/29) is baselined on the day the ledger was DEPLOYED, not on the day
+ * any channel made the call, because picks predating the ledger took that day's price as their
+ * baseline. SPCX is the clearest case: $115.38 → $158.96 reads as +37.8%, while the name is only
+ * ~+6% YTD — the window starts at a local low chosen by a deploy date. Those rows cannot be
+ * corrected (the real per-channel dates were never recorded), only removed.
+ *
+ * Separated from the write so the SELECTION is testable without Redis: this deletes live history,
+ * and a predicate that quietly matched everything would be indistinguishable from a full reset.
+ */
+export function pickTickersToPrune(ledger: Record<string, LedgerPick>, dates: string[]): string[] {
+  const want = new Set(dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)));
+  if (want.size === 0) return []; // no valid date → remove NOTHING, never "match all"
+  return Object.values(ledger)
+    .filter(p => want.has(p.firstSeenDate))
+    .map(p => p.ticker)
+    .sort();
+}
+
+/** Refuse a prune that would take most of the ledger — at that point it is a reset wearing a
+ *  surgical label, and the owner chose surgical precisely to keep the rest. */
+export const MAX_PRUNE_FRACTION = 0.5;
+
+/**
+ * Remove picks first seen on the given dates. Returns what it did; writes only on a clean read.
+ */
+export async function prunePicksByFirstSeen(
+  dates: string[],
+): Promise<{ removed: string[]; remaining: number; skipped?: true; refused?: string }> {
+  const ledger = await ledgerGet();
+  // Read error → do NOT write. Overwriting on a transient read failure would wipe the history this
+  // ledger exists to keep (same rule as recordPicks).
+  if (ledger === null) return { removed: [], remaining: 0, skipped: true };
+  const total = Object.keys(ledger).length;
+  const victims = pickTickersToPrune(ledger, dates);
+  if (victims.length === 0) return { removed: [], remaining: total };
+  if (total > 0 && victims.length / total > MAX_PRUNE_FRACTION) {
+    return { removed: [], remaining: total, refused: `would remove ${victims.length} of ${total} (> ${MAX_PRUNE_FRACTION * 100}%) — that is a reset, not a prune` };
+  }
+  for (const t of victims) delete ledger[t];
+  await ledgerSet(ledger);
+  console.warn("INFLUENCER_LEDGER_PRUNED", { dates, removed: victims, remaining: Object.keys(ledger).length });
+  return { removed: victims, remaining: Object.keys(ledger).length };
+}
