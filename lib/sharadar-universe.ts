@@ -265,3 +265,102 @@ export function computeUniverseDrift(
 export function currentMembers(rows: Sp500Row[]): Set<string> {
   return new Set(rows.filter(r => r.action === "current" && r.ticker).map(r => r.ticker));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTOR MAPPING + SYNC PLANNER
+//
+// STOCK_SECTOR maps a symbol to one of the 11 SPDR sector ETFs, and the sp500 membership table
+// carries no sector at all — so adding any index member needs a sector from somewhere. Sharadar's
+// TICKERS table has one, and its taxonomy is exactly 1:1 with the 11 ETFs. All eleven strings below
+// were READ from the API on 2026-10-03 (XOM/JNJ/PG/HD/LIN/AMT/NEE/CAT/JPM/GOOGL/MSFT), not guessed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const SHARADAR_SECTOR_TO_ETF: Record<string, string> = {
+  "Basic Materials": "XLB",
+  "Communication Services": "XLC",
+  "Consumer Cyclical": "XLY",
+  "Consumer Defensive": "XLP",
+  "Energy": "XLE",
+  "Financial Services": "XLF",
+  "Healthcare": "XLV",
+  "Industrials": "XLI",
+  "Real Estate": "XLRE",
+  "Technology": "XLK",
+  "Utilities": "XLU",
+};
+
+/** null for an unknown sector — a name whose sector we cannot place must NOT be added, because
+ *  STOCK_SECTOR's value IS the sector cap's input. A wrong ETF silently miscounts that cap. */
+export function sectorToEtf(sharadarSector: string | undefined): string | null {
+  if (!sharadarSector) return null;
+  return SHARADAR_SECTOR_TO_ETF[sharadarSector.trim()] ?? null;
+}
+
+export interface SyncCandidate {
+  ticker: string;
+  sector?: string;
+  /** A live quote resolved — a name we cannot price can never be ranked. */
+  priced: boolean;
+  /** A CIK resolved — without one the quality screen withholds it forever, so adding it would
+   *  create a permanently-unbuyable entry that still burns a quote every run. */
+  hasCik: boolean;
+}
+
+export interface SyncPlan {
+  add: Array<{ ticker: string; etf: string }>;
+  remove: string[];
+  /** Candidates rejected by a gate, with the reason — never silently dropped. */
+  rejected: Array<{ ticker: string; reason: string }>;
+  /** Removals SUPPRESSED because the name is currently held. */
+  heldBlocked: string[];
+}
+
+/**
+ * Pure. Decides what a universe sync WOULD do; the script applies it as a reviewed diff.
+ *
+ * Every gate fails CLOSED — an unplaceable, unpriceable or un-CIK-able name is rejected WITH a
+ * reason rather than added on partial information, because STOCK_SECTOR is the buy universe and its
+ * value feeds the sector cap.
+ *
+ * Removals are suppressed for currently-HELD names. A held name dropping out of the universe leaves
+ * the shortlist, and "fell off the shortlist" is a reason lib/sell-rail accepts for SELLING — so a
+ * tidy-up of the universe could otherwise liquidate a position.
+ */
+export function planUniverseSync(input: {
+  indexMembers: Set<string>;
+  ourUniverse: Set<string>;
+  candidates: SyncCandidate[];
+  held: Set<string>;
+  renames?: Record<string, string>;
+}): SyncPlan {
+  const { indexMembers, ourUniverse, candidates, held, renames = {} } = input;
+  const byTicker = new Map(candidates.map(c => [c.ticker, c]));
+  const renamedIndex = new Set(
+    Object.entries(renames).filter(([ours, idx]) => ourUniverse.has(ours) && indexMembers.has(idx)).map(([, idx]) => idx),
+  );
+  const renamedOurs = new Set(
+    Object.entries(renames).filter(([ours, idx]) => ourUniverse.has(ours) && indexMembers.has(idx)).map(([ours]) => ours),
+  );
+
+  const add: SyncPlan["add"] = [];
+  const rejected: SyncPlan["rejected"] = [];
+  for (const t of [...indexMembers].sort()) {
+    if (ourUniverse.has(t) || renamedIndex.has(t)) continue;  // already covered, or it is a rename
+    const c = byTicker.get(t);
+    if (!c) { rejected.push({ ticker: t, reason: "no Sharadar row" }); continue; }
+    const etf = sectorToEtf(c.sector);
+    if (!etf) { rejected.push({ ticker: t, reason: `unmapped sector "${c.sector ?? ""}"` }); continue; }
+    if (!c.priced) { rejected.push({ ticker: t, reason: "no live quote" }); continue; }
+    if (!c.hasCik) { rejected.push({ ticker: t, reason: "no CIK — quality screen would withhold it forever" }); continue; }
+    add.push({ ticker: t, etf });
+  }
+
+  const remove: string[] = [];
+  const heldBlocked: string[] = [];
+  for (const t of [...ourUniverse].sort()) {
+    if (indexMembers.has(t) || renamedOurs.has(t)) continue;
+    if (held.has(t)) { heldBlocked.push(t); continue; }
+    remove.push(t);
+  }
+  return { add, remove, rejected, heldBlocked };
+}
