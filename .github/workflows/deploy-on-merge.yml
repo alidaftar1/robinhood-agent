@@ -51,7 +51,8 @@ jobs:
         # See the matching note in autopilot-automerge.yml: the runner has no account IDs, so the
         # weaker generic-pattern-only mode is declared explicitly rather than happening silently.
         env:
-          ALLOW_NO_ACCOUNT_IDS: "1"
+          AGENTIC_ACCOUNT_ID: ${{ secrets.AGENTIC_ACCOUNT_ID }}
+          PERSONAL_ACCOUNT_ID: ${{ secrets.PERSONAL_ACCOUNT_ID }}
         run: bun run check:secrets
       - name: Typecheck + build (gate)
         run: bunx tsc --noEmit && bun run build

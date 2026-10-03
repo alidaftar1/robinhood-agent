@@ -2,12 +2,20 @@
 
 Audited 2026-10-03.
 
-## The gap is exactly two secrets
+## RESOLVED 2026-10-03 — both added, escapes removed
 
-`PERSONAL_ACCOUNT_ID` and `AGENTIC_ACCOUNT_ID` are **not** GitHub Actions secrets. That is why all
-three workflows that run `check:secrets` declare `ALLOW_NO_ACCOUNT_IDS: "1"` — the scanner's
-strongest check (exact match against the real account numbers) is off in CI, by declaration rather
-than silently.
+## The gap was exactly two secrets
+
+`PERSONAL_ACCOUNT_ID` and `AGENTIC_ACCOUNT_ID` were not GitHub Actions secrets, which is why all
+three workflows that run `check:secrets` declared `ALLOW_NO_ACCOUNT_IDS: "1"` — the scanner's
+strongest check (exact match against the real account numbers) was off in CI, by declaration rather
+than silently. Both are now set and all three escapes are gone; CI runs the same check as a local
+`bun run check:secrets`.
+
+The scanner is also now PER-ID rather than all-or-nothing: it value-checks whichever ids it has and
+names them in its success line. That matters if `PERSONAL_ACCOUNT_ID` is ever withdrawn — nothing
+but this script reads it, so keeping a personal identifier in CI is a real cost — because the
+agentic check would keep running instead of the whole mode collapsing to generic patterns.
 
 Everything else is INFERRED to be configured from behaviour, not confirmed by listing (no `gh` on this
 machine to check):
@@ -16,8 +24,8 @@ which would work with a missing secret.
 
 | secret | used by | status |
 |---|---|---|
-| `AGENTIC_ACCOUNT_ID` | the 3 `check:secrets` callers | **MISSING** |
-| `PERSONAL_ACCOUNT_ID` | the 3 `check:secrets` callers | **MISSING** |
+| `AGENTIC_ACCOUNT_ID` | the 3 `check:secrets` callers | set 2026-10-03 |
+| `PERSONAL_ACCOUNT_ID` | the 3 `check:secrets` callers | set 2026-10-03 |
 | `ANTHROPIC_API_KEY` | `autopilot.yml` | set |
 | `CRON_SECRET` | `autopilot.yml`, `cron.yml`, `probe-mcp-schema.yml` | set |
 | `RESEND_API_KEY`, `ALERT_EMAIL` | `autopilot.yml` | set |

@@ -174,15 +174,36 @@ done
 
 # Unusable = absent, blank, or too short to match anything real. A 1-char value would let the check
 # "run" while being incapable of finding a leak — the same false confidence as skipping it.
+#
+# PER-ID, not all-or-nothing. The previous version refused the whole exact-match mode when EITHER
+# id was missing, which forced a caller that legitimately has only one into ALLOW_NO_ACCOUNT_IDS —
+# throwing away the check it COULD have run. That mattered in practice: PERSONAL_ACCOUNT_ID is read
+# by nothing but this script (the MCP is sandboxed to the agentic account and the personal-
+# comparison code was removed), so storing it as a CI secret spreads a personal identifier to one
+# more system to guard a thin leak vector. AGENTIC_ACCOUNT_ID is the live account, named throughout
+# the code, prompts and logs, and is the real risk. Checking one honestly beats checking neither.
+#
+# The requirement is unchanged and is the only thing that ever mattered here: a partial scan must
+# never be reportable as a complete one. So the success line NAMES which ids were value-checked.
 UNUSABLE=""
+CHECKED=""
 for v in PERSONAL_ACCOUNT_ID AGENTIC_ACCOUNT_ID; do
   val="${!v:-}"
   if [ -z "$val" ] || [ "${#val}" -lt "$MIN_ACCOUNT_ID_LEN" ]; then
     UNUSABLE="${UNUSABLE:+$UNUSABLE, }$v"
+  else
+    CHECKED="${CHECKED:+$CHECKED, }$v"
   fi
 done
 
-if [ -n "$UNUSABLE" ]; then
+# Refuse only when NOTHING can be value-checked. With at least one usable id the strongest check is
+# genuinely running, just not over everything — which the final line states explicitly.
+if [ -n "$UNUSABLE" ] && [ -n "$CHECKED" ]; then
+  echo "ℹ️  check-secrets: value-checking ${CHECKED}; no usable value for ${UNUSABLE} (not fatal — at"
+  echo "    least one id is being matched by value, and the final line says which)."
+fi
+
+if [ -n "$UNUSABLE" ] && [ -z "$CHECKED" ]; then
   if [ "${ALLOW_NO_ACCOUNT_IDS:-}" = "1" ]; then
     echo "⚠️  check-secrets: exact account-ID matching DISABLED for: ${UNUSABLE}."
     echo "    Running in DECLARED generic-pattern-only mode (ALLOW_NO_ACCOUNT_IDS=1). A pass here"
@@ -210,8 +231,10 @@ if [ "$hits" -ne 0 ]; then
   exit 1
 fi
 # The success line names the MODE. A bare ✅ is what let a degraded scan read as a complete one.
-if [ -n "$UNUSABLE" ]; then
+if [ -z "$CHECKED" ]; then
   echo "✅ check-secrets: no secrets detected — generic patterns only (account IDs NOT value-checked)."
+elif [ -n "$UNUSABLE" ]; then
+  echo "✅ check-secrets: no secrets detected — value-checked: ${CHECKED}; NOT value-checked: ${UNUSABLE}."
 else
   echo "✅ check-secrets: no secrets or personal info detected in tracked files (account IDs value-checked)."
 fi
