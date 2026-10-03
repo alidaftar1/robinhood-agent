@@ -749,10 +749,37 @@ export function firstCloseAfter(bars: DatedBars, afterEpochSec: number): { date:
   return null; // no session has closed yet after that moment
 }
 
-/** Daily bars for the last month — enough to baseline anything published inside the lookback. */
-export async function fetchDailyBars(symbol: string): Promise<DatedBars | null> {
+/**
+ * The first close on or AFTER a calendar date, with its session date.
+ *
+ * Distinct from firstCloseAfter, which is strictly after a TIMESTAMP because a video published
+ * mid-session must not claim that session's close. A horizon date carries no time-of-day and no
+ * look-ahead risk: day 30 lands on a weekend or holiday constantly, and the honest mark is the next
+ * session that actually traded. Returns null when no session has closed at or after the date, which
+ * is how an IMMATURE pick is detected rather than being marked at a partial window.
+ */
+export function closeOnOrAfterDate(bars: DatedBars, date: string): { date: string; close: number } | null {
+  for (let i = 0; i < bars.ts.length; i++) {
+    const c = bars.closes[i];
+    if (c == null) continue;
+    const d = new Date(bars.ts[i] * 1000).toISOString().slice(0, 10);
+    if (d >= date) return { date: d, close: c };
+  }
+  return null;
+}
+
+/** Add calendar days to a YYYY-MM-DD date, returning YYYY-MM-DD. */
+export function addDays(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Daily bars. 1mo is enough to baseline anything published inside the signal lookback; a longer
+ * range is needed to resolve a 30-day horizon close for a pick first seen months ago.
+ */
+export async function fetchDailyBars(symbol: string, range: "1mo" | "6mo" = "1mo"): Promise<DatedBars | null> {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=${range}&interval=1d`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const data = await res.json() as {

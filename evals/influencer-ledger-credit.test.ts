@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { rollupChannels, migratedChannelEntries, type PickOutcome, type LedgerPick } from "../lib/influencer-ledger";
+import type { DatedBars } from "../lib/market-data";
 
 // THE BUG THIS GUARDS: every channel listed on a ticker used to be credited with the ticker's
 // ENTIRE return since its first sighting. A channel that mentioned an already-logged winner
@@ -269,5 +270,77 @@ describe("rollupChannels — a credit closed by the channel's own AVOID", () => 
     const rows = rollupChannels([two], spy, 560);
     expect(rows.find(r => r.channel === "Early")!.avgReturnPct).toBeCloseTo(30, 6);
     expect(rows.find(r => r.channel === "Late")!.avgReturnPct).toBeCloseTo(-40, 6);
+  });
+});
+
+// EARLIEST WINS: a credit ends at the channel's own avoid or at HORIZON_DAYS, whichever is first.
+// Without a horizon every return ran first-sighting → now, so "hit" meant "green at this instant".
+describe("rollupChannels — 30-day horizon, earliest-wins", () => {
+  const d = (iso: string) => Math.floor(Date.parse(`${iso}T13:30:00Z`) / 1000);
+  // Daily bars spanning 2026-09-01 .. 2026-10-10, price rising then collapsing after day 30.
+  const bars: DatedBars = {
+    ts: ["2026-09-01","2026-09-15","2026-10-01","2026-10-05","2026-10-10"].map(d),
+    closes: [100, 120, 130, 60, 50],
+  };
+  const spy = new Map([["2026-09-01", 500], ["2026-09-15", 510], ["2026-10-01", 520], ["2026-10-10", 560]]);
+  const barsByTicker = new Map([["AAA", bars]]);
+  const mk = (over: Partial<PickOutcome> = {}): PickOutcome => ({
+    ticker: "AAA", channels: ["Ch"], maxScore: 4, maxConfidence: "high",
+    firstSeenDate: "2026-09-01", lastSeenDate: "2026-10-01", priceAtSignal: 100,
+    currentPrice: 50, returnPct: -50, marketReturnPct: null, alphaPct: null, daysElapsed: 39,
+    channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100 } },
+    ...over,
+  });
+
+  test("closes at day 30, so the later collapse is NOT charged to the channel", () => {
+    const [c] = rollupChannels([mk()], spy, 560, barsByTicker);
+    expect(c.avgReturnPct).toBeCloseTo(30, 6);  // 100 -> 130 at 2026-10-01, not -> 50
+    expect(c.medianHoldDays).toBe(30);
+  });
+
+  test("an AVOID before day 30 wins — the channel's own exit beats the horizon", () => {
+    const early = mk({ channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100, closedDate: "2026-09-15", closePrice: 120 } } });
+    const [c] = rollupChannels([early], spy, 560, barsByTicker);
+    expect(c.avgReturnPct).toBeCloseTo(20, 6);  // 100 -> 120 at the avoid
+    expect(c.closedPicks).toBe(1);
+    expect(c.medianHoldDays).toBe(14);
+  });
+
+  test("an AVOID after day 30 is irrelevant — the horizon already closed it", () => {
+    const late = mk({ channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100, closedDate: "2026-10-05", closePrice: 60 } } });
+    const [c] = rollupChannels([late], spy, 560, barsByTicker);
+    expect(c.avgReturnPct).toBeCloseTo(30, 6);
+    expect(c.closedPicks).toBe(0); // closed by the horizon, not by the avoid
+  });
+
+  test("alpha uses SPY at the SAME end date as the pick", () => {
+    const [c] = rollupChannels([mk()], spy, 560, barsByTicker);
+    // 30% − (520/500−1 = 4%) = 26%. Marking SPY to 560 would give 30 − 12 = 18%.
+    expect(c.avgAlphaPct!).toBeCloseTo(26, 4);
+  });
+
+  test("an IMMATURE pick is pending — excluded from every stat, and counted", () => {
+    const fresh = mk({
+      firstSeenDate: "2026-10-10", priceAtSignal: 50,
+      channelEntries: { Ch: { firstSeenDate: "2026-10-10", priceAtSignal: 50 } },
+    });
+    const rows = rollupChannels([fresh], spy, 560, barsByTicker);
+    // Only pending picks → the channel has nothing measurable to report.
+    expect(rows).toEqual([]);
+  });
+
+  test("pending picks are counted alongside measured ones", () => {
+    const fresh = { ...mk({ ticker: "BBB" }), firstSeenDate: "2026-10-10", priceAtSignal: 50,
+      channelEntries: { Ch: { firstSeenDate: "2026-10-10", priceAtSignal: 50 } } };
+    const rows = rollupChannels([mk(), fresh], spy, 560, new Map([["AAA", bars], ["BBB", bars]]));
+    const c = rows.find(r => r.channel === "Ch")!;
+    expect(c.picks).toBe(1);
+    expect(c.pendingPicks).toBe(1);
+  });
+
+  test("without bars it degrades to the open-ended measure rather than marking all pending", () => {
+    const [c] = rollupChannels([mk()], spy, 560);
+    expect(c.avgReturnPct).toBeCloseTo(-50, 6);
+    expect(c.pendingPicks).toBe(0);
   });
 });

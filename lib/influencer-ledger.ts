@@ -16,7 +16,7 @@
 // pre-ledger history is unrecoverable — the cache didn't keep it).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { fetchQuoteLite, fetchDailyBars, firstCloseAfter, type DatedBars } from "@/lib/market-data";
+import { fetchQuoteLite, fetchDailyBars, firstCloseAfter, closeOnOrAfterDate, addDays, type DatedBars } from "@/lib/market-data";
 import { getRuns } from "@/lib/run-store";
 import { netScores, INFLUENCER_BUY_FLOOR } from "@/lib/influencer-signals";
 import type { InfluencerCache } from "@/lib/influencer-signals";
@@ -117,6 +117,13 @@ export interface ChannelStats {
   tickerReturns: Array<{ ticker: string; retPct: number; closed?: true }>;
   /** Credits frozen because the channel later said AVOID. Measured to that close, not to now. */
   closedPicks: number;
+  /** Picks whose window has not finished — no avoid yet and under HORIZON_DAYS old. EXCLUDED from
+   *  every stat above, and counted here so a thin sample cannot pass for a full one. */
+  pendingPicks: number;
+  /** Median days held across the measured picks. Surfaced because earliest-wins means windows are
+   *  NOT uniform — a 12-day exit and a 30-day hold are averaged together — so the mixing has to be
+   *  visible rather than implied by a constant. */
+  medianHoldDays: number | null;
   // How many of `picks` actually have a SPY baseline, i.e. contribute to avgAlphaPct. Channels are
   // RANKED on alpha, and per-channel baselines multiplied the number of dates that must be present
   // in the run history (one per channel-per-ticker, not one per ticker), so a channel can now be
@@ -408,12 +415,33 @@ export async function recordPicks(
 // Per-channel rollup, extracted as a PURE function so the credit rule is unit-testable without
 // Redis or a live quote. This is where the union-credit fix lives, and an untested credit rule is
 // how the original one shipped: every channel on a ticker took the ticker's whole return.
+/**
+ * How long a credit is measured for, unless the channel closes it sooner.
+ *
+ * Without a horizon every return runs first-sighting → now, so "hit" means "green at this instant"
+ * and the stats drift with the market instead of reflecting decisions. 30 calendar days also BOUNDS
+ * the window mixing: earliest-wins keeps windows non-uniform (a 12-day exit vs a 30-day hold), but
+ * capped at 30 rather than unbounded-and-growing, which was 66+ days and climbing.
+ */
+export const HORIZON_DAYS = 30;
+
+/**
+ * EARLIEST WINS. A credit ends at the channel's own avoid, or at HORIZON_DAYS, whichever comes
+ * first — because the question being answered is "what did following this channel return", which
+ * includes its exit timing. Charging it for the 18 days after it said get out is the bias the
+ * avoid-close removed; holding past 30 days is the open-ended drift the horizon removes.
+ *
+ * `barsByTicker` is optional: without bars the horizon cannot be resolved and the function degrades
+ * to the previous open-ended measure rather than marking everything pending.
+ */
 export function rollupChannels(
   picks: PickOutcome[],
   spyByDate: Map<string, number>,
   spyNow: number | null,
+  barsByTicker?: Map<string, DatedBars>,
 ): ChannelStats[] {
-  const byChannel = new Map<string, { ret: number; alpha: number | null; ticker: string; inherited: boolean; closed: boolean }[]>();
+  const byChannel = new Map<string, { ret: number; alpha: number | null; ticker: string; inherited: boolean; closed: boolean; heldDays: number }[]>();
+  const pendingByChannel = new Map<string, number>();
   for (const p of picks) {
     if (p.currentPrice == null) continue;
     for (const ch of p.channels) {
@@ -429,18 +457,33 @@ export function rollupChannels(
       // move after that is not theirs. BOTH legs must use the same end — taking the price at the
       // close while measuring SPY to today would leave the market's subsequent move inside alpha,
       // which is the same clock mismatch already fixed on the baseline side.
-      const closedAt = entry?.closedDate && entry.closePrice != null && entry.closePrice > 0
+      const avoidAt = entry?.closedDate && entry.closePrice != null && entry.closePrice > 0
         ? { date: entry.closedDate, price: entry.closePrice }
         : null;
+      // The horizon mark, if bars are available and day 30 has actually traded.
+      const bars = barsByTicker?.get(p.ticker);
+      const horizonHit = bars ? closeOnOrAfterDate(bars, addDays(baseDate, HORIZON_DAYS)) : null;
+      const horizonAt = horizonHit && horizonHit.close > 0
+        ? { date: horizonHit.date, price: horizonHit.close }
+        : null;
+      // EARLIEST WINS.
+      const closedAt = avoidAt && horizonAt
+        ? (avoidAt.date <= horizonAt.date ? avoidAt : horizonAt)
+        : (avoidAt ?? horizonAt);
+      // PENDING: bars exist (so the horizon is knowable) but day 30 has not traded and there is no
+      // avoid — the window is unfinished, so this pick contributes to NOTHING. Counting a partial
+      // window would let a 3-day-old pick move a 30-day statistic.
+      if (!closedAt && bars) { pendingByChannel.set(ch, (pendingByChannel.get(ch) ?? 0) + 1); continue; }
       const endPrice = closedAt ? closedAt.price : p.currentPrice;
       const spyEnd = closedAt ? (spyByDate.get(closedAt.date) ?? null) : spyNow;
+      const heldDays = closedAt ? Math.round((Date.parse(closedAt.date) - Date.parse(baseDate)) / 86_400_000) : p.daysElapsed;
       const ret = (endPrice / base - 1) * 100;
       const spyThen = spyByDate.get(baseDate) ?? null;
       const alpha = spyEnd != null && spyThen != null && spyThen > 0
         ? ret - (spyEnd / spyThen - 1) * 100
         : null;
       const arr = byChannel.get(ch) ?? [];
-      arr.push({ ret, alpha, ticker: p.ticker, inherited, closed: closedAt != null });
+      arr.push({ ret, alpha, ticker: p.ticker, inherited, closed: avoidAt != null && closedAt === avoidAt, heldDays });
       byChannel.set(ch, arr);
     }
   }
@@ -460,6 +503,8 @@ export function rollupChannels(
         worstPick: `${worst.ticker} ${worst.ret >= 0 ? "+" : ""}${worst.ret.toFixed(1)}%`,
         inheritedPicks: rows.filter((r) => r.inherited).length,
         closedPicks: rows.filter((r) => r.closed).length,
+        pendingPicks: pendingByChannel.get(channel) ?? 0,
+        medianHoldDays: rows.length ? [...rows.map(r => r.heldDays)].sort((a, b) => a - b)[Math.floor(rows.length / 2)] : null,
         tickerReturns: rows.map((r) => ({ ticker: r.ticker, retPct: r.ret, ...(r.closed ? { closed: true as const } : {}) })).sort((a, b) => b.retPct - a.retPct),
         alphaPicks: alphas.length,
       };
@@ -490,7 +535,10 @@ export async function computeAttribution(
   // in the very metric channels are RANKED on. The repo has measured that gap: the 10:30 and close
   // clocks correlate only 0.668 on SPY, and SPY's own annualised Sharpe flips SIGN between them
   // over the same 29 days (docs/HANDOFF-close-snapshot.md). Same-clock on both legs is not a nicety.
-  const spyBars = await fetchDailyBars("SPY");
+  // 6mo, because a 30-day horizon on a pick first seen months ago needs bars that reach back past
+  // its baseline — and the SPY leg must cover the same span or alpha drops out exactly where the
+  // horizon lands.
+  const spyBars = await fetchDailyBars("SPY", "6mo");
   if (spyBars) {
     for (let i = 0; i < spyBars.ts.length; i++) {
       const c = spyBars.closes[i];
@@ -510,9 +558,25 @@ export async function computeAttribution(
     ?? runs.map((r) => r.spyPrice).find((x): x is number => typeof x === "number")
     ?? null;
 
+  // One 6mo bar fetch per ticker REPLACES the per-ticker live quote: same request count, and it
+  // supplies both the horizon mark and the current mark. Everything is then on CLOSES, consistent
+  // with the SPY leg — the previous mix of a live price against a close was the clock mismatch
+  // already fixed on the baseline side.
+  const barsByTicker = new Map<string, DatedBars>();
+  await Promise.all(entries.map(async (p) => {
+    const b = await fetchDailyBars(p.ticker, "6mo");
+    if (b) barsByTicker.set(p.ticker, b);
+  }));
+  const lastClose = (t: string): number | null => {
+    const b = barsByTicker.get(t);
+    if (!b) return null;
+    for (let i = b.closes.length - 1; i >= 0; i--) if (b.closes[i] != null) return b.closes[i] as number;
+    return null;
+  };
+
   const picks: PickOutcome[] = await Promise.all(
     entries.map(async (p) => {
-      const currentPrice = (await fetchQuoteLite(p.ticker))?.price ?? null;
+      const currentPrice = lastClose(p.ticker) ?? (await fetchQuoteLite(p.ticker))?.price ?? null;
       const returnPct =
         currentPrice != null && p.priceAtSignal > 0
           ? (currentPrice / p.priceAtSignal - 1) * 100
@@ -528,7 +592,7 @@ export async function computeAttribution(
   // Per-channel: credit each contributing channel with the pick's RAW return and its market-relative
   // alpha. avgReturn mixes horizons (each pick has its own daysElapsed) — a known v1 limitation; alpha
   // corrects for the market's move over that same horizon, so it's the edge measure worth ranking on.
-  const channels = rollupChannels(picks, spyByDate, spyNow);
+  const channels = rollupChannels(picks, spyByDate, spyNow, barsByTicker);
 
   picks.sort((a, b) => (b.returnPct ?? -Infinity) - (a.returnPct ?? -Infinity));
   return { picks, channels };
