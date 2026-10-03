@@ -639,6 +639,61 @@ export function isNoCikImplausible(noCikCount: number, universeSize: number): bo
   return noCikCount / universeSize > NO_CIK_SUSPECT_FRACTION;
 }
 
+/**
+ * Universe symbols that SEC's ticker file does not carry, resolved to the filer's CIK DIRECTLY.
+ *
+ * Three live S&P names were being withheld from the quality screen — and therefore were UNBUYABLE —
+ * purely because of a symbol mismatch, with nothing in the system saying so. They are not delisted;
+ * SEC's company_tickers.json simply disagrees with our universe about the symbol:
+ *   · BK  — BNY Mellon renamed its ticker BK → BNY; SEC lists BNY.
+ *   · MMC — Marsh & McLennan renamed MMC → MRSH; SEC lists MRSH.
+ *   · FI  — Fiserv renamed FISV → FI; here SEC is the stale one and still lists FISV.
+ * Verified against SEC's own file (2026-10-02): every CIK below was read from the row whose title
+ * names that company. company_tickers_exchange.json is the SAME dataset (identical 10,434 rows and
+ * identical misses), so switching source files does not fix this.
+ *
+ * Mapped to the CIK, NOT to the successor TICKER, because ticker strings are reused between
+ * companies while a CIK is permanent. A ticker alias would quietly start resolving to whoever
+ * adopts "BNY" next, and the failure mode there is scoring one company's fundamentals under another
+ * company's symbol — a wrong BUY, not a missing one.
+ *
+ * Applied ONLY where SEC has no entry for our symbol (see applyTickerOverrides), so if SEC starts
+ * carrying it — or reassigns it to a different filer — SEC always wins and this becomes inert.
+ */
+export const TICKER_CIK_OVERRIDES: Record<string, number> = {
+  BK: 1390777,   // Bank of New York Mellon Corp  (SEC ticker: BNY)
+  MMC: 62709,    // MARSH & MCLENNAN COMPANIES, INC.  (SEC ticker: MRSH)
+  FI: 798354,    // FISERV INC  (SEC ticker: FISV)
+};
+
+/**
+ * Fill ONLY the gaps. Returns what it did so the caller can log it: an override that stopped being
+ * needed is a sign SEC caught up (harmless, but it should not sit here forever), and one that is
+ * shadowed means SEC now maps that symbol itself — possibly to a DIFFERENT company, which is
+ * exactly when this table must not win. Pure, so both branches are pinned by tests.
+ */
+export function applyTickerOverrides(
+  tk2cik: Record<string, number>,
+  overrides: Record<string, number> = TICKER_CIK_OVERRIDES,
+): { applied: string[]; shadowed: string[]; refused?: true } {
+  // Refuse on a map that already failed the usability floor, so these CIKs can never top up a
+  // TRUNCATED read into something that looks healthy. The call site is placed after the check, but
+  // placement is a line ordering that a later edit can silently reverse — a mutation sweep found
+  // exactly that, with no test able to catch it. Enforcing it HERE makes the ordering irrelevant.
+  if (!isUsableTickerMap(tk2cik)) return { applied: [], shadowed: [], refused: true };
+  const applied: string[] = [];
+  const shadowed: string[] = [];
+  for (const [sym, cik] of Object.entries(overrides)) {
+    if (tk2cik[sym] == null) {
+      tk2cik[sym] = cik;
+      applied.push(sym);
+    } else {
+      shadowed.push(sym);
+    }
+  }
+  return { applied, shadowed };
+}
+
 export async function fetchQualityFromSEC(): Promise<QualityData> {
   // No notFoundOk: a 404 here must THROW, so getQualityScores returns null, the real alert fires, and
   // the book keeps trading momentum-only — the behaviour before the sentinel existed.
@@ -650,6 +705,16 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
   }
   if (!isUsableTickerMap(tk2cik)) {
     throw new Error(`SEC ticker map implausibly small (${Object.keys(tk2cik).length}) — refusing to score an empty universe`);
+  }
+  // AFTER the usability check, so a truncated map can never be rescued into looking healthy by a
+  // handful of hardcoded CIKs.
+  const overrides = applyTickerOverrides(tk2cik);
+  if (overrides.applied.length > 0 || overrides.shadowed.length > 0) {
+    console.log("QUALITY_TICKER_OVERRIDES", {
+      applied: overrides.applied,
+      shadowed: overrides.shadowed,
+      note: "applied = SEC has no row for our symbol, CIK supplied from TICKER_CIK_OVERRIDES; shadowed = SEC now carries it, so the override is inert and can be deleted (re-verify it still means the same company first)",
+    });
   }
 
   // Try the most recent fiscal year that has data, newest first, derived from the clock.
