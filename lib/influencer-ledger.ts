@@ -29,7 +29,19 @@ const LEDGER_KEY = "robinhood:influencer-ledger";
 // dissent) ≥ the buy floor. Kept in lock-step with the buy logic so the ledger measures exactly
 // what the strategy would act on. Below the floor the strategy never buys, so tracking would
 // just add noise to the channel stats.
-const MIN_SCORE = INFLUENCER_BUY_FLOOR;
+// TRACKING threshold, deliberately BELOW the buy floor. The ledger used to track only what the
+// sleeve would buy, which threw away every lower-conviction mention — the bulk of what these
+// channels actually say — and left the most actionable question unanswerable: does the buy floor
+// earn its keep? Comparing two cohorts needs far less data than ranking seven channels, and it has
+// an action attached (raise, lower or keep the threshold) that a channel ranking will not have for
+// years.
+//
+// The cohorts must NEVER be pooled. Required n scales with (sigma/effect)^2, so mixing
+// low-conviction mentions into one average halves the effect while leaving the noise, which pushes
+// required n UP ~4x while looking like more data. scoreAtEntry is stored per credit so the split
+// survives into the stats.
+export const MIN_TRACK_SCORE = 1;
+const MIN_SCORE = MIN_TRACK_SCORE;
 // WHAT THIS LEDGER MEASURES, stated because the two readings diverge and the old comment above
 // claimed only one of them. MIN_SCORE keeps WHICH picks are TRACKED in lock-step with the buy
 // floor. It does NOT make the BASELINE an executable entry price: `net` is computed over the whole
@@ -76,6 +88,11 @@ export interface ChannelEntry {
    *  calls into one return. A re-entry is a second episode and needs a model that has them. */
   closedDate?: string;
   closePrice?: number;
+  /** The ticker's NET score when this credit was created. Decides which cohort the credit belongs
+   *  to — at or above INFLUENCER_BUY_FLOOR is what the sleeve would actually buy. Absent on rows
+   *  written before tracking went below the floor; those are all buy-floor picks by construction,
+   *  since nothing else was tracked. */
+  scoreAtEntry?: number;
 }
 
 export interface LedgerPick {
@@ -374,7 +391,7 @@ export async function recordPicks(
         // run (a day late beats crediting a run-up the channel was not present for).
         const entry = baselineFor(ticker, publishedAt);
         if (!entry) { withheld++; continue; }
-        existing.channelEntries[ch] = entry;
+        existing.channelEntries[ch] = { ...entry, scoreAtEntry: score };
       }
       // channels[] stays in lock-step with what is actually credited, so the two can't disagree.
       existing.channels = Object.keys(existing.channelEntries);
@@ -400,7 +417,7 @@ export async function recordPicks(
       for (const [ch, publishedAt] of e.channels) {
         const entry = baselineFor(ticker, publishedAt);
         if (!entry) { withheld++; continue; }
-        entries[ch] = entry;
+        entries[ch] = { ...entry, scoreAtEntry: score };
       }
       // Nothing measurable → do not create the row at all. A row with no credited channel would
       // sit in the ledger forever contributing to no channel's stats.
@@ -465,6 +482,11 @@ export function rollupChannels(
   spyNow: number | null,
   barsByTicker?: Map<string, DatedBars>,
   sectorBarsByEtf?: Map<string, DatedBars>,
+  /** Restricts the rollup to one COHORT by the credit's scoreAtEntry. Cohorts are reported
+   *  separately and never pooled — see MIN_TRACK_SCORE for why pooling would slow the measurement
+   *  down rather than speed it up. A credit with no scoreAtEntry predates sub-floor tracking and is
+   *  a buy-floor pick by construction. */
+  cohort?: (scoreAtEntry: number) => boolean,
 ): ChannelStats[] {
   type Credit = {
     channel: string; ticker: string; ret: number; alpha: number | null; sectorAlpha: number | null;
@@ -482,6 +504,9 @@ export function rollupChannels(
       const base = entry?.priceAtSignal ?? p.priceAtSignal;
       const baseDate = entry?.firstSeenDate ?? p.firstSeenDate;
       const inherited = entry ? entry.inherited === true : true;
+      // Cohort filter. An absent scoreAtEntry predates sub-floor tracking, so it is treated as a
+      // buy-floor pick — that is what it was, since nothing below the floor was recorded then.
+      if (cohort && !cohort(entry?.scoreAtEntry ?? INFLUENCER_BUY_FLOOR)) continue;
       if (!(base > 0)) continue;
       // A CLOSED credit is measured to its close, not to now: the channel told people out, so the
       // move after that is not theirs. BOTH legs must use the same end — taking the price at the
@@ -577,7 +602,7 @@ export function rollupChannels(
 // Score every tracked pick's forward return and roll up per channel. Read-only.
 export async function computeAttribution(
   today: string,
-): Promise<{ picks: PickOutcome[]; channels: ChannelStats[] }> {
+): Promise<{ picks: PickOutcome[]; channels: ChannelStats[]; channelsBelowFloor: ChannelStats[] }> {
   // Read-only path: a null (read error) is safe to treat as empty here — nothing is written.
   const ledger = await ledgerGet();
   const entries = Object.values(ledger ?? {});
@@ -658,10 +683,13 @@ export async function computeAttribution(
     const b = await fetchDailyBars(e, "6mo");
     if (b) sectorBarsByEtf.set(e, b);
   }));
-  const channels = rollupChannels(picks, spyByDate, spyNow, barsByTicker, sectorBarsByEtf);
+  // TWO COHORTS, never pooled. `channels` is what the sleeve would actually buy; the sub-floor set
+  // is the control that says whether the buy floor is doing any work.
+  const channels = rollupChannels(picks, spyByDate, spyNow, barsByTicker, sectorBarsByEtf, (sc) => sc >= INFLUENCER_BUY_FLOOR);
+  const channelsBelowFloor = rollupChannels(picks, spyByDate, spyNow, barsByTicker, sectorBarsByEtf, (sc) => sc < INFLUENCER_BUY_FLOOR);
 
   picks.sort((a, b) => (b.returnPct ?? -Infinity) - (a.returnPct ?? -Infinity));
-  return { picks, channels };
+  return { picks, channels, channelsBelowFloor };
 }
 
 /**

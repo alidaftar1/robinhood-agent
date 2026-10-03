@@ -480,7 +480,8 @@ export async function GET(request: Request) {
   // fail-safe (an observability aid — must never break the report). Meaningful only once
   // picks have some age; day-0 picks read ~0% by construction.
   let ledgerChannels: ChannelStats[] = [];
-  try { ({ channels: ledgerChannels } = await computeAttribution(today)); }
+  let ledgerBelowFloor: ChannelStats[] = [];
+  try { ({ channels: ledgerChannels, channelsBelowFloor: ledgerBelowFloor } = await computeAttribution(today)); }
   catch { /* ledger is best-effort; skip the section if it can't compute */ }
   const agedChannels = ledgerChannels.filter((c) => c.avgReturnPct !== 0 || c.hitRatePct !== 0);
 
@@ -661,7 +662,19 @@ export async function GET(request: Request) {
         }${c.tickerReturns.length > LEDGER_PICKS_SHOWN ? ` <span style="color:#9ca3af">+${c.tickerReturns.length - LEDGER_PICKS_SHOWN} more</span>` : ""}</td></tr>`
       ).join("")}
     </table>
-    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>vs SPY</strong> = average return above/below the S&amp;P over each pick's own window — the real edge, stripped of the market's move (channels are ranked by it). Each pick is measured from the first close after the channel named it until the EARLIER of its own ⏹avoid call or 30 days, so a channel is neither charged for moves after it said get out nor credited for drift it never called. Unfinished windows are excluded and shown as "pending". <strong>vs sector</strong> = the same, against the pick's OWN sector ETF — these picks are mostly AI/semis, so vs-SPY leaves a large common factor in, which is both why the noise is high and why the picks are correlated. Channels are RANKED by it. <strong>vs peers</strong> = against the average pick whose window overlaps, which differences out the regime entirely. Small, correlated samples — a ranking hint, not a verdict; "thin" = very few picks.</p>`}
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>vs SPY</strong> = average return above/below the S&amp;P over each pick's own window — the real edge, stripped of the market's move (channels are ranked by it). Each pick is measured from the first close after the channel named it until the EARLIER of its own ⏹avoid call or 30 days, so a channel is neither charged for moves after it said get out nor credited for drift it never called. Unfinished windows are excluded and shown as "pending". <strong>Below the buy floor</strong> (net 1-2, tracked but never bought): ${(() => {
+      const rows = ledgerBelowFloor;
+      const n = rows.reduce((a, c) => a + c.picks, 0);
+      if (n === 0) return "no picks yet";
+      const w = (sel: (c: ChannelStats) => number | null) => {
+        let num = 0, den = 0;
+        for (const c of rows) { const v = sel(c); if (v != null) { num += v * c.picks; den += c.picks; } }
+        return den ? num / den : null;
+      };
+      const sec = w(c => c.avgSectorAlphaPct);
+      const above = ledgerChannels.reduce((a, c) => a + c.picks, 0);
+      return `${n} picks vs ${above} at or above it; vs sector ${sec != null ? `${sec >= 0 ? "+" : ""}${sec.toFixed(1)}%` : "—"}. If this is not clearly WORSE than the ranked rows above, the floor is not earning its keep.`;
+    })()}<br/><br/><strong>vs sector</strong> = the same, against the pick's OWN sector ETF — these picks are mostly AI/semis, so vs-SPY leaves a large common factor in, which is both why the noise is high and why the picks are correlated. Channels are RANKED by it. <strong>vs peers</strong> = against the average pick whose window overlaps, which differences out the regime entirely. Small, correlated samples — a ranking hint, not a verdict; "thin" = very few picks.</p>`}
   </div>`
     : ""}
 

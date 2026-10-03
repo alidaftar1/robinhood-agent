@@ -445,3 +445,47 @@ describe("rollupChannels — peer-relative requires an overlapping window", () =
     expect(rows.find(r => r.channel === "A")!.avgPeerRelPct).not.toBeNull();
   });
 });
+
+// Cohorts must NEVER be pooled: required n scales with (sigma/effect)^2, so mixing low-conviction
+// mentions into one average halves the effect while leaving the noise — pushing required n UP ~4x
+// while looking like more data.
+describe("rollupChannels — score cohorts", () => {
+  const d = (iso: string) => Math.floor(Date.parse(`${iso}T13:30:00Z`) / 1000);
+  const bars: DatedBars = { ts: ["2026-09-01", "2026-10-01"].map(d), closes: [100, 130] };
+  const spy = new Map([["2026-09-01", 500], ["2026-10-01", 520]]);
+  const mk = (ticker: string, score: number | undefined, px: number) => ({
+    ticker, channels: ["Ch"], maxScore: 4, maxConfidence: "high" as const,
+    firstSeenDate: "2026-09-01", lastSeenDate: "2026-10-01", priceAtSignal: 100,
+    currentPrice: px, returnPct: 0, marketReturnPct: null, alphaPct: null, daysElapsed: 30,
+    channelEntries: { Ch: { firstSeenDate: "2026-09-01", priceAtSignal: 100, ...(score != null ? { scoreAtEntry: score } : {}) } },
+  });
+  const barsFor = (t: string, closes: number[]): [string, DatedBars] => [t, { ts: bars.ts, closes }];
+
+  test("the buy-floor cohort excludes sub-floor credits", () => {
+    const b = new Map([barsFor("HI", [100, 130]), barsFor("LO", [100, 50])]);
+    const [c] = rollupChannels([mk("HI", 4, 130), mk("LO", 1, 50)], spy, 520, b, new Map(), sc => sc >= 3);
+    expect(c.picks).toBe(1);
+    expect(c.avgReturnPct).toBeCloseTo(30, 4);   // the −50% sub-floor pick must not drag it
+  });
+
+  test("the sub-floor cohort is its own population", () => {
+    const b = new Map([barsFor("HI", [100, 130]), barsFor("LO", [100, 50])]);
+    const [c] = rollupChannels([mk("HI", 4, 130), mk("LO", 1, 50)], spy, 520, b, new Map(), sc => sc < 3);
+    expect(c.picks).toBe(1);
+    expect(c.avgReturnPct).toBeCloseTo(-50, 4);
+  });
+
+  test("pooling the two would be a DIFFERENT, misleading number", () => {
+    const b = new Map([barsFor("HI", [100, 130]), barsFor("LO", [100, 50])]);
+    const [pooled] = rollupChannels([mk("HI", 4, 130), mk("LO", 1, 50)], spy, 520, b, new Map());
+    expect(pooled.avgReturnPct).toBeCloseTo(-10, 4);  // neither cohort's truth
+  });
+
+  test("a credit with NO scoreAtEntry counts as buy-floor — nothing below it was tracked then", () => {
+    const b = new Map([barsFor("OLD", [100, 130])]);
+    const atFloor = rollupChannels([mk("OLD", undefined, 130)], spy, 520, b, new Map(), sc => sc >= 3);
+    const below = rollupChannels([mk("OLD", undefined, 130)], spy, 520, b, new Map(), sc => sc < 3);
+    expect(atFloor[0].picks).toBe(1);
+    expect(below).toEqual([]);
+  });
+});
