@@ -785,12 +785,23 @@ export async function GET(request: Request) {
         // S&P name belongs to the main book's framework. Every other use of that predicate is
         // RESTRICTIVE (they add constraints to influencer buys) except the recording site, which is
         // pure accounting; this one is PERMISSIVE, so the looser form would let a shortlist name
-        // through the gate on any weekday. KNOWN INCONSISTENCY: a tagged shortlist name is MAIN to
-        // this gate but still books as "influencer" at the recording site and charges the 2-slot
-        // sleeve cap. Pre-existing, not introduced here, and not worth a sleeve-accounting change
-        // inside a cadence diff — but it means one name can be MAIN to the gate and SLEEVE to P&L.
+        // through the gate on any weekday. PROVENANCE, not shortlist membership, decides this — and
+        // it now matches the cap's predicate exactly, resolving an inconsistency this comment used to
+        // merely record: a name tagged strategy:"influencer" was MAIN to this gate (so deferred on
+        // 3 of 5 weekdays) while still booking as influencer and charging the 2-slot sleeve cap.
+        // One name was MAIN to the gate and SLEEVE to P&L.
+        //
+        // The old `!v1ShortlistSet.has(...)` conjunct inferred "is a sleeve pick" from "is not an
+        // S&P pick", which is only true while the universe is incomplete. It is already wrong for
+        // MU and TGT, and the Sharadar drift report shows 118 index members currently outside
+        // STOCK_SECTOR — adding them would silently remove sleeve access to all 118 on non-rebalance
+        // days. An S&P name the channels are pushing is a legitimate sleeve pick; the sleeve's own
+        // rails (2-slot cap, downtrend screen, net>=3 floor, re-buy cooldown) are what govern it.
+        //
+        // Precedence is unchanged where it matters: an EXPLICIT tag wins, and an untagged name that
+        // is on the shortlist is still MAIN, so this cannot quietly reclassify ordinary main buys.
         const isSleeveBuy = (b: { symbol: string; strategy?: string }) =>
-          !v1ShortlistSet.has(b.symbol) && (b.strategy === "influencer" || influencerCandidateSet.has(b.symbol));
+          b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
         const deferred = decision.buys.filter(b => !isSleeveBuy(b));
         if (deferred.length > 0) {
           decision.buys = decision.buys.filter(isSleeveBuy);
