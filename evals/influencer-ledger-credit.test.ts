@@ -344,3 +344,104 @@ describe("rollupChannels — 30-day horizon, earliest-wins", () => {
     expect(c.pendingPicks).toBe(0);
   });
 });
+
+// σ is ~14-15% per 30-day pick and the picks are correlated (mostly AI/semis), so "alpha vs SPY"
+// still carries a large common factor — which is why the CI floors at ±1.96σ√ρ no matter how many
+// simultaneous picks accrue. These two measures remove that common factor.
+describe("rollupChannels — sector-relative and peer-relative edge", () => {
+  const d = (iso: string) => Math.floor(Date.parse(`${iso}T13:30:00Z`) / 1000);
+  const dates = ["2026-09-01", "2026-10-01"];
+  const mkBars = (closes: number[]): DatedBars => ({ ts: dates.map(d), closes });
+  const spy = new Map([["2026-09-01", 500], ["2026-10-01", 520]]);   // SPY +4%
+  // AAPL is XLK in STOCK_SECTOR. Stock +30%, sector +20% → sector-relative +10%.
+  const barsByTicker = new Map([["AAPL", mkBars([100, 130])]]);
+  const sectorBars = new Map([["XLK", mkBars([200, 240])]]);
+  const pick = (ticker: string, ch: string, closes: number[]) => ({
+    ticker, channels: [ch], maxScore: 4, maxConfidence: "high" as const,
+    firstSeenDate: "2026-09-01", lastSeenDate: "2026-10-01", priceAtSignal: closes[0],
+    currentPrice: closes[1], returnPct: 0, marketReturnPct: null, alphaPct: null, daysElapsed: 30,
+    channelEntries: { [ch]: { firstSeenDate: "2026-09-01", priceAtSignal: closes[0] } },
+  });
+
+  test("sector-relative strips the sector move, leaving a smaller honest edge", () => {
+    const [c] = rollupChannels([pick("AAPL", "Ch", [100, 130])], spy, 520, barsByTicker, sectorBars);
+    expect(c.avgReturnPct).toBeCloseTo(30, 4);
+    expect(c.avgAlphaPct!).toBeCloseTo(26, 4);        // vs SPY  (+4%)
+    expect(c.avgSectorAlphaPct!).toBeCloseTo(10, 4);  // vs XLK  (+20%) — the real edge
+    expect(c.sectorPicks).toBe(1);
+  });
+
+  test("a pick with no sector mapping yields null, not zero", () => {
+    // BTC is not in STOCK_SECTOR; zero would read as "no edge" rather than "not measured".
+    const bars = new Map([["BTC", mkBars([100, 130])]]);
+    const [c] = rollupChannels([pick("BTC", "Ch", [100, 130])], spy, 520, bars, sectorBars);
+    expect(c.avgSectorAlphaPct).toBeNull();
+    expect(c.sectorPicks).toBe(0);
+  });
+
+  test("peer-relative compares against OVERLAPPING picks, so a shared wave cancels", () => {
+    const bars = new Map([["AAPL", mkBars([100, 130])], ["MSFT", mkBars([100, 110])]]);
+    const rows = rollupChannels(
+      [pick("AAPL", "Good", [100, 130]), pick("MSFT", "Bad", [100, 110])],
+      spy, 520, bars, sectorBars,
+    );
+    // Both +30% and +10%; each is measured against the other.
+    expect(rows.find(r => r.channel === "Good")!.avgPeerRelPct!).toBeCloseTo(20, 4);
+    expect(rows.find(r => r.channel === "Bad")!.avgPeerRelPct!).toBeCloseTo(-20, 4);
+  });
+
+  test("a lone pick has no peers, so peer-relative is null rather than a flattering 0", () => {
+    const [c] = rollupChannels([pick("AAPL", "Ch", [100, 130])], spy, 520, barsByTicker, sectorBars);
+    expect(c.avgPeerRelPct).toBeNull();
+  });
+
+  test("channels are ranked by SECTOR-relative edge, not by raw return", () => {
+    // RAW favours AAPL(+30%); SECTOR-relative favours MSFT, whose sector went nowhere.
+    const bars = new Map([["AAPL", mkBars([100, 130])], ["XOM", mkBars([100, 115])]]);
+    const sectors = new Map([["XLK", mkBars([200, 260])], ["XLE", mkBars([50, 50])]]);  // XLK +30%, XLE flat
+    const rows = rollupChannels(
+      [pick("AAPL", "Hype", [100, 130]), pick("XOM", "Real", [100, 115])],
+      spy, 520, bars, sectors,
+    );
+    expect(rows[0].channel).toBe("Real");          // +15% vs a flat sector
+    expect(rows[0].avgSectorAlphaPct!).toBeCloseTo(15, 4);
+    expect(rows[1].avgSectorAlphaPct!).toBeCloseTo(0, 4);  // +30% in a +30% sector = no edge
+  });
+});
+
+// The overlap filter is the whole point of "contemporaneous" — without it, peer-relative compares
+// across regimes, which is the factor it exists to remove. Fixtures that share one window cannot
+// tell the two apart, so these use DISJOINT windows.
+describe("rollupChannels — peer-relative requires an overlapping window", () => {
+  const d = (iso: string) => Math.floor(Date.parse(`${iso}T13:30:00Z`) / 1000);
+  const spy = new Map([["2026-01-01", 400], ["2026-02-02", 410], ["2026-09-01", 500], ["2026-10-01", 520]]);
+  const autumn: DatedBars = { ts: ["2026-09-01", "2026-10-01"].map(d), closes: [100, 130] };
+  const winter: DatedBars = { ts: ["2026-01-01", "2026-02-02"].map(d), closes: [100, 110] };
+  const mk = (ticker: string, ch: string, start: string, px: number) => ({
+    ticker, channels: [ch], maxScore: 4, maxConfidence: "high" as const,
+    firstSeenDate: start, lastSeenDate: start, priceAtSignal: px,
+    currentPrice: px, returnPct: 0, marketReturnPct: null, alphaPct: null, daysElapsed: 30,
+    channelEntries: { [ch]: { firstSeenDate: start, priceAtSignal: px } },
+  });
+
+  test("picks in non-overlapping windows are NOT peers of each other", () => {
+    const rows = rollupChannels(
+      [mk("AAPL", "Autumn", "2026-09-01", 100), mk("MSFT", "Winter", "2026-01-01", 100)],
+      spy, 520,
+      new Map([["AAPL", autumn], ["MSFT", winter]]),
+      new Map(),
+    );
+    // Each is alone in its own window, so neither has a peer to be measured against.
+    for (const r of rows) expect(r.avgPeerRelPct).toBeNull();
+  });
+
+  test("picks that DO overlap are peers", () => {
+    const rows = rollupChannels(
+      [mk("AAPL", "A", "2026-09-01", 100), mk("MSFT", "B", "2026-09-01", 100)],
+      spy, 520,
+      new Map([["AAPL", autumn], ["MSFT", { ts: autumn.ts, closes: [100, 110] }]]),
+      new Map(),
+    );
+    expect(rows.find(r => r.channel === "A")!.avgPeerRelPct).not.toBeNull();
+  });
+});

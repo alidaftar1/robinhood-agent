@@ -16,7 +16,7 @@
 // pre-ledger history is unrecoverable — the cache didn't keep it).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { fetchQuoteLite, fetchDailyBars, firstCloseAfter, closeOnOrAfterDate, addDays, type DatedBars } from "@/lib/market-data";
+import { fetchQuoteLite, fetchDailyBars, firstCloseAfter, closeOnOrAfterDate, addDays, STOCK_SECTOR, type DatedBars } from "@/lib/market-data";
 import { getRuns } from "@/lib/run-store";
 import { netScores, INFLUENCER_BUY_FLOOR } from "@/lib/influencer-signals";
 import type { InfluencerCache } from "@/lib/influencer-signals";
@@ -120,6 +120,25 @@ export interface ChannelStats {
   /** Picks whose window has not finished — no avoid yet and under HORIZON_DAYS old. EXCLUDED from
    *  every stat above, and counted here so a thin sample cannot pass for a full one. */
   pendingPicks: number;
+  /** Mean return above/below the pick's OWN SECTOR ETF over its own window.
+   *
+   *  The sharpest available lever on how long this table takes to mean anything. These picks are
+   *  overwhelmingly AI/semis, so "alpha vs SPY" still carries a large common sector factor — which
+   *  is both why σ is ~14-15% per 30-day pick AND why the picks are correlated. Correlation is the
+   *  binding constraint: with average pairwise ρ the confidence interval never shrinks past
+   *  ±1.96σ√ρ no matter how many simultaneous picks accrue (≈±9pp at ρ=0.1). Residualising against
+   *  the sector removes most of that common factor, so it both lowers σ and lifts the floor.
+   *  Null for anything with no sector mapping — crypto, ETFs, non-S&P names. */
+  avgSectorAlphaPct: number | null;
+  /** How many picks actually had a sector benchmark, since the rest are silently absent from it. */
+  sectorPicks: number;
+  /** Mean return above/below the average pick whose window OVERLAPS this one.
+   *
+   *  Asks "did this channel beat the other picks made at the same time" instead of "did it beat
+   *  zero", which differences out the regime and the sector wave entirely. Here correlation works
+   *  FOR the measure rather than against it. Same idea as the signal ledger's `vs avg pick`, which
+   *  already got this right, applied to channels. Null when nothing overlapped. */
+  avgPeerRelPct: number | null;
   /** Median days held across the measured picks. Surfaced because earliest-wins means windows are
    *  NOT uniform — a 12-day exit and a 30-day hold are averaged together — so the mixing has to be
    *  visible rather than implied by a constant. */
@@ -434,13 +453,24 @@ export const HORIZON_DAYS = 30;
  * `barsByTicker` is optional: without bars the horizon cannot be resolved and the function degrades
  * to the previous open-ended measure rather than marking everything pending.
  */
+/** Mean of the non-null values, or null when there are none — never 0, which would read as "no edge". */
+function mean(xs: Array<number | null>): number | null {
+  const v = xs.filter((x): x is number => x != null);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+}
+
 export function rollupChannels(
   picks: PickOutcome[],
   spyByDate: Map<string, number>,
   spyNow: number | null,
   barsByTicker?: Map<string, DatedBars>,
+  sectorBarsByEtf?: Map<string, DatedBars>,
 ): ChannelStats[] {
-  const byChannel = new Map<string, { ret: number; alpha: number | null; ticker: string; inherited: boolean; closed: boolean; heldDays: number }[]>();
+  type Credit = {
+    channel: string; ticker: string; ret: number; alpha: number | null; sectorAlpha: number | null;
+    inherited: boolean; closed: boolean; heldDays: number; start: string; end: string;
+  };
+  const credits: Credit[] = [];
   const pendingByChannel = new Map<string, number>();
   for (const p of picks) {
     if (p.currentPrice == null) continue;
@@ -482,11 +512,34 @@ export function rollupChannels(
       const alpha = spyEnd != null && spyThen != null && spyThen > 0
         ? ret - (spyEnd / spyThen - 1) * 100
         : null;
-      const arr = byChannel.get(ch) ?? [];
-      arr.push({ ret, alpha, ticker: p.ticker, inherited, closed: avoidAt != null && closedAt === avoidAt, heldDays });
-      byChannel.set(ch, arr);
+      // Return of the pick's OWN SECTOR over the SAME window, both ends from the ETF's own bars so
+      // the benchmark shares the pick's clock exactly.
+      const etf = STOCK_SECTOR[p.ticker];
+      const sBars = etf ? sectorBarsByEtf?.get(etf) : undefined;
+      const sFrom = sBars ? closeOnOrAfterDate(sBars, baseDate) : null;
+      const sTo = sBars && closedAt ? closeOnOrAfterDate(sBars, closedAt.date) : null;
+      const sectorAlpha = sFrom && sTo && sFrom.close > 0
+        ? ret - ((sTo.close / sFrom.close - 1) * 100)
+        : null;
+      credits.push({
+        channel: ch, ticker: p.ticker, ret, alpha, sectorAlpha, inherited, heldDays,
+        closed: avoidAt != null && closedAt === avoidAt,
+        start: baseDate, end: closedAt ? closedAt.date : "9999-12-31",
+      });
     }
   }
+  // PEER-RELATIVE: each credit against the mean of credits whose window OVERLAPS it. Overlap rather
+  // than a global average, so the comparison is genuinely contemporaneous — once the ledger spans
+  // more time a global mean would compare across regimes, the very factor this removes.
+  const peerRel = new Map<Credit, number | null>();
+  for (const c of credits) {
+    const peers = credits.filter(o => o !== c && o.start <= c.end && c.start <= o.end);
+    peerRel.set(c, peers.length ? c.ret - peers.reduce((a, b) => a + b.ret, 0) / peers.length : null);
+  }
+
+  const byChannel = new Map<string, Credit[]>();
+  for (const c of credits) byChannel.set(c.channel, [...(byChannel.get(c.channel) ?? []), c]);
+
   return [...byChannel.entries()]
     .map(([channel, rows]) => {
       const rets = rows.map((r) => r.ret);
@@ -502,6 +555,9 @@ export function rollupChannels(
         bestPick: `${best.ticker} ${best.ret >= 0 ? "+" : ""}${best.ret.toFixed(1)}%`,
         worstPick: `${worst.ticker} ${worst.ret >= 0 ? "+" : ""}${worst.ret.toFixed(1)}%`,
         inheritedPicks: rows.filter((r) => r.inherited).length,
+        avgSectorAlphaPct: mean(rows.map(r => r.sectorAlpha)),
+        sectorPicks: rows.filter(r => r.sectorAlpha != null).length,
+        avgPeerRelPct: mean(rows.map(r => peerRel.get(r) ?? null)),
         closedPicks: rows.filter((r) => r.closed).length,
         pendingPicks: pendingByChannel.get(channel) ?? 0,
         medianHoldDays: rows.length ? [...rows.map(r => r.heldDays)].sort((a, b) => a - b)[Math.floor(rows.length / 2)] : null,
@@ -511,7 +567,10 @@ export function rollupChannels(
     })
     // Rank by EDGE (alpha over the market), not raw return — that's the whole point. Channels with no
     // market baseline yet fall back to raw return so they still sort sensibly.
-    .sort((a, b) => (b.avgAlphaPct ?? b.avgReturnPct) - (a.avgAlphaPct ?? a.avgReturnPct));
+    // Ranked by SECTOR-relative edge where available: the common factor is removed, so it is both
+    // the least noisy measure and the only one that can actually resolve as data accrues. Falls back
+    // to vs-SPY then raw, so a channel with no sector-mapped picks still sorts sensibly.
+    .sort((a, b) => (b.avgSectorAlphaPct ?? b.avgAlphaPct ?? b.avgReturnPct) - (a.avgSectorAlphaPct ?? a.avgAlphaPct ?? a.avgReturnPct));
 
 }
 
@@ -592,7 +651,14 @@ export async function computeAttribution(
   // Per-channel: credit each contributing channel with the pick's RAW return and its market-relative
   // alpha. avgReturn mixes horizons (each pick has its own daysElapsed) — a known v1 limitation; alpha
   // corrects for the market's move over that same horizon, so it's the edge measure worth ranking on.
-  const channels = rollupChannels(picks, spyByDate, spyNow, barsByTicker);
+  // Only the sector ETFs the tracked picks actually map to — typically a handful, not all 11.
+  const etfs = [...new Set(entries.map(p => STOCK_SECTOR[p.ticker]).filter((e): e is string => !!e))];
+  const sectorBarsByEtf = new Map<string, DatedBars>();
+  await Promise.all(etfs.map(async (e) => {
+    const b = await fetchDailyBars(e, "6mo");
+    if (b) sectorBarsByEtf.set(e, b);
+  }));
+  const channels = rollupChannels(picks, spyByDate, spyNow, barsByTicker, sectorBarsByEtf);
 
   picks.sort((a, b) => (b.returnPct ?? -Infinity) - (a.returnPct ?? -Infinity));
   return { picks, channels };
