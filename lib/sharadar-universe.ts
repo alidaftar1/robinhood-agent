@@ -200,3 +200,68 @@ export function snapshotAgeDays(idx: UniverseIndex, date: string): number | null
 export function removalsBetween(rows: Sp500Row[], from: string, to: string): Sp500Row[] {
   return rows.filter(r => r.action === "removed" && r.date >= from && r.date <= to);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UNIVERSE DRIFT — report only, no behaviour change.
+//
+// STOCK_SECTOR is a hardcoded list, and a name outside it can NEVER reach buildV1Shortlist, so the
+// main book simply cannot buy it. That failure is SILENT: the quality screen reports on the names it
+// knows about, and says nothing about the ones it has never heard of. Measured 2026-10-03 against
+// Sharadar's current membership, 122 index members were missing — AVGO, GOOG, BRK.B, ANET and UBER
+// among them.
+//
+// AVGO is the worked case, stated carefully. It was bought on 2026-10-02 as an INFLUENCER pick,
+// because sleeve classification infers "influencer" from `!v1ShortlistSet.has(sym)` and AVGO cannot
+// be shortlisted when it is not in the universe — so the sleeve was its only route in and it took
+// one of two scarce slots. It does NOT follow that a main-book buy was displaced: that day was a
+// non-rebalance Friday with main buys closed outright, and on a rebalance day AVGO would still have
+// to clear quality, momentum, the sector cap, a shortlist slot and the model's choice. The claim
+// here is about REACH — the option never existed — not about a specific lost trade.
+//
+// This reports the gap. It deliberately changes nothing: the fix needs sector data the membership
+// table does not carry, and both directions of the edit alter WHAT THE AGENT MAY BUY — a removal of
+// a HELD name would read as "fell off the shortlist", which lib/sell-rail accepts as a reason to
+// SELL. Seeing the list for a few days first is the cheap part.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface UniverseDrift {
+  /** Current index members absent from our universe — unreachable by the main book. */
+  missing: string[];
+  /** Our entries no longer in the index. Mixed: some delisted, some alive but dropped. */
+  stale: string[];
+  /** Index members whose ticker we already carry under its OLD symbol via a known rename. These are
+   *  NOT additions — importing both spellings would double-count one company. */
+  renamed: Array<{ ours: string; index: string }>;
+  inIndex: number;
+  inOurs: number;
+}
+
+/**
+ * Pure. `renames` maps OUR symbol -> the index's current symbol for the SAME company, so a rename is
+ * reported as a rename rather than appearing as both a stale entry and a missing one.
+ */
+export function computeUniverseDrift(
+  indexMembers: Set<string>,
+  ourUniverse: Set<string>,
+  renames: Record<string, string> = {},
+): UniverseDrift {
+  const renamed: Array<{ ours: string; index: string }> = [];
+  for (const [ours, idx] of Object.entries(renames)) {
+    // Only a rename if we hold the old spelling and the index carries the new one.
+    if (ourUniverse.has(ours) && indexMembers.has(idx)) renamed.push({ ours, index: idx });
+  }
+  const renamedOurs = new Set(renamed.map(r => r.ours));
+  const renamedIndex = new Set(renamed.map(r => r.index));
+  return {
+    missing: [...indexMembers].filter(t => !ourUniverse.has(t) && !renamedIndex.has(t)).sort(),
+    stale: [...ourUniverse].filter(t => !indexMembers.has(t) && !renamedOurs.has(t)).sort(),
+    renamed: renamed.sort((a, b) => a.ours.localeCompare(b.ours)),
+    inIndex: indexMembers.size,
+    inOurs: ourUniverse.size,
+  };
+}
+
+/** The `current` snapshot of the sp500 table — who is in the index TODAY. */
+export function currentMembers(rows: Sp500Row[]): Set<string> {
+  return new Set(rows.filter(r => r.action === "current" && r.ticker).map(r => r.ticker));
+}
