@@ -4,7 +4,7 @@ import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext } from "@/lib/market-data";
-import { getQualityScores } from "@/lib/quality";
+import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
@@ -359,12 +359,40 @@ export async function GET(request: Request) {
     // framework. If sleeve membership ever needs to be list-size-independent, key it on
     // SP500_UNIVERSE instead, which matches the documented "non-S&P tickers can ONLY be influencer
     // picks" rule.
-    const quality = await getQualityScores();
+    // BUDGETED, and the budget is only tunable because a timeout now FAILS CLOSED. While a failed
+    // screen widened `eligible` to every stock, any timeout traded "the run finished" for "the book
+    // bought on a weaker strategy", so no value was correct: 120s sat below this module's own
+    // ceilings (FRAMES 75s + RECOVERY 45s) and would discard a slow-but-CORRECT refresh, while
+    // anything higher pushed a run that also places the risk SELLS toward maxDuration — the
+    // partially-executed-trades failure that cut valuation to 20s (see ~line 514).
+    // Now a timeout only costs a buy day, so it can be set well below the internal ceilings.
+    const quality = await withBudget(
+      getQualityScores(),
+      QUALITY_CALL_BUDGET_MS,
+      () => console.error("QUALITY_BUDGET_EXCEEDED", { budgetMs: QUALITY_CALL_BUDGET_MS, date: today }),
+    );
+    // FAIL CLOSED. Previously a null quality set `eligible` to EVERY stock, so the main book bought
+    // on momentum alone — a different and measurably worse strategy (the TTM quality gate is worth
+    // +2.36 CAGR / +0.07 Sharpe over 28 survivorship-free years) — and CLAUDE.md's own rule is that
+    // a guard which cannot establish a number must WITHHOLD it, not publish it.
+    //
+    // The withhold is applied to BUYS ONLY, at the execution boundary (see mainBuysBlocked below),
+    // NOT by emptying `eligible` — which looks equivalent and is not, in two ways that both end
+    // badly:
+    //   · `retained` admits a held name only if it is eligible OR quality-unknown. With a null
+    //     quality BOTH sets are empty, so every held name would drop off the shortlist — and
+    //     "fell off the shortlist" is a reason lib/sell-rail accepts for SELLING. Fail-closed would
+    //     have become a liquidation.
+    //   · sleeve classification infers "influencer" from `!v1ShortlistSet.has(sym)`, so an empty
+    //     allowlist would relabel every main buy as an influencer pick.
+    // Risk SELLS are deliberately untouched: the screen decides what may be BOUGHT, and a data
+    // outage must never suspend loss discipline.
+    const mainBuysBlocked = !quality;
     if (!quality) {
-      console.warn("V1_QUALITY_UNAVAILABLE — main book running momentum-only this run (no quality screen)");
+      console.warn("V1_QUALITY_UNAVAILABLE — main-book BUYS withheld this run (fail closed); sells unaffected");
       await sendAlert(
         `⚠️ V1 quality data unavailable — ${today}`,
-        `SEC/Redis quality data could not be loaded; the main book is running MOMENTUM-ONLY (no quality screen) this run. Quality is cached ~weekly — investigate if this persists.`
+        `SEC/Redis quality data could not be loaded, so the main book is NOT BUYING this run (fail closed — it will not buy on momentum alone). Risk sells and the influencer sleeve are unaffected. Main-book buys only run on the first two trading days of the week, so a single occurrence costs a few days at most. Quality is cached ~weekly — investigate if this persists.`
       ).catch(() => {});
     }
     const eligible = quality
@@ -707,12 +735,22 @@ export async function GET(request: Request) {
     // Do NOT infer "influencer" from `!sp500Set.has(symbol)`: that let hallucinated tickers through.
     {
       const offList: string[] = [];
+      const qualityBlocked: string[] = [];
       decision.buys = decision.buys.filter(b => {
+        // Quality unavailable → no MAIN buys. Checked before the shortlist test, because with a null
+        // quality the shortlist was built on an unscreened universe and must not authorise anything.
+        // Influencer picks fall through: they never depended on the quality screen.
+        if (mainBuysBlocked && !influencerCandidateSet.has(b.symbol)) { qualityBlocked.push(b.symbol); return false; }
         if (v1ShortlistSet.has(b.symbol)) return true;           // main buy on the rails
         if (influencerCandidateSet.has(b.symbol)) return true;   // legit influencer pick (in the real signal set)
         offList.push(b.symbol);
         return false;
       });
+      // Never silent: a run that bought nothing because of a DATA outage must be distinguishable
+      // from one that simply found nothing worth buying.
+      if (qualityBlocked.length > 0) {
+        console.warn("MAIN_BUYS_BLOCKED_NO_QUALITY", { date: today, dropped: qualityBlocked });
+      }
 
       // ── Weekly rebalance gate (main book only) ────────────────────────────────
       // 12-1 momentum is a months-horizon signal; re-deciding it every morning turned the book over

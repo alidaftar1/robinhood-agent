@@ -903,6 +903,41 @@ export function shouldCache(data: QualityData): boolean {
   return true;
 }
 
+/**
+ * Whole-call budget for getQualityScores — the one call in the live trade run with no deadline,
+ * in a run that also places the risk SELLS, so an unbounded SEC fetch can exhaust maxDuration and
+ * kill the stop-loss path.
+ *
+ * 60s is well BELOW this module's internal ceilings (QUALITY_FRAMES_BUDGET_MS 75s +
+ * RECOVERY_BUDGET_MS 45s), which would have been wrong while a failed screen widened the buyable
+ * universe — discarding a slow-but-correct refresh would have meant buying on momentum alone. Now
+ * that a null result WITHHOLDS main-book buys, the asymmetry flips: the cost of cutting a slow run
+ * short is a delayed buy on a weekly-rebalanced book, and the cost of letting it run is a run that
+ * dies during order placement. Cheap side first.
+ */
+export const QUALITY_CALL_BUDGET_MS = 60_000;
+
+/**
+ * Resolve `p`, or null if it exceeds `budgetMs`. Pure plumbing, exported for tests: the timer is
+ * always cleared so a fast resolve cannot hold the event loop open, a rejection propagates rather
+ * than being laundered into a timeout, and the timeout branch reports instead of failing silently.
+ */
+export async function withBudget<T>(
+  p: Promise<T>,
+  budgetMs: number,
+  onTimeout: () => void,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => { onTimeout(); resolve(null); }, budgetMs);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function getQualityScores(force = false): Promise<QualityData | null> {
   try {
     if (!force) {
