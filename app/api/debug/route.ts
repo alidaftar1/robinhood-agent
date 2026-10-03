@@ -3,7 +3,7 @@ import { dedupeRuns, getLatestRun, getRuns, updateLatestRun, updateRunByDate, co
 import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { prunePicksByFirstSeen } from "@/lib/influencer-ledger";
+import { prunePicksByFirstSeen, resetLedger } from "@/lib/influencer-ledger";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -275,6 +275,16 @@ export async function GET(request: Request) {
   // Surgical ledger prune by first-seen date. The ledger is ONE Redis key holding a JSON object, so
   // the Upstash console can only delete the whole thing — which is the full reset the owner chose
   // against. Gated by requireCronAuth like everything else here.
+  const resetConfirm = url.searchParams.get("resetLedger");
+  if (resetConfirm) {
+    try {
+      const r = await resetLedger(resetConfirm);
+      results.resetLedger = "refused" in r ? `refused: ${r.refused}` : `cleared ${r.cleared} picks`;
+    } catch (e) {
+      results.resetLedger = `error: ${e}`;
+    }
+  }
+
   const pruneDates = url.searchParams.get("pruneLedgerDates");
   if (pruneDates) {
     try {

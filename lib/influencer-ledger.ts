@@ -738,3 +738,22 @@ export async function prunePicksByFirstSeen(
   console.warn("INFLUENCER_LEDGER_PRUNED", { dates, removed: victims, remaining: Object.keys(ledger).length });
   return { removed: victims, remaining: Object.keys(ledger).length };
 }
+
+/**
+ * Delete the WHOLE ledger. Separate from prunePicksByFirstSeen on purpose: that function refuses
+ * anything over MAX_PRUNE_FRACTION precisely so a surgical prune can never quietly become a reset,
+ * and weakening that guard to allow a reset would remove the protection for both. A reset is a
+ * different operation and says so.
+ *
+ * Requires the caller to pass the literal confirmation, so a stray query param cannot wipe the
+ * accumulated record. Returns the count removed; a failed read does NOT write.
+ */
+export async function resetLedger(confirm: string): Promise<{ cleared: number } | { refused: string }> {
+  if (confirm !== "CONFIRM") return { refused: "resetLedger requires confirm=CONFIRM" };
+  const ledger = await ledgerGet();
+  if (ledger === null) return { refused: "ledger read failed — refusing to write" };
+  const n = Object.keys(ledger).length;
+  await ledgerSet({});
+  console.warn("INFLUENCER_LEDGER_RESET", { cleared: n });
+  return { cleared: n };
+}
