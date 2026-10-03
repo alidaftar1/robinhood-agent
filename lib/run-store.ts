@@ -20,6 +20,18 @@ export interface TradeSnapshot {
   avgPrice: string;
   state: string;
   strategy?: "main" | "influencer"; // which sub-portfolio this trade belongs to
+  /** The quote this trade was DECIDED on — marketData's price for the symbol at analysis time.
+   *
+   *  Stored so execution cost is measurable at all. Slippage is the one live question that resolves
+   *  in WEEKS rather than years: per-fill dispersion is small (tens of bps), so ~20 fills is enough
+   *  to see a 10bp mean, versus the ~43 years the portfolio-level "beats SPY" question needs. It is
+   *  also the one nothing currently measures — and a persistent 50bp of execution cost would swamp
+   *  anything the ranking logic is arguing about.
+   *
+   *  OBSERVED, not derived: the decision price cannot be reconstructed after the fact, because the
+   *  quote that drove the decision is gone by the next run. Optional because runs written before
+   *  this existed have none. */
+  refPrice?: string;
 }
 
 export interface PersonalSnapshot {

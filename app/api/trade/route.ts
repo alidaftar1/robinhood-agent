@@ -213,6 +213,12 @@ export async function GET(request: Request) {
     }
 
     const priceMap = new Map<string, number>(marketData.stocks.map(s => [s.symbol, s.price]));
+    // The decision-time quote, stamped on every trade so execution cost is measurable at all.
+    // Omitted rather than zeroed when unknown — a 0 reference would compute as -100% slippage.
+    const refPriceOf = (sym: string): { refPrice?: string } => {
+      const px = priceMap.get(sym);
+      return px != null && px > 0 ? { refPrice: String(px) } : {};
+    };
 
     // Fetch live prices + 5-day momentum for top influencer tickers (downtrend screen)
     let influencerSection = "";
@@ -1227,7 +1233,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
           const v = verified.get(s.symbol);
           if (!v) continue;
           const fill = parseFloat(v.avgPrice) > 0 ? v.avgPrice : String(priceMap.get(s.symbol) ?? 0);
-          trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, strategy: sellStrategyTag(s.symbol) });
+          trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, strategy: sellStrategyTag(s.symbol), ...refPriceOf(s.symbol) });
           // Record a MAIN-book discretionary sell so a next-run re-buy trips the rotation-churn flag.
           // (Influencer-sleeve sells have their own rotation logic; the churn concern is the main book.)
           // EXCLUDE a concentration TRIM — it's a risk reduction of a still-held name, not an exit, so
@@ -1368,7 +1374,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
           if (!real) continue;
           const strategy: "main" | "influencer" =
             (b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol))) ? "influencer" : "main";
-          trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state, strategy });
+          trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state, strategy, ...refPriceOf(b.symbol) });
         }
         if (missing.length > 0) {
           console.warn("BUY_STILL_MISSING_AFTER_RETRY", { missing: missing.map(b => b.symbol) });

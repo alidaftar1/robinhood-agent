@@ -8,6 +8,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
 import { computeAttribution, type ChannelStats } from "@/lib/influencer-ledger";
+import { computeSlippage, type SlippageStats } from "@/lib/slippage";
 import { computeSignalAttribution, type SignalStat } from "@/lib/signal-ledger";
 import { getInfluencerSignals } from "@/lib/influencer-signals";
 import { logReviewResult } from "@/lib/braintrust-trace";
@@ -481,6 +482,11 @@ export async function GET(request: Request) {
   // picks have some age; day-0 picks read ~0% by construction.
   let ledgerChannels: ChannelStats[] = [];
   let ledgerBelowFloor: ChannelStats[] = [];
+  // Execution cost. The one live measure that resolves in WEEKS rather than years, and the only one
+  // nothing was tracking — a persistent 50bp/yr would swamp anything the ranking logic argues about
+  // while being invisible in every return number, because it is already baked into the fill.
+  let slippage: SlippageStats[] = [];
+  try { slippage = computeSlippage(runs); } catch { /* best-effort */ }
   try { ({ channels: ledgerChannels, channelsBelowFloor: ledgerBelowFloor } = await computeAttribution(today)); }
   catch { /* ledger is best-effort; skip the section if it can't compute */ }
   const agedChannels = ledgerChannels.filter((c) => c.avgReturnPct !== 0 || c.hitRatePct !== 0);
@@ -699,6 +705,15 @@ export async function GET(request: Request) {
     ${verifyResult.status !== "ok" && verifyResult.discrepancies.length > 0 ? `<ul style="margin:8px 0 0;padding-left:20px;font-size:13px">${verifyResult.discrepancies.map(d => `<li>${d}</li>`).join("")}</ul>` : ""}
     <p style="margin:6px 0 0;font-size:11px;color:#6b7280">MCP: balance=${verifyResult.mcpAvailable?.balance} positions=${verifyResult.mcpAvailable?.positions} orders=${verifyResult.mcpAvailable?.orders}</p>
   </div>` : `<div style="background:#f3f4f6;border-left:4px solid #9ca3af;padding:12px 16px;margin-bottom:16px;border-radius:4px"><strong>Live verify:</strong> skipped — endpoint unavailable</div>`}
+
+  ${slippage.length > 0 ? `<div style="background:#f8fafc;border-left:4px solid #64748b;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🧾 Execution cost (slippage):</strong>
+    <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+      <tr style="color:#6b7280"><td style="padding:3px 8px">Side</td><td style="padding:3px 8px;text-align:right">Fills</td><td style="padding:3px 8px;text-align:right">Mean</td><td style="padding:3px 8px;text-align:right">Median</td><td style="padding:3px 8px;text-align:right">± SE</td><td style="padding:3px 8px;text-align:right">Worst</td></tr>
+      ${slippage.map(x => `<tr><td style="padding:3px 8px">${x.side}${x.significant ? ` <span style="color:#dc2626;font-size:11px">real</span>` : ` <span style="color:#9ca3af;font-size:11px">noise</span>`}</td><td style="padding:3px 8px;text-align:right">${x.fills}</td><td style="padding:3px 8px;text-align:right;font-weight:bold;color:${x.meanBps > 0 ? "#dc2626" : "#059669"}">${x.meanBps >= 0 ? "+" : ""}${x.meanBps.toFixed(1)}bp</td><td style="padding:3px 8px;text-align:right">${x.medianBps >= 0 ? "+" : ""}${x.medianBps.toFixed(1)}bp</td><td style="padding:3px 8px;text-align:right;color:#6b7280">${Number.isFinite(x.seBps) ? `${x.seBps.toFixed(1)}` : "—"}</td><td style="padding:3px 8px;text-align:right;color:#6b7280">${escapeHtml(x.worst)}</td></tr>`).join("")}
+    </table>
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af">POSITIVE = worse execution, on both sides (a buy filled above the decision price, or a sell filled below it). Measured fill vs the quote the decision was made on. "real" = mean is more than 1.96 SE from zero; until then it is noise and should not be acted on. Inferred sells are excluded — their price is our own reconstruction, not a broker fill.</p>
+  </div>` : ""}
 
   ${todayRun?.summary
     ? `<div style="background:#f3f4f6;padding:12px 16px;border-radius:4px;margin-bottom:16px">
