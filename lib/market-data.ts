@@ -837,17 +837,48 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
 // the way it bought SPCX mid-decline). Returns BOTH 5-day net change and distance from
 // the recent 10-day high — the latter catches pump-and-dump names (e.g. a fresh IPO
 // that spiked then fell) where the 5-day net is misleadingly mild.
+/**
+ * Instrument types the influencer sleeve may buy. EQUITY only, enforced in fetchMomentum because
+ * the sleeve's candidate set IS the set of tickers this function returned a value for — so a
+ * rejection here means the name can never become a candidate, rather than being filtered at one of
+ * the several places that ask "is this an influencer pick".
+ *
+ * The sleeve was buying ETFs and trusts on YouTube conviction: of 50 tracked picks, QQQ, SCHD and
+ * VTWO are index funds, and BTC resolves to the Grayscale Bitcoin Mini Trust. None has fundamentals,
+ * none can be quality-screened, and "a creator mentioned the Nasdaq" is not a stock pick. Single
+ * stocks off the index (SHOP, CELH, NBIS, SK, SPCX — Yahoo classifies SPCX as EQUITY) are
+ * deliberately still allowed: those are real companies the main book cannot reach, which is what
+ * the sleeve is for.
+ *
+ * Yahoo's own instrumentType is the source, so there is no hand-maintained denylist to go stale.
+ */
+export const SLEEVE_ALLOWED_INSTRUMENTS = new Set(["EQUITY"]);
+
+/** An ABSENT type is rejected too: this is the sleeve's only instrument check, so admitting an
+ *  untyped instrument on a malformed response is the fail-open direction. */
+export function isSleeveEligibleInstrument(instrumentType: string | undefined | null): boolean {
+  return !!instrumentType && SLEEVE_ALLOWED_INSTRUMENTS.has(instrumentType);
+}
+
 export async function fetchMomentum(symbol: string): Promise<{ price: number; change1d: number; change5d: number; distFromHigh: number; aboveShortMA: boolean } | null> {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1mo&interval=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${upstreamSymbol(symbol)}?range=1mo&interval=1d`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const data = await res.json() as {
-      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number }; indicators?: { quote?: Array<{ close?: (number | null)[] }> } }> };
+      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number; instrumentType?: string }; indicators?: { quote?: Array<{ close?: (number | null)[] }> } }> };
     };
     const r = data?.chart?.result?.[0];
     const price = r?.meta?.regularMarketPrice;
     if (!price) return null;
+    // Non-equity → no candidate. An ABSENT type is also rejected: this is the sleeve's only
+    // instrument check, and admitting an unknown instrument on a malformed response is the
+    // fail-open direction. A name that cannot be typed also cannot be quality-screened.
+    const instrument = r?.meta?.instrumentType;
+    if (!isSleeveEligibleInstrument(instrument)) {
+      console.log("SLEEVE_NON_EQUITY_SKIPPED", { symbol, instrumentType: instrument ?? "(absent)" });
+      return null;
+    }
     const closes = (r?.indicators?.quote?.[0]?.close ?? []).filter((c): c is number => c != null);
     const fiveAgo = closes.length >= 6 ? closes[closes.length - 6] : closes[0];
     const change5d = fiveAgo ? ((price - fiveAgo) / fiveAgo) * 100 : 0;
