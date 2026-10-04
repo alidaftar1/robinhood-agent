@@ -141,4 +141,25 @@ for (const etf of Object.keys(await import("../lib/market-data").then(m => m.SEC
 }
 const rebuilt = `export const STOCK_SECTOR: Record<string, string> = {\n${lines.join("\n")}`;
 await Bun.write(path, src.slice(0, start) + rebuilt + src.slice(end));
-console.log(`\nWROTE ${path} — ${Object.keys(next).length} symbols. Review the diff before committing.`);
+console.log(`\nWROTE ${path} — ${Object.keys(next).length} symbols.`);
+
+// SP500_UNIVERSE describes the SAME universe and must move with it. Regenerating only
+// STOCK_SECTOR on 2026-10-04 left this list 119 names short and carrying 65 dead ones, which made
+// every added name second-class without any error: lib/analyst.ts and lib/earnings-release.ts both
+// FILTER to SP500_UNIVERSE (so no analyst or earnings-release signal), and
+// lib/dashboard-reconcile.ts uses it to tell S&P from non-S&P (so AVGO, held in the influencer
+// sleeve, was not recognised as an S&P name and that check misfired).
+// They cannot be derived from one another — market-data imports strategy, so it would be circular —
+// which is why both are generated here and evals/universe-consistency.test.ts guards the pair.
+const sPath = "lib/strategy.ts";
+const sSrc = await Bun.file(sPath).text();
+const sStart = sSrc.indexOf("export const SP500_UNIVERSE");
+const sOpen = sSrc.indexOf("[", sStart);
+const sEnd = sSrc.indexOf("\n];", sOpen);
+if (sStart < 0 || sOpen < 0 || sEnd < 0) { console.error("Could not locate SP500_UNIVERSE."); process.exit(1); }
+const syms = Object.keys(next).sort();
+const uLines: string[] = [];
+for (let i = 0; i < syms.length; i += 10) uLines.push("  " + syms.slice(i, i + 10).map(t => `"${t}"`).join(", ") + ",");
+await Bun.write(sPath, sSrc.slice(0, sOpen) + "[\n" + uLines.join("\n") + sSrc.slice(sEnd));
+console.log(`WROTE ${sPath} — SP500_UNIVERSE ${syms.length} symbols.`);
+console.log(`\nReview both diffs before committing.`);

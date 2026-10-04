@@ -4,76 +4,57 @@ import { formatNewsTag } from "./news-tag";
 import { formatAnalystTag } from "./analyst-tag";
 
 export const SP500_UNIVERSE = [
-  // Technology (XLK)
-  "AAPL", "ACN", "ADBE", "ADI", "AMAT", "AMD", "ANSS", "APH", "BRKR", "CDNS",
-  "CDAY", "CDW", "CRM", "CSCO", "CTSH", "DXC", "ENPH", "EPAM", "FFIV", "FICO",
-  "FTNT", "GEN", "GDDY", "GLW", "HPE", "HPQ", "IBM", "INTC", "INTU", "IT",
-  "JKHY", "JNPR", "KEYS", "KLAC", "LDOS", "LRCX", "MCHP", "MPWR", "MRVL", "MSFT",
-  "MU", "NOW", "NTAP", "NVDA", "NXPI", "ON", "ORCL", "PANW", "PAYC", "PAYX",
-  "PTC", "QCOM", "SNPS", "STX", "SWKS", "TDY", "TEL", "TER", "TRMB", "TXN",
-  "TYL", "VRSN", "WDC", "ZBRA", "ADSK",
-
-  // Communication Services (XLC)
-  "CHTR", "CMCSA", "DIS", "EA", "FOXA", "GOOGL", "IPG", "LYV", "META", "MTCH",
-  "NFLX", "NWS", "NWSA", "OMC", "PARA", "T", "TMUS", "TTWO", "VZ", "WBD",
-
-  // Financials (XLF)
-  "AFL", "AIG", "AJG", "ALL", "ALLY", "AMP", "AON", "AXP", "BAC", "BK",
-  "BLK", "BRO", "C", "CB", "CFG", "CINF", "CMA", "CME", "COF", "DFS",
-  "FI", "FIS", "FITB", "FNF", "GL", "GPN", "GS", "HBAN", "HIG", "ICE",
-  "IVZ", "JPM", "KEY", "LNC", "MA", "MCO", "MET", "MKTX", "MMC", "MS",
-  "MTB", "NDAQ", "NTRS", "PGR", "PRU", "PYPL", "RF", "RJF", "SCHW", "SPGI",
-  "STT", "SYF", "TROW", "TRV", "USB", "V", "WFC", "WRB", "ZION",
-
-  // Health Care (XLV)
-  "A", "ABBV", "ABC", "ABT", "ALGN", "AMGN", "BAX", "BDX", "BIO", "BIIB",
-  "BMY", "CI", "CNC", "CVS", "DGX", "DHR", "DVA", "DXCM", "ELV", "EW",
-  "GEHC", "GILD", "HCA", "HOLX", "HSIC", "HUM", "IDXX", "ILMN", "INCY", "IQV",
-  "ISRG", "JNJ", "LH", "LLY", "MCK", "MDT", "MOH", "MRNA", "MRK", "MTD",
-  "PFE", "PODD", "REGN", "RMD", "STE", "SYK", "TECH", "TFX", "TMO", "UNH",
-  "VRTX", "WAT", "WST", "XRAY", "ZBH", "ZTS",
-
-  // Industrials (XLI)
-  "AGCO", "ALLE", "AME", "AOS", "AXON", "BA", "CARR", "CAT", "CHRW", "CTAS",
-  "CSX", "DAL", "DE", "DOV", "EMR", "ETN", "EXPD", "FAST", "FDX", "GD",
-  "GE", "GWW", "GXO", "HII", "HON", "HUBB", "HWM", "IEX", "IR", "J",
-  "JBHT", "KNX", "LHX", "LMT", "LSTR", "LUV", "MAS", "MMM", "NDSN", "NSC",
-  "OC", "OTIS", "PCAR", "PH", "PNR", "PWR", "ROK", "RSG", "RTX", "RRX",
-  "SAIC", "SNA", "SWK", "TDG", "TXT", "UAL", "UNP", "UPS", "URI", "WAB",
-  "WM", "XYL",
-
-  // Consumer Discretionary (XLY)
-  "AMZN", "AN", "APTV", "AZO", "BBWI", "BBY", "BKNG", "BURL", "BWA", "CCL",
-  "CMG", "CZR", "DHI", "DG", "DLTR", "DPZ", "DRI", "EBAY", "EL", "ETSY",
-  "EXPE", "F", "GM", "GRMN", "HAS", "HD", "HLT", "KMX", "LEN", "LKQ",
-  "LOW", "LVS", "MAR", "MAT", "MCD", "MGM", "MHK", "NCLH", "NKE", "NVR",
-  "ORLY", "PHM", "PVH", "RCL", "RL", "ROST", "SBUX", "TGT", "TJX", "TPR",
-  "TSLA", "VFC", "WHR", "WYNN", "YUM",
-
-  // Consumer Staples (XLP)
-  "ADM", "CAG", "CHD", "CL", "CLX", "COST", "CPB", "GIS", "HRL", "HSY",
-  "K", "KHC", "KMB", "KO", "KR", "LW", "MKC", "MDLZ", "MO", "PEP",
-  "PG", "PM", "POST", "SJM", "STZ", "SYY", "TAP", "TSN", "WBA", "WMT",
-
-  // Energy (XLE)
-  "APA", "AR", "BKR", "COP", "CTRA", "CVX", "DVN", "EOG", "EQT", "FANG",
-  "HAL", "HES", "KMI", "MPC", "MRO", "OKE", "OXY", "PSX", "SLB", "TRGP",
-  "VLO", "WMB", "XOM",
-
-  // Materials (XLB)
-  "ALB", "APD", "BALL", "CCK", "CE", "CF", "DD", "DOW", "ECL", "EMN",
-  "FCX", "FMC", "IFF", "IP", "LIN", "LYB", "MLM", "MOS", "NEM", "NUE",
-  "OLN", "PKG", "PPG", "RPM", "SHW", "STLD", "VMC", "WRK",
-
-  // Real Estate (XLRE)
-  "AMT", "ARE", "AVB", "BXP", "CBRE", "CCI", "DLR", "EQIX", "EQR", "EXR",
-  "FRT", "HST", "IRM", "KIM", "MAA", "NNN", "O", "PLD", "PSA", "SBAC",
-  "SPG", "UDR", "VICI", "VTR", "WELL", "WY",
-
-  // Utilities (XLU)
-  "AEP", "AES", "ATO", "AWK", "CMS", "CNP", "D", "DTE", "DUK", "ED",
-  "EIX", "ES", "ETR", "EVRG", "EXC", "LNT", "NEE", "NI", "PEG", "PNW",
-  "PPL", "SO", "SRE", "WEC", "XEL",
+  "A", "AAPL", "ABBV", "ABC", "ABNB", "ABT", "ACGL", "ACN", "ADBE", "ADI",
+  "ADM", "ADP", "ADSK", "AEE", "AEP", "AES", "AFL", "AIG", "AIZ", "AJG",
+  "AKAM", "ALB", "ALGN", "ALL", "ALLE", "AMAT", "AMCR", "AMD", "AME", "AMGN",
+  "AMP", "AMT", "AMZN", "ANET", "AON", "AOS", "APA", "APD", "APH", "APO",
+  "APP", "APTV", "ARE", "ARES", "ATO", "AVGO", "AVY", "AWK", "AXON", "AXP",
+  "AZO", "BA", "BAC", "BALL", "BAX", "BBY", "BDX", "BE", "BEN", "BF.B",
+  "BG", "BIIB", "BK", "BKNG", "BKR", "BLK", "BMY", "BR", "BRK.B", "BRO",
+  "BSX", "BX", "BXP", "C", "CAH", "CARR", "CASY", "CAT", "CB", "CBOE",
+  "CBRE", "CCI", "CCL", "CDNS", "CDW", "CEG", "CF", "CFG", "CHD", "CHRW",
+  "CHTR", "CI", "CIEN", "CINF", "CL", "CLX", "CMCSA", "CME", "CMG", "CMI",
+  "CMS", "CNC", "CNP", "COF", "COHR", "COIN", "COO", "COP", "COST", "CPAY",
+  "CPRT", "CPT", "CRH", "CRL", "CRM", "CRWD", "CSCO", "CSGP", "CSX", "CTAS",
+  "CTSH", "CTVA", "CVNA", "CVS", "CVX", "D", "DAL", "DASH", "DD", "DDOG",
+  "DE", "DECK", "DELL", "DG", "DGX", "DHI", "DHR", "DIS", "DLR", "DLTR",
+  "DOC", "DOV", "DOW", "DPZ", "DRI", "DTE", "DUK", "DVA", "DVN", "DXCM",
+  "EBAY", "ECHO", "ECL", "ED", "EFX", "EG", "EIX", "EL", "ELV", "EME",
+  "EMR", "EOG", "EQIX", "EQT", "ERIE", "ES", "ESS", "ETN", "ETR", "EVRG",
+  "EW", "EXC", "EXE", "EXPD", "EXPE", "EXR", "F", "FANG", "FAST", "FCX",
+  "FDS", "FDX", "FDXF", "FE", "FERG", "FFIV", "FI", "FICO", "FIS", "FITB",
+  "FIX", "FLEX", "FOX", "FOXA", "FRT", "FSLR", "FTNT", "FTV", "GD", "GDDY",
+  "GE", "GEHC", "GEN", "GEV", "GILD", "GIS", "GL", "GLW", "GM", "GNRC",
+  "GOOG", "GOOGL", "GPC", "GPN", "GRMN", "GS", "GWW", "HAL", "HAS", "HBAN",
+  "HCA", "HD", "HIG", "HII", "HLT", "HON", "HONA", "HOOD", "HPE", "HPQ",
+  "HRL", "HSIC", "HST", "HSY", "HUBB", "HUM", "HWM", "IBKR", "IBM", "ICE",
+  "IDXX", "IEX", "IFF", "ILMN", "INCY", "INTC", "INTU", "INVH", "IP", "IQV",
+  "IR", "IRM", "ISRG", "IT", "ITW", "IVZ", "J", "JBHT", "JBL", "JCI",
+  "JKHY", "JNJ", "JPM", "KDP", "KEY", "KEYS", "KHC", "KIM", "KKR", "KLAC",
+  "KMB", "KMI", "KO", "KR", "KVUE", "L", "LDOS", "LEN", "LH", "LHX",
+  "LII", "LIN", "LITE", "LLY", "LMT", "LNT", "LOW", "LRCX", "LULU", "LUV",
+  "LVS", "LYB", "LYV", "MA", "MAA", "MAR", "MAS", "MCD", "MCHP", "MCK",
+  "MCO", "MDLZ", "MDT", "MET", "META", "MGM", "MKC", "MLM", "MMC", "MMM",
+  "MNST", "MO", "MOS", "MPC", "MPWR", "MRK", "MRNA", "MRVL", "MS", "MSCI",
+  "MSFT", "MSI", "MTB", "MTD", "MU", "NCLH", "NDAQ", "NDSN", "NEE", "NEM",
+  "NFLX", "NI", "NKE", "NOC", "NOW", "NRG", "NSC", "NTAP", "NTRS", "NUE",
+  "NVDA", "NVR", "NWS", "NWSA", "NXPI", "O", "ODFL", "OKE", "OMC", "ON",
+  "ORCL", "ORLY", "OTIS", "OXY", "P", "PANW", "PAYX", "PCAR", "PCG", "PEG",
+  "PEP", "PFE", "PFG", "PG", "PGR", "PH", "PHM", "PKG", "PLD", "PLTR",
+  "PM", "PNC", "PNR", "PNW", "PODD", "PPG", "PPL", "PRU", "PSA", "PSKY",
+  "PSX", "PTC", "PWR", "PYPL", "Q", "QCOM", "RCL", "RDDT", "REG", "REGN",
+  "RF", "RJF", "RL", "RMD", "ROK", "ROL", "ROP", "ROST", "RSG", "RTX",
+  "RVTY", "SBAC", "SBUX", "SCHW", "SHW", "SJM", "SLB", "SMCI", "SNA", "SNDK",
+  "SNPS", "SO", "SOLV", "SPG", "SPGI", "SRE", "STE", "STLD", "STT", "STX",
+  "STZ", "SW", "SWK", "SWKS", "SYF", "SYK", "SYY", "T", "TDG", "TDY",
+  "TECH", "TEL", "TER", "TFC", "TGT", "TJX", "TKO", "TMO", "TMUS", "TPL",
+  "TPR", "TRGP", "TRMB", "TROW", "TRV", "TSCO", "TSLA", "TSN", "TT", "TTWO",
+  "TXN", "TXT", "TYL", "UAL", "UBER", "UDR", "UHS", "ULTA", "UNH", "UNP",
+  "UPS", "URI", "USB", "V", "VEEV", "VICI", "VLO", "VLTO", "VMC", "VMRK",
+  "VRSK", "VRSN", "VRT", "VRTX", "VST", "VTR", "VTRS", "VZ", "WAB", "WAT",
+  "WBD", "WDAY", "WDC", "WEC", "WELL", "WFC", "WM", "WMB", "WMT", "WRB",
+  "WSM", "WST", "WTW", "WY", "WYNN", "XEL", "XOM", "XYL", "XYZ", "YUM",
+  "ZBH", "ZBRA", "ZTS",
 ];
 
 /** @deprecated use SP500_UNIVERSE */
