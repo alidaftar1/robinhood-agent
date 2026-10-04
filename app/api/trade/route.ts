@@ -929,6 +929,67 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── MAIN-BOOK POSITION CAP (buy-side) ────────────────────────────────────────
+    // The strategy targets ~6 concentrated names; nothing bounded the count, so buys added,
+    // hysteresis retained, and the book drifted to 12 half-size positions across seven sectors —
+    // an index clone. TARGET_MAIN_POSITIONS was only ever used to DERIVE the sector cap
+    // (0.4 x 6 = 2); it never limited the book.
+    //
+    // Shipped on the 28-year survivorship-free backtest, which is unambiguous about the DESIGN
+    // (scripts/full-period.ts --positions 4,6,8,10,12, same rules otherwise):
+    //        4 → CAGR +11.88%  Sharpe 0.51  IR 0.24  maxDD -84.3%  7,475 trades
+    //        6 → CAGR +11.75%  Sharpe 0.53  IR 0.22  maxDD -71.9% 10,954
+    //        8 → CAGR +11.41%  Sharpe 0.55  IR 0.20  maxDD -68.2% 14,451
+    //       10 → CAGR  +9.54%  Sharpe 0.50  IR 0.10  maxDD -66.7% 17,834
+    //       12 → CAGR  +8.12%  Sharpe 0.46  IR 0.01  maxDD -66.6% 21,138
+    // Monotonic: 12 → 6 is +3.6pp CAGR and takes IR from 0.01 to 0.22, and HALVES trade count, so
+    // it improves returns and cuts execution cost together. 4 wins on CAGR but at a -84.3%
+    // drawdown; 6 is the design target and the knee of the curve.
+    //
+    // WHAT THIS DOES NOT PROVE: that run is the mechanical screen, not the live book with LLM
+    // selection on top. It says the design rewards concentration, not that capping fixes the live
+    // -5.9% alpha. The live book holding 12 with near-zero alpha is CONSISTENT with the backtest's
+    // 12-position row, which is what moved this from "do not ship" to "ship".
+    //
+    // BUY-SIDE ONLY, mirroring MAX_INFLUENCER_POSITIONS exactly: at the cap a new main buy is
+    // dropped unless a FULL EXIT frees a slot in the same decision. It can never force a sale, so
+    // it cannot manufacture churn — and under T+1 a forced sale would not fund a buy today anyway.
+    // The existing 12 therefore drain only through ordinary exits (stops, loss discipline,
+    // time-stop, hysteresis failure), which with hysteresis retaining names may be SLOW. That is
+    // the known weakness: if the count has not fallen in a month, the cap alone was not enough.
+    {
+      const heldMainQty = new Map(
+        (portfolioCtx?.positions ?? [])
+          .filter(p => !influencerHeld.has(p.symbol))
+          .map(p => [p.symbol, parseFloat(p.quantity) || 0]),
+      );
+      const mainSoldSet = new Set(
+        decision.sells.filter(s => isFullExit(s, heldMainQty.get(String(s.symbol)))).map(s => s.symbol),
+      );
+      const keptMain = [...heldMainQty.keys()].filter(sym => !mainSoldSet.has(sym)).length;
+      const allowedNewMain = Math.max(0, TARGET_MAIN_POSITIONS - keptMain);
+      // A buy is MAIN unless it is a sleeve buy — same predicate as the cap, cadence gate and
+      // recording site, so one name cannot be MAIN here and SLEEVE there.
+      const isMainBuy = (b: { symbol: string; strategy?: string }) =>
+        !(b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol)));
+      let keptNew = 0;
+      const cappedOut: string[] = [];
+      decision.buys = decision.buys.filter(b => {
+        if (!isMainBuy(b)) return true;              // sleeve picks have their own cap
+        if (keptNew < allowedNewMain) { keptNew++; return true; }
+        cappedOut.push(b.symbol);
+        return false;
+      });
+      if (cappedOut.length > 0) {
+        // Recorded, not just logged — the autopilot's decided-vs-executed check reads an absent buy
+        // WITHOUT a note as an unexplained anomaly and dispatches the paid cloud agent at a guard
+        // doing its job.
+        buySizingAdjustments.push(...cappedOut.map(sym =>
+          `${sym} buy DROPPED — main book at its ${TARGET_MAIN_POSITIONS}-position cap (${keptMain} kept, ${allowedNewMain} new slot(s) available)`));
+        console.log("MAIN_CAP_TRIMMED", { keptMain, allowedNewMain, cappedOut });
+      }
+    }
+
     // ── Pre-buy momentum guard: reject influencer picks in a clear downtrend ──────
     // The influencer signal measures popularity, not price trend — a stock can be the
     // most-talked-about one precisely because it's crashing (SPCX bought mid-decline).

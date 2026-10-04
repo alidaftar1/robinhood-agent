@@ -131,6 +131,49 @@ const priceOf = (date: string, symbol: string): number | null => {
   return series.get(symbol)?.[i]?.closeadj ?? null;
 };
 
+// POSITION SWEEP. `--positions 6,8,10,12` runs the same 28 years at each concentration level and
+// prints a comparison instead of a single report.
+//
+// This is the question docs/experiment-main-book-position-cap.md parked: the live book targets ~6
+// names and holds 12, and capping is right only if DILUTION is the cause rather than a symptom of
+// no selection edge. That doc proposed answering it with weeks of live picked-vs-passed-over
+// capture. The backtest answers the MECHANICAL half now, over 28 survivorship-free years: holding
+// the same rules and varying only maxPositions. It cannot tell us whether THIS model picks well —
+// but it can say whether the strategy's own design rewards concentration at all, which is the
+// premise the cap rests on.
+//
+// One pass per level: the day stream is lazy on purpose (materialising 28 years is several GB), so
+// each level rebuilds days. The expensive I/O — prices, fundamentals, membership — happens once.
+const sweepArg = argv.indexOf("--positions");
+const sweep = sweepArg !== -1
+  ? argv[sweepArg + 1].split(",").map(n => parseInt(n.trim(), 10)).filter(Number.isFinite)
+  : [LIVE_PROXY.config.maxPositions];
+
+if (sweep.length > 1) {
+  console.log(`\nPOSITION SWEEP — ${LIVE_PROXY.id}, ${sweep.join("/")} positions, same rules otherwise`);
+  console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · stop ${DEFAULT_BACKTEST.stopLossPct}% · cost ${DEFAULT_BACKTEST.costBps}bps\n`);
+  console.log(`  ${"positions".padEnd(10)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"turnover".padStart(10)}`);
+  console.log("  " + "─".repeat(55));
+  for (const n of sweep) {
+    const variant = { ...LIVE_PROXY, config: { ...LIVE_PROXY.config, maxPositions: n } };
+    const rr = runBacktest(variant, dayStream(), priceOf, (d) => spy.get(d) ?? null, DEFAULT_BACKTEST);
+    const yrs = (Date.parse(rr.to) - Date.parse(rr.from)) / (365.25 * 86_400_000);
+    const e = rr.marks.map(m => m.equity), sps = rr.marks.map(m => m.spy);
+    const dr = (v: Array<number | null>) => { const o: number[] = []; for (let i=1;i<v.length;i++){const a=v[i-1],b=v[i]; if(a!=null&&b!=null&&a>0)o.push(b/a-1);} return o; };
+    const mn = (x: number[]) => x.reduce((a,b)=>a+b,0)/(x.length||1);
+    const sdv = (x: number[]) => { const m=mn(x); return Math.sqrt(x.reduce((a,b)=>a+(b-m)**2,0)/(x.length||1)); };
+    const rsv = dr(e), rbv = dr(sps);
+    const act: number[] = []; for (let i=0;i<Math.min(rsv.length,rbv.length);i++) act.push(rsv[i]-rbv[i]);
+    const cg = (Math.pow(e[e.length-1]/e[0], 1/yrs) - 1) * 100;
+    const sh = sdv(rsv) > 0 ? (mn(rsv)/sdv(rsv))*Math.sqrt(252) : 0;
+    const irv = sdv(act) > 0 ? (mn(act)/sdv(act))*Math.sqrt(252) : 0;
+    const flag = rr.usable ? "" : "  ⛔ NOT USABLE";
+    console.log(`  ${String(n).padEnd(10)}${pct(cg,2).padStart(9)}${sh.toFixed(2).padStart(9)}${irv.toFixed(2).padStart(8)}${pct(rr.maxDrawdownPct,1).padStart(9)}${String(rr.trades ?? "—").padStart(10)}${flag}`);
+  }
+  console.log(`\n  SPY over the same window is the baseline printed by a normal (non-sweep) run.`);
+  process.exit(0);
+}
+
 const r = runBacktest(LIVE_PROXY, dayStream(), priceOf, (d) => spy.get(d) ?? null, DEFAULT_BACKTEST);
 
 // ── metrics ──────────────────────────────────────────────────────────────────
