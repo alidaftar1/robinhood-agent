@@ -854,6 +854,10 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
  */
 export const SLEEVE_ALLOWED_INSTRUMENTS = new Set(["EQUITY"]);
 
+/** The sleeve's universe is now the main book's. Built once; SP500_UNIVERSE is a generated constant
+ *  kept in lockstep with STOCK_SECTOR by evals/universe-consistency.test.ts. */
+const SP500_SET = new Set(SP500_UNIVERSE);
+
 /** An ABSENT type is rejected too: this is the sleeve's only instrument check, so admitting an
  *  untyped instrument on a malformed response is the fail-open direction. */
 export function isSleeveEligibleInstrument(instrumentType: string | undefined | null): boolean {
@@ -871,12 +875,30 @@ export async function fetchMomentum(symbol: string): Promise<{ price: number; ch
     const r = data?.chart?.result?.[0];
     const price = r?.meta?.regularMarketPrice;
     if (!price) return null;
-    // Non-equity → no candidate. An ABSENT type is also rejected: this is the sleeve's only
-    // instrument check, and admitting an unknown instrument on a malformed response is the
-    // fail-open direction. A name that cannot be typed also cannot be quality-screened.
+    // Non-equity → no candidate. An ABSENT type is also rejected: admitting an unknown instrument
+    // on a malformed response is the fail-open direction, and a name that cannot be typed cannot be
+    // quality-screened either. Kept as defence in depth even though the S&P check below now
+    // subsumes it for every realistic case — stating that rather than pretending both are load-
+    // bearing.
     const instrument = r?.meta?.instrumentType;
     if (!isSleeveEligibleInstrument(instrument)) {
       console.log("SLEEVE_NON_EQUITY_SKIPPED", { symbol, instrumentType: instrument ?? "(absent)" });
+      return null;
+    }
+    // S&P 500 ONLY. Owner's call 2026-10-04, on the realised split once sell tagging was fixed:
+    // closed sleeve positions were +$35.06 on S&P names and -$8.22 off-index. That sample is nine
+    // positions and well inside noise, and it is recorded as a judgement rather than a proven edge.
+    //
+    // What it also buys, independent of the P&L: every sleeve name now inherits the main book's
+    // data — a CIK and so a quality score, analyst actions, earnings signals, and a sector for the
+    // risk panel. Off-index picks were the sleeve's riskiest AND its blindest, and they were the
+    // reason sector metadata for sleeve-only names was an open problem at all. That problem is now
+    // moot: the sleeve cannot hold a name STOCK_SECTOR does not cover.
+    //
+    // This restricts new BUYS only. An existing off-index holding is untouched and exits on its own
+    // rails — a universe rule must never force a sale.
+    if (!SP500_SET.has(symbol)) {
+      console.log("SLEEVE_NON_SP500_SKIPPED", { symbol });
       return null;
     }
     const closes = (r?.indicators?.quote?.[0]?.close ?? []).filter((c): c is number => c != null);

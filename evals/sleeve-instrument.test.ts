@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { isSleeveEligibleInstrument, SLEEVE_ALLOWED_INSTRUMENTS, fetchMomentum } from "../lib/market-data";
+import { SP500_UNIVERSE } from "../lib/strategy";
 
 // The sleeve was buying ETFs and trusts on YouTube conviction. Of 50 tracked picks, QQQ/SCHD/VTWO
 // are index funds and BTC resolves to the Grayscale Bitcoin Mini Trust — none has fundamentals,
@@ -41,8 +42,37 @@ describe("fetchMomentum rejects non-equities end to end", () => {
     for (const etf of ["QQQ", "SCHD", "VTWO", "BTC"]) {
       expect(await fetchMomentum(etf), `${etf} is not an equity and must not become a sleeve candidate`).toBeNull();
     }
-    // An off-index single stock is still allowed — that is what the sleeve is for.
-    const spcx = await fetchMomentum("SPCX");
-    expect(spcx?.price ?? 0).toBeGreaterThan(0);
+    // (SPCX used to be asserted allowed here as an off-index EQUITY. It is now excluded by S&P
+    // MEMBERSHIP instead — see the universe test below. The instrument check still stands on its
+    // own for malformed or untyped responses.)
   }, 30_000);
+});
+
+// S&P-ONLY, owner's call 2026-10-04 on the realised split once sell tagging was fixed (+$35.06 on
+// S&P names, -$8.22 off-index across nine closed positions — thin, and recorded as a judgement).
+// Independent of the P&L it also makes every sleeve name inherit the main book's data: a CIK and so
+// a quality score, analyst actions, earnings signals, and a sector for the risk panel.
+describe("the sleeve universe is the S&P universe", () => {
+  test("an off-index equity is no longer a candidate", async () => {
+    const aapl = await fetchMomentum("AAPL");
+    if (!aapl) return; // Yahoo unreachable
+    // NBIS is a real company that quotes fine — excluded now by MEMBERSHIP, not by type. (SK turned
+    // out to be an ETF, so it is caught a step earlier; SPCX is the clean membership-only case.)
+    for (const t of ["NBIS", "SPCX"]) {
+      expect(await fetchMomentum(t), `${t} is off-index and must not be a sleeve candidate`).toBeNull();
+    }
+  }, 30_000);
+
+  test("S&P members still resolve", async () => {
+    const nvda = await fetchMomentum("NVDA");
+    if (!nvda) return;
+    expect(nvda.price).toBeGreaterThan(0);
+    expect((await fetchMomentum("AVGO"))?.price ?? 0).toBeGreaterThan(0);
+  }, 30_000);
+
+  test("every current sleeve holding is inside the new universe — nothing is orphaned", () => {
+    // A universe rule must never force a sale; this pins that the restriction was safe to apply.
+    const u = new Set(SP500_UNIVERSE);
+    for (const held of ["NVDA", "AVGO"]) expect(u.has(held), `${held} is held by the sleeve`).toBe(true);
+  });
 });
