@@ -4,6 +4,7 @@ import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { prunePicksByFirstSeen, resetLedger } from "@/lib/influencer-ledger";
+import { planSellTagBackfill, applySellTagBackfill, replaceRuns } from "@/lib/run-store";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -275,6 +276,26 @@ export async function GET(request: Request) {
   // Surgical ledger prune by first-seen date. The ledger is ONE Redis key holding a JSON object, so
   // the Upstash console can only delete the whole thing — which is the full reset the owner chose
   // against. Gated by requireCronAuth like everything else here.
+  // Backfill strategy tags on sells written before the tagger was fixed. ?backfillSellTags=1 is a
+  // DRY RUN; add &write=1 to apply. Read-then-write, and replaceRuns refuses to shrink the list.
+  if (url.searchParams.get("backfillSellTags")) {
+    try {
+      const runs = await getRuns(200);
+      const plan = planSellTagBackfill(runs);
+      const total = plan.reduce((a, p) => a + p.tagged.length, 0);
+      if (url.searchParams.get("write") === "1") {
+        const n = applySellTagBackfill(runs, plan);
+        await replaceRuns(runs);
+        results.backfillSellTags = `tagged ${n} sells across ${plan.length} runs`;
+      } else {
+        const sample = plan.slice(0, 6).map(p => `${p.date}: ${p.tagged.map(t => `${t.symbol}=${t.strategy}`).join(" ")}`);
+        results.backfillSellTags = `DRY RUN — would tag ${total} sells across ${plan.length} runs. ${sample.join(" | ")}`;
+      }
+    } catch (e) {
+      results.backfillSellTags = `error: ${e}`;
+    }
+  }
+
   const resetConfirm = url.searchParams.get("resetLedger");
   if (resetConfirm) {
     try {

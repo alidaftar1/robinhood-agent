@@ -26,6 +26,7 @@ import { getValuations, formatValuations } from "@/lib/valuation";
 import { formatConviction, convictionAuditNote, loadConvictionRun } from "@/lib/conviction";
 import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
+import { inferSellStrategy } from "@/lib/run-store";
 import { fetchAgenticBalance, fetchAgenticPositions } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
@@ -1193,8 +1194,13 @@ export async function GET(request: Request) {
     // Placing orders ONE AT A TIME (not "simultaneously") avoids the model dropping
     // an order from a batched multi-tool-call. Then we verify each decided sell
     // actually hit Robinhood and retry any that didn't, so a silent drop can't pass.
+    // Was: find the symbol's BUY in the PREVIOUS RUN. A position is bought days or weeks before it
+    // is sold, so that run almost never holds it — 67 of 81 historical sells ended up untagged,
+    // which makes per-sleeve realised P&L uncomputable because nothing ever nets to closed.
+    // influencerPositions on the prior run is the authoritative record and is what
+    // computeSleeveReturns already partitions on.
     const sellStrategyTag = (sym: string) =>
-      (previousRun?.trades ?? []).find(t => t.side === "buy" && t.symbol === sym)?.strategy;
+      inferSellStrategy(sym, previousRun?.influencerPositions, previousRun?.trades ?? []);
 
     async function runSellSession(sells: Array<{ symbol: string; quantity: string }>, timeoutMs: number): Promise<boolean> {
       if (sells.length === 0) return true;
@@ -1513,7 +1519,9 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
           // sells, which has nothing to do with today's inferred sell proceeds.
           for (const pos of missingSells) {
             const avgPrice = priceMap.get(pos.symbol) ?? parseFloat(pos.avgCost);
-            trades.push({ symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred" });
+            // Tagged like any other sell — an inferred sell is still a real disposal, and leaving it
+            // untagged is one of the ways the sleeve accounting lost track of closed positions.
+            trades.push({ symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred", strategy: sellStrategyTag(pos.symbol) });
             console.log("INFERRED_SELL", { symbol: pos.symbol, quantity: pos.quantity, avgPrice: avgPrice.toFixed(2) });
           }
         }

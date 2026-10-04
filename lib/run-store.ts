@@ -908,3 +908,94 @@ export function formatSummaryForEmail(summary: string, limit: number = SUMMARY_E
     : `${summary.slice(0, limit)}\n\n[… truncated ${summary.length - limit} of ${summary.length} chars — open the dashboard for the full reasoning]`;
   return escapeHtml(truncated);
 }
+
+/**
+ * Which sleeve a SELL belongs to.
+ *
+ * The original implementation looked for the symbol's BUY in the PREVIOUS RUN only — but a position
+ * is bought days or weeks before it is sold, so that run almost never contains it. Result: 67 of 81
+ * historical sells carried no strategy at all, which makes per-sleeve realised P&L uncomputable
+ * (positions never net to closed, so every one reads as still open).
+ *
+ * `influencerPositions` on the prior run is the authoritative record of which HOLDINGS are sleeve
+ * positions — it is what computeSleeveReturns already partitions on — so membership there decides.
+ * The buy-history scan remains only as a fallback for runs predating that field.
+ *
+ * Returns "main" rather than undefined when nothing is known: main is the overwhelming default, and
+ * an untagged sell is what caused the problem. A wrong-but-stated tag is visible and fixable; a
+ * missing one silently breaks the accounting.
+ */
+export function inferSellStrategy(
+  symbol: string,
+  prevInfluencerPositions: PositionSnapshot[] | undefined,
+  recentBuys: TradeSnapshot[] = [],
+): "main" | "influencer" {
+  // Present-but-empty is meaningful (the sleeve held nothing); absent means the run predates the
+  // field and cannot answer, so fall through to the buy history.
+  if (prevInfluencerPositions) {
+    return prevInfluencerPositions.some(p => p.symbol === symbol) ? "influencer" : "main";
+  }
+  const buy = recentBuys.find(t => t.side === "buy" && t.symbol === symbol && t.strategy);
+  return buy?.strategy === "influencer" ? "influencer" : "main";
+}
+
+/**
+ * Backfill the `strategy` tag on SELLS that were written without one.
+ *
+ * 67 of 81 stored sells have no tag, because the original tagger searched the previous run's BUYS
+ * for the symbol — which is almost never where a weeks-old position's buy lives. Fixing the tagger
+ * only helps future sells; without this the sleeve's realised P&L stays uncomputable for everything
+ * already recorded, since a position whose sell is untagged never nets to closed.
+ *
+ * Inference uses the SAME rule as the live path: membership in the PRIOR run's influencerPositions,
+ * falling back to buy history for runs predating that field.
+ *
+ * Only ever FILLS A GAP — an existing tag is never overwritten, so a bad inference cannot destroy a
+ * tag the trade route recorded first-hand. Returns a per-run plan; the caller decides to write.
+ */
+export function planSellTagBackfill(runsNewestFirst: TradeRun[]): Array<{
+  index: number; date: string; tagged: Array<{ symbol: string; strategy: "main" | "influencer" }>;
+}> {
+  const out: Array<{ index: number; date: string; tagged: Array<{ symbol: string; strategy: "main" | "influencer" }> }> = [];
+  runsNewestFirst.forEach((run, i) => {
+    // newest-first, so the PRIOR run (older) is the next index.
+    const prior = runsNewestFirst[i + 1];
+    const tagged: Array<{ symbol: string; strategy: "main" | "influencer" }> = [];
+    for (const t of run.trades ?? []) {
+      if (t.side !== "sell" || t.strategy) continue;
+      tagged.push({ symbol: t.symbol, strategy: inferSellStrategy(t.symbol, prior?.influencerPositions, prior?.trades ?? []) });
+    }
+    if (tagged.length) out.push({ index: i, date: run.date, tagged });
+  });
+  return out;
+}
+
+/** Apply a backfill plan in place. Returns how many trades were tagged. */
+export function applySellTagBackfill(
+  runsNewestFirst: TradeRun[],
+  plan: ReturnType<typeof planSellTagBackfill>,
+): number {
+  let n = 0;
+  for (const p of plan) {
+    const run = runsNewestFirst[p.index];
+    for (const { symbol, strategy } of p.tagged) {
+      const t = (run.trades ?? []).find(x => x.side === "sell" && x.symbol === symbol && !x.strategy);
+      if (t) { t.strategy = strategy; n++; }
+    }
+  }
+  return n;
+}
+
+/** Write back a whole run list, newest-first. Used only by backfills. */
+export async function replaceRuns(runsNewestFirst: TradeRun[]): Promise<void> {
+  // Guard: refuse to replace with a SHORTER list. A truncated read followed by a write is how a
+  // backfill turns into data loss, and this store is the agent's entire history.
+  const existing = await getRuns(MAX_RUNS);
+  if (runsNewestFirst.length < existing.length) {
+    throw new Error(`refusing to replace ${existing.length} runs with ${runsNewestFirst.length}`);
+  }
+  await redisPost("pipeline", [
+    ["DEL", RUNS_KEY],
+    ...runsNewestFirst.map(r => ["RPUSH", RUNS_KEY, JSON.stringify(r)]),
+  ]);
+}
