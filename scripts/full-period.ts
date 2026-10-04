@@ -152,7 +152,7 @@ const sweep = sweepArg !== -1
 if (sweep.length > 1) {
   console.log(`\nPOSITION SWEEP — ${LIVE_PROXY.id}, ${sweep.join("/")} positions, same rules otherwise`);
   console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · stop ${DEFAULT_BACKTEST.stopLossPct}% · cost ${DEFAULT_BACKTEST.costBps}bps\n`);
-  console.log(`  ${"positions".padEnd(10)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"turnover".padStart(10)}`);
+  console.log(`  ${"positions".padEnd(10)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"trades".padStart(10)}`);
   console.log("  " + "─".repeat(55));
   for (const n of sweep) {
     const variant = { ...LIVE_PROXY, config: { ...LIVE_PROXY.config, maxPositions: n } };
