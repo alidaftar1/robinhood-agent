@@ -25,6 +25,10 @@ on:
         description: "Reuse cached Sharadar extracts between runs (see LICENSING note): true | false"
         required: false
         default: "false"
+      positions:
+        description: "Position-count sweep for the full-period run, e.g. 4,6,8,10,12 (blank = single run at the variant's own config)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -123,7 +127,11 @@ jobs:
           if [ "$TEST" = "full" ] || [ "$TEST" = "both" ]; then
             echo "### Full cycle (1999 → 2026)" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            bun scripts/full-period.ts $FLAG 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+            # A position sweep runs one pass per level over the same loaded data; the day stream is
+            # lazy by design, so each level rebuilds days rather than materialising 28 years.
+            POS=""
+            if [ -n "${{ inputs.positions }}" ]; then POS="--positions ${{ inputs.positions }}"; fi
+            bun scripts/full-period.ts $FLAG $POS 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
