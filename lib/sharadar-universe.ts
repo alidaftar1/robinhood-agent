@@ -313,6 +313,15 @@ export interface SyncPlan {
   rejected: Array<{ ticker: string; reason: string }>;
   /** Removals SUPPRESSED because the name is currently held. */
   heldBlocked: string[];
+  /** KEPT entries that fail the same gates applied to additions — still index members, but no
+   *  longer priceable or scoreable. Reported, never auto-removed: a kept name IS a current index
+   *  member, so a failure here is contradictory data (a lagging listing, a transient fetch error,
+   *  or a symbol-format change) rather than a delisting, and `priced:false` cannot distinguish a
+   *  404 from a timeout. Silently dropping an index member on a flaky fetch is the worse error.
+   *
+   *  This exists because nothing re-validated kept entries: BK, MMC, FI and ABC sat in the universe
+   *  while 404ing on every quote, and no sync would ever have said so. */
+  degraded: Array<{ ticker: string; reason: string }>;
 }
 
 /**
@@ -357,10 +366,20 @@ export function planUniverseSync(input: {
 
   const remove: string[] = [];
   const heldBlocked: string[] = [];
+  const degraded: SyncPlan["degraded"] = [];
   for (const t of [...ourUniverse].sort()) {
-    if (indexMembers.has(t) || renamedOurs.has(t)) continue;
+    if (indexMembers.has(t) || renamedOurs.has(t)) {
+      // KEPT — re-validate against the same gates as an addition. A candidate row is only supplied
+      // when the caller asked for one, so absence here means "not checked", not "failed".
+      const c = byTicker.get(t);
+      if (c) {
+        if (!c.priced) degraded.push({ ticker: t, reason: "no live quote" });
+        else if (!c.hasCik) degraded.push({ ticker: t, reason: "no CIK — permanently withheld by the quality screen" });
+      }
+      continue;
+    }
     if (held.has(t)) { heldBlocked.push(t); continue; }
     remove.push(t);
   }
-  return { add, remove, rejected, heldBlocked };
+  return { add, remove, rejected, heldBlocked, degraded };
 }

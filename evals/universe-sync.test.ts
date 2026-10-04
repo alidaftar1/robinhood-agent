@@ -86,8 +86,60 @@ describe("planUniverseSync", () => {
     expect(p.remove).toEqual([]);
   });
 
+  // Nothing re-validated KEPT entries, which is how BK/MMC/FI/ABC sat in the universe 404ing on
+  // every quote with no sync ever saying so.
+  test("a kept entry that no longer prices is REPORTED as degraded", () => {
+    const p = planUniverseSync({
+      indexMembers: new Set(["AAPL"]),
+      ourUniverse: new Set(["AAPL"]),
+      candidates: [{ ticker: "AAPL", sector: "Technology", priced: false, hasCik: true }],
+      held: new Set(),
+    });
+    expect(p.degraded).toEqual([{ ticker: "AAPL", reason: "no live quote" }]);
+  });
+
+  test("a kept entry that no longer resolves a CIK is reported too", () => {
+    const p = planUniverseSync({
+      indexMembers: new Set(["AAPL"]),
+      ourUniverse: new Set(["AAPL"]),
+      candidates: [{ ticker: "AAPL", sector: "Technology", priced: true, hasCik: false }],
+      held: new Set(),
+    });
+    expect(p.degraded[0].reason).toContain("no CIK");
+  });
+
+  test("a degraded KEPT entry is never auto-removed — it is still an index member", () => {
+    // priced:false cannot tell a 404 from a timeout, and dropping an index member on a flaky fetch
+    // is worse than carrying it. Report, do not act.
+    const p = planUniverseSync({
+      indexMembers: new Set(["AAPL"]),
+      ourUniverse: new Set(["AAPL"]),
+      candidates: [{ ticker: "AAPL", sector: "Technology", priced: false, hasCik: false }],
+      held: new Set(),
+    });
+    expect(p.remove).toEqual([]);
+    expect(p.degraded.length).toBe(1);
+  });
+
+  test("a healthy kept entry is not reported", () => {
+    const p = planUniverseSync({
+      indexMembers: new Set(["AAPL"]),
+      ourUniverse: new Set(["AAPL"]),
+      candidates: [{ ticker: "AAPL", sector: "Technology", priced: true, hasCik: true }],
+      held: new Set(),
+    });
+    expect(p.degraded).toEqual([]);
+  });
+
+  test("no candidate row for a kept entry means NOT CHECKED, never a failure", () => {
+    const p = planUniverseSync({
+      indexMembers: new Set(["AAPL"]), ourUniverse: new Set(["AAPL"]), candidates: [], held: new Set(),
+    });
+    expect(p.degraded).toEqual([]);
+  });
+
   test("nothing to do is an empty plan, not an error", () => {
     const p = planUniverseSync({ indexMembers: new Set(["AAPL"]), ourUniverse: new Set(["AAPL"]), candidates: [], held: new Set() });
-    expect(p).toEqual({ add: [], remove: [], rejected: [], heldBlocked: [] });
+    expect(p).toEqual({ add: [], remove: [], rejected: [], heldBlocked: [], degraded: [] });
   });
 });

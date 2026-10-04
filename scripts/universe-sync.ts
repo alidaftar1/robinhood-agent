@@ -88,9 +88,14 @@ const tk2cik = new Set<string>();
 for (const v of Object.values(await cikRes.json() as Record<string, { ticker?: string }>)) if (v?.ticker) tk2cik.add(v.ticker);
 console.error(`SEC ticker map: ${tk2cik.size} rows`);
 
+// Validate the WHOLE universe — additions AND the names we already carry. Gating only additions is
+// how BK, MMC, FI and ABC sat in STOCK_SECTOR 404ing on every quote, with no sync ever saying so.
+// Costs ~500 quote requests instead of ~120; this is a manual tool, so that is the right trade.
+const toCheck = [...new Set([...wanted, ...ours])];
+console.error(`validating ${toCheck.length} symbols (${wanted.length} candidates + ${ours.size} existing)`);
 const candidates: SyncCandidate[] = [];
-for (let i = 0; i < wanted.length; i += 8) {
-  const chunk = wanted.slice(i, i + 8);
+for (let i = 0; i < toCheck.length; i += 8) {
+  const chunk = toCheck.slice(i, i + 8);
   const ok = await Promise.all(chunk.map(priced));
   chunk.forEach((t, j) => candidates.push({
     ticker: t,
@@ -119,8 +124,12 @@ console.log(`\nADD (${plan.add.length}):`);
 for (const a of plan.add) console.log(`   ${a.ticker.padEnd(7)} ${a.etf}`);
 console.log(`\nREMOVE (${plan.remove.length}):\n   ${plan.remove.join(" ") || "none"}`);
 console.log(`\nHELD, removal SUPPRESSED (${plan.heldBlocked.length}):\n   ${plan.heldBlocked.join(" ") || "none"}`);
-console.log(`\nREJECTED (${plan.rejected.length}) — gated out, with reasons:`);
+console.log(`\nREJECTED (${plan.rejected.length}) — candidates gated out, with reasons:`);
 for (const r of plan.rejected) console.log(`   ${r.ticker.padEnd(7)} ${r.reason}`);
+console.log(`\nDEGRADED (${plan.degraded.length}) — names we ALREADY carry that fail the same gates.`);
+console.log(`   Still index members, so NOT auto-removed — a failed quote cannot tell a 404 from a`);
+console.log(`   timeout, and dropping an index member on a flaky fetch is the worse error. Investigate:`);
+for (const d of plan.degraded) console.log(`   ${d.ticker.padEnd(7)} ${d.reason}`);
 console.log(`\nResulting universe size: ${ours.size + plan.add.length - plan.remove.length}`);
 
 if (!WRITE) { console.log(`\n(report only — pass --write to rewrite the STOCK_SECTOR block)`); process.exit(0); }
