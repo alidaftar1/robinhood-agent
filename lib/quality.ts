@@ -908,14 +908,18 @@ export function shouldCache(data: QualityData): boolean {
  * in a run that also places the risk SELLS, so an unbounded SEC fetch can exhaust maxDuration and
  * kill the stop-loss path.
  *
- * 60s is well BELOW this module's internal ceilings (QUALITY_FRAMES_BUDGET_MS 75s +
- * RECOVERY_BUDGET_MS 45s), which would have been wrong while a failed screen widened the buyable
- * universe — discarding a slow-but-correct refresh would have meant buying on momentum alone. Now
- * that a null result WITHHOLDS main-book buys, the asymmetry flips: the cost of cutting a slow run
- * short is a delayed buy on a weekly-rebalanced book, and the cost of letting it run is a run that
- * dies during order placement. Cheap side first.
+ * 15s, because the trade run now calls this with cacheOnly — it is a Redis GET, not an SEC crawl.
+ * The cold path moved to /api/quality-refresh.
+ *
+ * An earlier version used 60s against the FULL path, and that was wrong in a way worth recording:
+ * 60s sits below this module's own ceilings (QUALITY_FRAMES_BUDGET_MS 75s + RECOVERY_BUDGET_MS
+ * 45s), so a legitimately slow cold refresh would be discarded — and with the screen failing closed
+ * that stops main-book buying. It also could not self-heal, since one failed SEC fetch among ~130
+ * marks the result `degraded` and a degraded result is never cached, so every subsequent run
+ * started cold and timed out again. No value was correct, because the slow work was in the wrong
+ * request.
  */
-export const QUALITY_CALL_BUDGET_MS = 60_000;
+export const QUALITY_CALL_BUDGET_MS = 15_000;
 
 /**
  * Resolve `p`, or null if it exceeds `budgetMs`. Pure plumbing, exported for tests: the timer is
@@ -938,7 +942,23 @@ export async function withBudget<T>(
   }
 }
 
-export async function getQualityScores(force = false): Promise<QualityData | null> {
+/**
+ * `cacheOnly` returns null on a cache MISS instead of computing from SEC.
+ *
+ * The trade run must never pay the COLD cost. fetchQualityFromSEC is bounded at
+ * QUALITY_FRAMES_BUDGET_MS (75s) + RECOVERY_BUDGET_MS (45s), so a cold refresh can legitimately
+ * exceed any budget small enough to be safe inside a run that also places the risk SELLS — and with
+ * the screen now failing CLOSED, a timeout stops main-book buying. Worse, it would not self-heal:
+ * recoverWithheld marks `degraded` on a SINGLE SEC failure among ~130 per-company fetches, and
+ * shouldCache refuses to persist a degraded result, so every following run starts cold and times out
+ * again. The 450->503 universe makes that more likely, not less.
+ *
+ * So the slow path moved to its own cron (/api/quality-refresh), exactly as /api/influencer-cache
+ * warms the signal cache before /api/trade reads it. The trade run does a Redis read; a miss means
+ * the refresher has not succeeded, which is actionable and alerted. The 8-day TTL gives the
+ * refresher roughly eight daily attempts to land one good result before anything expires.
+ */
+export async function getQualityScores(force = false, cacheOnly = false): Promise<QualityData | null> {
   try {
     if (!force) {
       const cached = await redisGet(CACHE_KEY);
@@ -953,6 +973,10 @@ export async function getQualityScores(force = false): Promise<QualityData | nul
         if (typeof hit.staleUniverseSuspect !== "boolean") hit.staleUniverseSuspect = false;
         return hit;
       }
+    }
+    if (cacheOnly) {
+      console.warn("QUALITY_CACHE_MISS — cacheOnly caller got nothing; /api/quality-refresh has not landed a good result");
+      return null;
     }
     const data = await fetchQualityFromSEC();
     // NEVER cache a degraded result. A failed fetch cached for 8 days is the documented

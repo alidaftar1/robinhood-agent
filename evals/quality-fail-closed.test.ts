@@ -26,12 +26,9 @@ describe("withBudget", () => {
     expect(await withBudget(Promise.resolve(0), 1000, () => {})).toBe(0);
   });
 
-  test("the budget sits BELOW the module's internal ceilings — safe only because it fails closed", () => {
-    // FRAMES 75s + RECOVERY 45s = 120s. Cutting a slow run short now costs a delayed buy on a
-    // weekly-rebalanced book, not a momentum-only purchase, so the cheap side is cutting short.
-    expect(QUALITY_CALL_BUDGET_MS).toBeLessThan(120_000);
-    expect(QUALITY_CALL_BUDGET_MS).toBeGreaterThan(30_000);
-  });
+  // (The old assertion that the budget sat between 30s and 120s belonged to the version where this
+  // covered the COLD SEC path. That path moved to /api/quality-refresh; the budget invariant now
+  // lives in the "sized for a CACHE READ" block below.)
 });
 
 // The reason the withhold is applied to BUYS at the execution boundary rather than by emptying
@@ -68,5 +65,41 @@ describe("why fail-closed must NOT be implemented by emptying `eligible`", () =>
     const v1ShortlistSet = new Set(buy.map(s => s.symbol));
     expect(v1ShortlistSet.size).toBe(0);
     expect(v1ShortlistSet.has("AAA")).toBe(false);  // → would classify a MAIN buy as influencer
+  });
+});
+
+// The trade run now reads the cache only; the cold SEC path moved to /api/quality-refresh. No
+// budget was correct for the cold path inside /api/trade: large enough to let it finish endangered
+// the risk SELLS against maxDuration, small enough to be safe discarded slow-but-correct results —
+// and with the screen failing closed, discarding one stops main-book buying. It also could not
+// self-heal, because one failed SEC fetch among ~130 marks the result degraded and a degraded
+// result is never cached, so every following run started cold again.
+describe("quality budget is sized for a CACHE READ, not an SEC crawl", () => {
+  test("the budget is far below the module's own internal ceilings — it is not a cold-path budget", () => {
+    // FRAMES 75s + RECOVERY 45s = 120s of legitimate cold work. A budget anywhere near that would
+    // mean the cold path still ran here.
+    expect(QUALITY_CALL_BUDGET_MS).toBeLessThan(30_000);
+  });
+
+  test("but long enough that an ordinary Redis round-trip cannot trip it", () => {
+    expect(QUALITY_CALL_BUDGET_MS).toBeGreaterThanOrEqual(10_000);
+  });
+});
+
+describe("the quality-refresh cron is scheduled ahead of the trade run", () => {
+  test("it exists, and lands before /api/trade so a slow refresh cannot delay the sells", async () => {
+    const cfg = JSON.parse(await Bun.file("vercel.json").text()) as { crons: Array<{ path: string; schedule: string }> };
+    const refresh = cfg.crons.find(c => c.path.startsWith("/api/quality-refresh"));
+    const trade = cfg.crons.find(c => c.path.startsWith("/api/trade"));
+    expect(refresh, "quality-refresh cron must be scheduled — without it the cache expires and the fail-closed screen stops buys").toBeDefined();
+    expect(trade).toBeDefined();
+    const mins = (s: string) => { const [m, h] = s.split(" "); return Number(h) * 60 + Number(m); };
+    expect(mins(refresh!.schedule)).toBeLessThan(mins(trade!.schedule));
+  });
+
+  test("it runs on weekdays, matching the trade cadence", async () => {
+    const cfg = JSON.parse(await Bun.file("vercel.json").text()) as { crons: Array<{ path: string; schedule: string }> };
+    const refresh = cfg.crons.find(c => c.path.startsWith("/api/quality-refresh"))!;
+    expect(refresh.schedule.trim().split(" ")[4]).toBe("1-5");
   });
 });

@@ -366,8 +366,15 @@ export async function GET(request: Request) {
     // anything higher pushed a run that also places the risk SELLS toward maxDuration — the
     // partially-executed-trades failure that cut valuation to 20s (see ~line 514).
     // Now a timeout only costs a buy day, so it can be set well below the internal ceilings.
+    // CACHE-ONLY. The cold SEC path moved to /api/quality-refresh (its own cron, maxDuration 300),
+    // because no budget was correct for it here: big enough to let a cold refresh finish endangered
+    // the risk SELLS against maxDuration, small enough to be safe discarded slow-but-correct results
+    // — and with the screen failing closed, discarding one stops main-book buying. It also would not
+    // self-heal, since a single SEC failure marks the result `degraded` and a degraded result is
+    // never cached, so every following run started cold again.
+    // What remains here is a Redis GET, so the budget is short on purpose.
     const quality = await withBudget(
-      getQualityScores(),
+      getQualityScores(false, true),
       QUALITY_CALL_BUDGET_MS,
       () => console.error("QUALITY_BUDGET_EXCEEDED", { budgetMs: QUALITY_CALL_BUDGET_MS, date: today }),
     );
@@ -392,7 +399,7 @@ export async function GET(request: Request) {
       console.warn("V1_QUALITY_UNAVAILABLE — main-book BUYS withheld this run (fail closed); sells unaffected");
       await sendAlert(
         `⚠️ V1 quality data unavailable — ${today}`,
-        `SEC/Redis quality data could not be loaded, so the main book is NOT BUYING this run (fail closed — it will not buy on momentum alone). Risk sells and the influencer sleeve are unaffected. Main-book buys only run on the first two trading days of the week, so a single occurrence costs a few days at most. Quality is cached ~weekly — investigate if this persists.`
+        `No cached quality data, so the main book is NOT BUYING this run (fail closed — it will not buy on momentum alone). Risk sells and the influencer sleeve are unaffected.\n\nThe trade run reads the cache only; the SEC refresh runs separately at /api/quality-refresh. A miss here means that cron has not landed a good result before the 8-day TTL expired — check its logs/alerts rather than SEC reachability from this run. Main-book buys only run on the first two trading days of the week, so a single occurrence costs a few days at most.`
       ).catch(() => {});
     }
     const eligible = quality
