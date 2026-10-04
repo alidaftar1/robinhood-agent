@@ -22,7 +22,15 @@ import { getRuns } from "../lib/run-store";
 const argv = process.argv.slice(2);
 const WRITE = argv.includes("--write");
 const API = "https://api.sharadar.com/v1.0/data";
-const RENAMES: Record<string, string> = { BK: "BNY", MMC: "MRSH", FI: "FISV", ABC: "COR" };
+// NO rename suppression. The first version passed { BK: "BNY", MMC: "MRSH", FI: "FISV", ABC: "COR" }
+// to avoid "churning the universe for a ticker change" — and that was exactly wrong. Suppression
+// keeps OUR (old) symbol and refuses THEIR (new) one, so it pinned four DEAD tickers into the
+// universe and locked four live index members out. Verified live 2026-10-04 on Yahoo: BK/MMC/FI/ABC
+// all 404; BNY/MRSH/FISV/COR all 200. The CIK overrides hid it by keeping BK/MMC/FI SCOREABLE while
+// they were unquotable.
+// A rename is a MIGRATION, and the plain add/remove path already performs it correctly: the old
+// symbol is absent from the index (removed) and the new one is present (added).
+const RENAMES: Record<string, string> = {};
 
 const key = process.env.SHARADAR_API_KEY;
 if (!key) { console.error("SHARADAR_API_KEY required"); process.exit(1); }

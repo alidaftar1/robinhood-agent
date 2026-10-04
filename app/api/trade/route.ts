@@ -738,9 +738,18 @@ export async function GET(request: Request) {
       const qualityBlocked: string[] = [];
       decision.buys = decision.buys.filter(b => {
         // Quality unavailable → no MAIN buys. Checked before the shortlist test, because with a null
-        // quality the shortlist was built on an unscreened universe and must not authorise anything.
-        // Influencer picks fall through: they never depended on the quality screen.
-        if (mainBuysBlocked && !influencerCandidateSet.has(b.symbol)) { qualityBlocked.push(b.symbol); return false; }
+        // quality the shortlist was built on an UNSCREENED universe and must not authorise anything.
+        //
+        // The exemption uses the SAME predicate as every other sleeve site (cap, cadence gate,
+        // recording). The first version exempted anything in influencerCandidateSet, which is NOT
+        // the same thing and left a hole: on a quality outage the unscreened shortlist can contain a
+        // name that is ALSO a recurring influencer candidate (MU is the standing example). Untagged
+        // and on the shortlist, it is classified MAIN downstream — so it would be sized and railed
+        // as a main position, with no quality screen, while the alert email said "the main book is
+        // NOT BUYING this run". Only a genuine sleeve buy is exempt.
+        const sleeveExempt = b.strategy === "influencer"
+          || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
+        if (mainBuysBlocked && !sleeveExempt) { qualityBlocked.push(b.symbol); return false; }
         if (v1ShortlistSet.has(b.symbol)) return true;           // main buy on the rails
         if (influencerCandidateSet.has(b.symbol)) return true;   // legit influencer pick (in the real signal set)
         offList.push(b.symbol);
@@ -750,6 +759,11 @@ export async function GET(request: Request) {
       // from one that simply found nothing worth buying.
       if (qualityBlocked.length > 0) {
         console.warn("MAIN_BUYS_BLOCKED_NO_QUALITY", { date: today, dropped: qualityBlocked });
+        // Also a SIZING NOTE, not just a log. lib/autopilot-review.ts feeds buySizingAdjustments to
+        // the skeptical reviewer precisely so a missing buy has a citable reason — without it, a
+        // quality-outage run shows zero buys against material settled cash and reads as the
+        // "broken guardrail / idle capital" false positive that field exists to prevent.
+        buySizingAdjustments.push(`main-book buys WITHHELD (quality screen unavailable — fail closed): ${qualityBlocked.join(", ")}`);
       }
 
       // ── Weekly rebalance gate (main book only) ────────────────────────────────

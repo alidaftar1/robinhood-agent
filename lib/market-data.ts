@@ -27,32 +27,31 @@ export const STOCK_SECTOR: Record<string, string> = {
   A:"XLK", AAPL:"XLK", ACN:"XLK", ADBE:"XLK", ADI:"XLK", ADSK:"XLK", AKAM:"XLK", AMAT:"XLK",
   AMD:"XLK", ANET:"XLK", APH:"XLK", APP:"XLK", AVGO:"XLK", BR:"XLK", CDNS:"XLK", CDW:"XLK",
   CIEN:"XLK", COHR:"XLK", CPAY:"XLK", CRM:"XLK", CRWD:"XLK", CSCO:"XLK", CTSH:"XLK", DDOG:"XLK",
-  DELL:"XLK", FFIV:"XLK", FICO:"XLK", FLEX:"XLK", FSLR:"XLK", FTNT:"XLK", FTV:"XLK", GDDY:"XLK",
-  GEN:"XLK", GLW:"XLK", HPE:"XLK", HPQ:"XLK", IBM:"XLK", INTC:"XLK", INTU:"XLK", IT:"XLK",
-  JBL:"XLK", JKHY:"XLK", KEYS:"XLK", KLAC:"XLK", LDOS:"XLK", LITE:"XLK", LRCX:"XLK", MCHP:"XLK",
-  MPWR:"XLK", MRVL:"XLK", MSFT:"XLK", MSI:"XLK", MU:"XLK", NOW:"XLK", NTAP:"XLK", NVDA:"XLK",
-  NXPI:"XLK", ON:"XLK", ORCL:"XLK", P:"XLK", PANW:"XLK", PAYX:"XLK", PLTR:"XLK", PTC:"XLK",
-  Q:"XLK", QCOM:"XLK", ROP:"XLK", SMCI:"XLK", SNDK:"XLK", SNPS:"XLK", STX:"XLK", SWKS:"XLK",
-  TDY:"XLK", TEL:"XLK", TER:"XLK", TRMB:"XLK", TXN:"XLK", TYL:"XLK", UBER:"XLK", VRSN:"XLK",
-  WDAY:"XLK", WDC:"XLK", XYZ:"XLK", ZBRA:"XLK",
+  DELL:"XLK", FFIV:"XLK", FICO:"XLK", FISV:"XLK", FLEX:"XLK", FSLR:"XLK", FTNT:"XLK", FTV:"XLK",
+  GDDY:"XLK", GEN:"XLK", GLW:"XLK", HPE:"XLK", HPQ:"XLK", IBM:"XLK", INTC:"XLK", INTU:"XLK",
+  IT:"XLK", JBL:"XLK", JKHY:"XLK", KEYS:"XLK", KLAC:"XLK", LDOS:"XLK", LITE:"XLK", LRCX:"XLK",
+  MCHP:"XLK", MPWR:"XLK", MRVL:"XLK", MSFT:"XLK", MSI:"XLK", MU:"XLK", NOW:"XLK", NTAP:"XLK",
+  NVDA:"XLK", NXPI:"XLK", ON:"XLK", ORCL:"XLK", P:"XLK", PANW:"XLK", PAYX:"XLK", PLTR:"XLK",
+  PTC:"XLK", Q:"XLK", QCOM:"XLK", ROP:"XLK", SMCI:"XLK", SNDK:"XLK", SNPS:"XLK", STX:"XLK",
+  SWKS:"XLK", TDY:"XLK", TEL:"XLK", TER:"XLK", TRMB:"XLK", TXN:"XLK", TYL:"XLK", UBER:"XLK",
+  VRSN:"XLK", WDAY:"XLK", WDC:"XLK", XYZ:"XLK", ZBRA:"XLK",
   // XLC
   CHTR:"XLC", CMCSA:"XLC", DASH:"XLC", DIS:"XLC", ECHO:"XLC", FOX:"XLC", FOXA:"XLC", GOOG:"XLC",
   GOOGL:"XLC", LYV:"XLC", META:"XLC", NFLX:"XLC", NWS:"XLC", NWSA:"XLC", OMC:"XLC", PSKY:"XLC",
   RDDT:"XLC", T:"XLC", TKO:"XLC", TMUS:"XLC", TTWO:"XLC", VZ:"XLC", WBD:"XLC",
   // XLF
   ACGL:"XLF", AFL:"XLF", AIG:"XLF", AIZ:"XLF", AJG:"XLF", ALL:"XLF", AMP:"XLF", AON:"XLF",
-  APO:"XLF", ARES:"XLF", AXP:"XLF", BAC:"XLF", BEN:"XLF", BK:"XLF", BLK:"XLF", "BRK.B":"XLF",
+  APO:"XLF", ARES:"XLF", AXP:"XLF", BAC:"XLF", BEN:"XLF", BLK:"XLF", BNY:"XLF", "BRK.B":"XLF",
   BRO:"XLF", BX:"XLF", C:"XLF", CB:"XLF", CBOE:"XLF", CFG:"XLF", CINF:"XLF", CME:"XLF",
-  COF:"XLF", COIN:"XLF", EG:"XLF", ERIE:"XLF", FDS:"XLF", FI:"XLF", FIS:"XLF", FITB:"XLF",
-  GL:"XLF", GPN:"XLF", GS:"XLF", HBAN:"XLF", HIG:"XLF", HOOD:"XLF", IBKR:"XLF", ICE:"XLF",
-  IVZ:"XLF", JPM:"XLF", KEY:"XLF", KKR:"XLF", L:"XLF", MA:"XLF", MCO:"XLF", MET:"XLF",
-  MMC:"XLF", MS:"XLF", MSCI:"XLF", MTB:"XLF", NDAQ:"XLF", NTRS:"XLF", PFG:"XLF", PGR:"XLF",
-  PNC:"XLF", PRU:"XLF", PYPL:"XLF", RF:"XLF", RJF:"XLF", SCHW:"XLF", SPGI:"XLF", STT:"XLF",
-  SYF:"XLF", TFC:"XLF", TROW:"XLF", TRV:"XLF", USB:"XLF", V:"XLF", WFC:"XLF", WRB:"XLF",
-  WTW:"XLF",
+  COF:"XLF", COIN:"XLF", EG:"XLF", ERIE:"XLF", FDS:"XLF", FIS:"XLF", FITB:"XLF", GL:"XLF",
+  GPN:"XLF", GS:"XLF", HBAN:"XLF", HIG:"XLF", HOOD:"XLF", IBKR:"XLF", ICE:"XLF", IVZ:"XLF",
+  JPM:"XLF", KEY:"XLF", KKR:"XLF", L:"XLF", MA:"XLF", MCO:"XLF", MET:"XLF", MRSH:"XLF",
+  MS:"XLF", MSCI:"XLF", MTB:"XLF", NDAQ:"XLF", NTRS:"XLF", PFG:"XLF", PGR:"XLF", PNC:"XLF",
+  PRU:"XLF", PYPL:"XLF", RF:"XLF", RJF:"XLF", SCHW:"XLF", SPGI:"XLF", STT:"XLF", SYF:"XLF",
+  TFC:"XLF", TROW:"XLF", TRV:"XLF", USB:"XLF", V:"XLF", WFC:"XLF", WRB:"XLF", WTW:"XLF",
   // XLV
-  ABBV:"XLV", ABC:"XLV", ABT:"XLV", ALGN:"XLV", AMGN:"XLV", BAX:"XLV", BDX:"XLV", BIIB:"XLV",
-  BMY:"XLV", BSX:"XLV", CAH:"XLV", CI:"XLV", CNC:"XLV", COO:"XLV", CRL:"XLV", CVS:"XLV",
+  ABBV:"XLV", ABT:"XLV", ALGN:"XLV", AMGN:"XLV", BAX:"XLV", BDX:"XLV", BIIB:"XLV", BMY:"XLV",
+  BSX:"XLV", CAH:"XLV", CI:"XLV", CNC:"XLV", COO:"XLV", COR:"XLV", CRL:"XLV", CVS:"XLV",
   DGX:"XLV", DHR:"XLV", DVA:"XLV", DXCM:"XLV", ELV:"XLV", EW:"XLV", GEHC:"XLV", GILD:"XLV",
   HCA:"XLV", HSIC:"XLV", HUM:"XLV", IDXX:"XLV", ILMN:"XLV", INCY:"XLV", IQV:"XLV", ISRG:"XLV",
   JNJ:"XLV", LH:"XLV", LLY:"XLV", MCK:"XLV", MDT:"XLV", MRK:"XLV", MRNA:"XLV", MTD:"XLV",
@@ -224,6 +223,14 @@ function dailyReturns(closes: number[]): number[] {
 // one so a name with less history than SPY still resolves; null under ~3 months (too few points for
 // a meaningful estimate — the book-β math treats null as "unknown", not a fake 1.0).
 /** A price history with one timestamp per close, so two series can be paired by DATE. */
+/**
+ * Upstream symbol for a class share. The index writes BRK.B / BF.B; Yahoo and SEC both write
+ * BRK-B / BF-B. Querying the dotted form returns 404 with nothing distinguishing it from a
+ * delisting, so such a name drops out of every price fetch silently — verified live 2026-10-04:
+ * BRK.B 404, BRK-B 200. Must be applied at every OUTBOUND lookup, not just in tooling.
+ */
+export const upstreamSymbol = (s: string) => s.replace(".", "-");
+
 export interface DatedCloses {
   ts: number[];      // Yahoo bar timestamps (epoch seconds), parallel to `closes`
   closes: number[];  // may contain nulls upstream; those bars are dropped when pairing
@@ -450,7 +457,7 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _series: Dated
   try {
     // 2y so we have ≥253 trading days for 12-1 momentum (needs the close ~252td before the ~21td-ago
     // anchor). 30d/vol/beta below anchor off the tail, so the wider window doesn't distort them.
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=2y&interval=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${upstreamSymbol(symbol)}?range=2y&interval=1d`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
       signal: AbortSignal.timeout(8000),
@@ -778,7 +785,7 @@ export function addDays(date: string, days: number): string {
  */
 export async function fetchDailyBars(symbol: string, range: "1mo" | "6mo" = "1mo"): Promise<DatedBars | null> {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=${range}&interval=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${upstreamSymbol(symbol)}?range=${range}&interval=1d`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const data = await res.json() as {
@@ -800,7 +807,7 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
     // returns a null regularMarketPreviousClose. Otherwise the ?? chain lands on
     // chartPreviousClose, which can be a stale/far-off reference and yield a bogus
     // change1d — the same null-prev-close bug fixed in getPriceData (SPY-2-year return).
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=5d&interval=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${upstreamSymbol(symbol)}?range=5d&interval=1d`;
     const res = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
       signal: AbortSignal.timeout(5000),

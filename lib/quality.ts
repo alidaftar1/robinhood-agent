@@ -781,7 +781,7 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
   // names still missing net income get a per-company lookup against their real reported periods.
   const asOfDate = new Date().toISOString().slice(0, 10);
   const stillMissing = Object.keys(STOCK_SECTOR).filter(sym => {
-    const cik = tk2cik[sym];
+    const cik = tk2cik[sym] ?? tk2cik[sym.replace('.', '-')];   // BRK.B is BRK-B at SEC
     return cik != null && ni[cik] == null && ast[cik] != null;   // only worth recovering if we have assets
   });
   if (stillMissing.length > 0) {
@@ -801,7 +801,7 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
   // Raw metrics per symbol (only names in our sector map, i.e. the tradable universe).
   const raw: Record<string, { roe: number | null; roa: number; lev: number | null }> = {};
   for (const sym of Object.keys(STOCK_SECTOR)) {
-    const cik = tk2cik[sym];
+    const cik = tk2cik[sym] ?? tk2cik[sym.replace('.', '-')];   // BRK.B is BRK-B at SEC
     if (cik == null) continue;
     const e = eq[cik], a = ast[cik], l = lia[cik], n = ni[cik];
     // Need Assets (>0) + NetIncome. NEGATIVE stockholders' equity is common in strong buyback-heavy
@@ -844,7 +844,7 @@ export async function fetchQualityFromSEC(): Promise<QualityData> {
   // means the hardcoded STOCK_SECTOR universe is stale. Lumping it in with genuine data gaps hides
   // that and inflates the withheld count. Both still go into `withheld` — a dead ticker cannot be
   // held, so there is no behaviour to change, and keeping it there preserves the safe direction.
-  const noCik = withheld.filter(sym => tk2cik[sym] == null);
+  const noCik = withheld.filter(sym => tk2cik[sym] == null && tk2cik[sym.replace('.', '-')] == null);
   const universeSize = Object.keys(STOCK_SECTOR).length;
   const noCikSuspect = isNoCikImplausible(noCik.length, universeSize);
   if (noCik.length > 0) {
