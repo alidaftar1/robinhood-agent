@@ -51,3 +51,30 @@ describe("main-book position cap", () => {
     expect(Math.max(1, Math.floor(0.4 * TARGET_MAIN_POSITIONS))).toBe(2);
   });
 });
+
+// buildV1Shortlist does not exclude held names from `buy`, so a holding that still ranks can be
+// topped up. A top-up adds no position, so it must not consume a cap slot — otherwise the book,
+// once AT the cap, could never concentrate, and sale proceeds would strand in cash.
+describe("top-ups versus new positions", () => {
+  const isNewPosition = (sym: string, held: Set<string>, fullyExiting: Set<string>) =>
+    !held.has(sym) || fullyExiting.has(sym);
+
+  test("a buy of an already-held name is NOT a new position", () => {
+    expect(isNewPosition("KO", new Set(["KO", "LLY"]), new Set())).toBe(false);
+  });
+
+  test("a buy of an unheld name IS a new position", () => {
+    expect(isNewPosition("AAPL", new Set(["KO"]), new Set())).toBe(true);
+  });
+
+  test("re-buying a name being FULLY EXITED counts as new — the slot was freed and refilled", () => {
+    expect(isNewPosition("KO", new Set(["KO"]), new Set(["KO"]))).toBe(true);
+  });
+
+  test("so at the cap, top-ups stay allowed while new names are blocked", () => {
+    const held = new Set(["A","B","C","D","E","F"]);           // at the 6-cap
+    const exiting = new Set<string>();
+    expect(isNewPosition("A", held, exiting)).toBe(false);      // top-up → allowed
+    expect(isNewPosition("Z", held, exiting)).toBe(true);       // new name → blocked
+  });
+});

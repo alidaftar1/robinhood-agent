@@ -976,6 +976,13 @@ export async function GET(request: Request) {
       const cappedOut: string[] = [];
       decision.buys = decision.buys.filter(b => {
         if (!isMainBuy(b)) return true;              // sleeve picks have their own cap
+        // A TOP-UP of a name already held does not add a position, so it must not consume a slot.
+        // buildV1Shortlist does not exclude held names from `buy` — a holding that still ranks is
+        // buyable — and once the book is AT the cap every slot is taken, so counting top-ups would
+        // block the one action that still concentrates the book. That is the opposite of the point:
+        // it would leave proceeds sitting in cash at exactly the moment we want them redeployed
+        // into the remaining names.
+        if (heldMainQty.has(b.symbol) && !mainSoldSet.has(b.symbol)) return true;
         if (keptNew < allowedNewMain) { keptNew++; return true; }
         cappedOut.push(b.symbol);
         return false;
