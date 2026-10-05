@@ -48,9 +48,12 @@ describe("inferSellStrategy", () => {
 // ── buildInferredSells ───────────────────────────────────────────────────────
 // The sell the agent never saw. A MANUAL sell in the Robinhood app is invisible to the trade
 // route, so patchTrades reconstructing it is the only record it ever gets — and until 2026-10-05
-// that reconstruction wrote no `strategy` at all, re-creating the exact untagged-sell defect the
-// tests above exist to prevent, in the one path where no live tagger can ever fix it.
-import { buildInferredSells } from "../lib/run-store";
+// that reconstruction wrote no `strategy` at all, re-creating the untagged-sell defect the tests
+// above exist to prevent. NOT an otherwise-unfixable hole: planSellTagBackfill tags any untagged
+// sell by the same rule and ignores `state`, so /api/debug?backfillSellTags=1&write=1 would have
+// reached these too. The point of tagging at write time is that the two paths cannot drift and no
+// manual step is needed — not that nothing else could ever repair it.
+import { buildInferredSells, computeDailyReturn } from "../lib/run-store";
 
 const held = (symbol: string, price: string, avgCost = "100"): PositionSnapshot =>
   ({ symbol, quantity: "2", avgCost, price } as PositionSnapshot);
@@ -105,6 +108,41 @@ describe("buildInferredSells", () => {
       trades: [{ symbol: "KO", side: "sell", quantity: "2", avgPrice: "1.00", state: "inferred" }],
     });
     expect(out.map(t => [t.symbol, t.avgPrice])).toEqual([["KO", "55.00"]]);
+  });
+
+  test("a recorded BUY of a vanished symbol does NOT suppress the inferred sell", () => {
+    // Same-day round trip where the buy was recorded and the sell was not. Dropping the
+    // `side === "sell"` clause from the recordedSells filter is a mutation that otherwise ships
+    // green: the buy would mask the symbol and the sell would never be reconstructed.
+    const out = buildInferredSells(heldRun, {
+      positions: [held("NVDA", "180")],
+      trades: [{ symbol: "KO", side: "buy", quantity: "2", avgPrice: "54.00", state: "filled" }],
+    });
+    expect(out.map(t => [t.symbol, t.side, t.strategy])).toEqual([["KO", "sell", "main"]]);
+  });
+
+  // ── KNOWN GAP, pinned deliberately ────────────────────────────────────────
+  // These assert what the code DOES, not what it should do. An unrecorded PARTIAL sale is not
+  // reconstructed, and computeDailyReturn then publishes a number it cannot establish. Pinned so
+  // the gap is visible in the suite rather than implied-handled by buildInferredSells' existence,
+  // and so the eventual quantity-accounting fix has a case to flip. If you are implementing that
+  // fix, these two tests are the ones to INVERT.
+  test("GAP: an unrecorded PARTIAL exit reconstructs nothing", () => {
+    const out = buildInferredSells(heldRun, {
+      positions: [held("KO", "55"), held("NVDA", "180")].map(p => ({ ...p, quantity: "1" })),
+      trades: [],
+    });
+    expect(out).toEqual([]); // ← should eventually be a 1-share KO sell, and an NVDA one
+  });
+
+  test("GAP: and the day's return is then WRONG rather than withheld", () => {
+    // 2 shares KO @ $55 + 2 NVDA @ $180 = $470. Sell 1 KO; prices flat, so the true return is 0.
+    const yesterday = [held("KO", "55"), held("NVDA", "180")];
+    const today = [{ ...held("KO", "55"), quantity: "1" }, held("NVDA", "180")];
+    const r = computeDailyReturn(470, 470, today, yesterday, []);
+    expect(r).not.toBeNull();                       // NOT withheld — this is the defect
+    expect(r!.dailyReturn).toBeCloseTo(-55 / 470, 6);  // a flat day stored as -11.7%
+    expect(r!.impliedTransfer).toBeCloseTo(55, 6);     // plus a phantom deposit
   });
 
   test("CONTROL — nothing vanished, nothing is invented", () => {

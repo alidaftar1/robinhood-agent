@@ -922,8 +922,12 @@ export function formatSummaryForEmail(summary: string, limit: number = SUMMARY_E
  * The buy-history scan remains only as a fallback for runs predating that field.
  *
  * Returns "main" rather than undefined when nothing is known: main is the overwhelming default, and
- * an untagged sell is what caused the problem. A wrong-but-stated tag is visible and fixable; a
- * missing one silently breaks the accounting.
+ * an untagged sell is what caused the problem. Note the limit of that trade-off — a wrong tag is
+ * NOT actually visible: the dashboard renders a 📺 only for "influencer" (so a mis-tagged sleeve
+ * exit shows as an absent emoji, which nobody notices) and autopilot-review coerces
+ * `strategy ?? "main"`, so it cannot tell a stamped "main" from a missing one either. The case for
+ * stating it is consistency — every other path answers this question the same way — not
+ * detectability. A missing tag still silently breaks the accounting, which is the worse of the two.
  */
 export function inferSellStrategy(
   symbol: string,
@@ -947,14 +951,30 @@ export function inferSellStrategy(
  *
  *   · WHICH RUN answers the sleeve question. It must be the run that still HELD the position
  *     (`heldRun`), never the run it is missing from — the latter's influencerPositions no longer
- *     contains it, so every sleeve exit would be tagged "main". Consulting the wrong run is exactly
- *     what left 67 of 81 historical sells untagged.
+ *     contains it, so every sleeve exit would be tagged "main". Note that this is a WRONG tag, a
+ *     different failure from the ABSENT tags that left 67 of 81 historical sells untagged (that was
+ *     the prior tagger scanning the previous run's BUYS, which a weeks-old position is never in —
+ *     see inferSellStrategy above). A wrong tag is the worse of the two: a missing one is at least
+ *     re-derivable by planSellTagBackfill, which only ever fills a gap and never overwrites.
  *   · The price is an ESTIMATE — the held run's snapshot mark, not an observed fill. Callers must
  *     keep `state: "inferred"` on these so consumers that need real fills can exclude them;
  *     lib/slippage's collectFills does, and must continue to.
  *
  * The common case is no longer a timed-out sell session: it is the OWNER selling in the Robinhood
- * app, which the trade route cannot see at all. This path is the only record such a sell ever gets.
+ * app, which the trade route cannot see at all. For a COMPLETE exit this path is the only record
+ * such a sell ever gets.
+ *
+ * KNOWN GAP — PARTIAL EXITS ARE NOT HANDLED. The test for "was it sold" is symbol membership
+ * (`!presentNow.has`), never quantity, so an unrecorded sale of PART of a position reconstructs
+ * nothing and computeDailyReturn then publishes a number it cannot establish: measured, selling 5
+ * of 10 shares on a flat day stores -25.00% with a phantom +$500 transfer, and 1 of 10 stores
+ * -5.00% — under the autopilot's |return| > 30% alarm, so nothing fires and it compounds into the
+ * dashboard index permanently. That is the exact failure the Data-integrity rules exist to prevent,
+ * and it is PRE-EXISTING (the inline code this replaced keyed on membership identically) — stated
+ * here rather than silently inherited. The fix is quantity accounting
+ * (heldQty + recordedBuys - recordedSells - todayQty) with a withheld/null day when the shortfall
+ * cannot be reconstructed; evals/sell-strategy-tag.test.ts pins the current behaviour so the gap is
+ * visible and the fix has a failing case to turn green.
  */
 export function buildInferredSells(
   heldRun: Pick<TradeRun, "positions" | "influencerPositions" | "trades">,
