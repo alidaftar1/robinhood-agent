@@ -22,7 +22,7 @@ export async function GET(request: Request) {
     if (cache) seeded = await recordPicks(cache, today);
   }
 
-  const { picks, channels } = await computeAttribution(today);
+  const { picks, channels, pending } = await computeAttribution(today);
 
   return Response.json({
     asOf: today,
@@ -30,6 +30,10 @@ export async function GET(request: Request) {
     note:
       "Returns measured from each pick's FIRST-LOGGED price (baseline). Horizons vary per pick (see daysElapsed). avgReturnPct is RAW; avgAlphaPct is the return above/below SPY over each pick's own window (the edge, stripped of market beta) — channels are ranked by alpha. Small, correlated samples: a ranking hint, not a verdict.",
     pickCount: picks.length,
+    // Without this, `channels: []` is ambiguous in exactly the way it was in the email: a ledger
+    // whose windows are all still open reads the same as an empty or broken one. A consumer should
+    // be able to tell "nothing measured yet" from "nothing to measure".
+    pending,
     channels,
     picks,
   });
