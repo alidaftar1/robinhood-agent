@@ -3,7 +3,7 @@ import { requireCronAuth } from "@/lib/auth";
 import { parseTradeDecision, isFullExit } from "@/lib/trade-decision";
 import { dashboardPublicUrl, dashboardLoginUrl, mintLoginToken, EMAIL_LOGIN_TOKEN_TTL_SECONDS } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
-import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, formatSummaryForEmail, escapeHtml } from "@/lib/run-store";
+import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, formatSummaryForEmail, escapeHtml, buildInferredSells } from "@/lib/run-store";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
@@ -126,13 +126,17 @@ export async function GET(request: Request) {
   const host = process.env.APP_URL || "https://robinhood-agent.vercel.app";
   const secret = process.env.CRON_SECRET ?? "";
 
-  async function callDebug(param: string): Promise<Record<string, string> | null> {
+  /** Debug responses mix prose with one structured field, so read messages through this. */
+  const msgOf = (r: Record<string, unknown> | null, key: string): string =>
+    typeof r?.[key] === "string" ? (r[key] as string) : "";
+
+  async function callDebug(param: string): Promise<Record<string, unknown> | null> {
     try {
       const res = await fetch(`${host}/api/debug?${param}`, {
         headers: { Authorization: `Bearer ${secret}` },
       });
       if (!res.ok) return null;
-      return res.json() as Promise<Record<string, string>>;
+      return res.json() as Promise<Record<string, unknown>>;
     } catch {
       return null;
     }
@@ -188,15 +192,22 @@ export async function GET(request: Request) {
     // Happens when the sell session times out after orders already landed on Robinhood.
     const prevRun = runs.find(r => r.date < today);
     if (prevRun?.positions?.length) {
-      const todaySyms = new Set(todayRun.positions.map(p => p.symbol));
-      // Treat existing inferred sells as unconfirmed — patchTrades will re-derive them correctly
-      const confirmedSells = new Set(
-        (todayRun.trades ?? []).filter(t => t.side === "sell" && t.state !== "inferred").map(t => t.symbol)
-      );
-      const orphaned = prevRun.positions.filter(p => !todaySyms.has(p.symbol) && !confirmedSells.has(p.symbol));
-      if (orphaned.length > 0) {
+      // Ask the REPAIR what needs repairing, rather than re-deriving the condition here. This used
+      // to be its own symbol-membership test (prevDay symbol absent from today's), which silently
+      // excluded the case patchTrades was taught to handle on 2026-10-05: a PARTIAL sale leaves the
+      // symbol present, so nothing was ever orphaned and patchTrades was never called. Two
+      // implementations of "did something leave the book" will drift, and the one that gates the
+      // fix is the one that decides whether the fix exists at all.
+      // Existing inferred sells are stripped, exactly as patchTrades strips them, so a prior
+      // estimate cannot mask the discrepancy it was written for.
+      const needsRepair = (run: NonNullable<typeof todayRun>) => buildInferredSells(prevRun, {
+        positions: run.positions,
+        trades: (run.trades ?? []).filter(t => !(t.side === "sell" && t.state === "inferred")),
+      });
+      const probe = needsRepair(todayRun);
+      if (probe.sells.length > 0 || probe.unreconstructable.length > 0) {
         const result = await callDebug("patchTrades=1");
-        const msg = result?.patchTrades ?? "";
+        const msg = msgOf(result, "patchTrades");
         // Always refetch, even on "no missing sells detected" — that message doesn't mean nothing
         // changed, it can mean patchTrades' OWN independent read (a separate /api/debug call, a beat
         // later) already found the sell recorded, because a concurrently-running cron (e.g. the
@@ -207,19 +218,30 @@ export async function GET(request: Request) {
         // already correctly reconciled. Re-derive orphaned against fresh data before flagging anything.
         runs = await getRuns(30);
         todayRun = runs.find(r => r.date === today) ?? todayRun;
-        if (msg && !msg.startsWith("error") && !msg.includes("no missing")) {
+        // A REFUSAL IS NOT A FIX. Checked FIRST and structurally: patchTrades withholds the day's
+        // return when the inventory disagrees with the records, and its message passed the
+        // "looks like a successful fix" test below — so the refusal was filed under auto-fixes, the
+        // subject line stayed HEALTHY, this branch's own orphan alert was cancelled, and the
+        // refusal never reached the cloud fixer's work list. Branch on the field, not the prose.
+        const refused = result?.patchTradesRefused;
+        if (Array.isArray(refused) && refused.length > 0) {
+          const detail = (refused as Array<{ symbol?: string; reason?: string }>)
+            .map(u => `${u.symbol} (${u.reason})`).join(", ");
+          issues.push(
+            `Holdings disagree with trade records on ${detail}. ${todayRun.date}'s return was WITHHELD and locked `
+            + `rather than computed from a book that does not add up — reconcile against Robinhood, then `
+            + `/api/debug?patchDate=${todayRun.date}&unlock=1. Auto-patch: ${msg || "none"}.`,
+          );
+        } else if (msg && !msg.startsWith("error") && !msg.includes("no missing")) {
           autoFixed.push(`Inferred missing sells: ${msg}`);
         } else {
-          const freshConfirmedSells = new Set(
-            (todayRun.trades ?? []).filter(t => t.side === "sell" && t.state !== "inferred").map(t => t.symbol)
-          );
-          const freshSyms = new Set(todayRun.positions.map(p => p.symbol));
-          const stillOrphaned = orphaned.filter(
-            p => !freshSyms.has(p.symbol) && !freshConfirmedSells.has(p.symbol)
-          );
-          if (stillOrphaned.length > 0) {
+          // Re-derive against FRESH data by the same rule, so a concurrent cron that already
+          // recorded the sell doesn't show up as an unexplained disappearance.
+          const stillBroken = needsRepair(todayRun);
+          if (stillBroken.sells.length > 0) {
             issues.push(
-              `Positions disappeared without sell records: ${stillOrphaned.map(p => p.symbol).join(", ")}. Auto-patch: ${msg || "failed"}.`,
+              `Positions left the book without sell records: `
+              + `${stillBroken.sells.map(t => `${t.symbol} x${t.quantity}`).join(", ")}. Auto-patch: ${msg || "failed"}.`,
             );
           }
         }
@@ -231,7 +253,7 @@ export async function GET(request: Request) {
       const prevRun2 = runs.find(r => r.date < today);
       if (prevRun2?.portfolioAfter) {
         const result = await callDebug(`patchDate=${today}`);
-        const msg = result?.patchDate ?? "";
+        const msg = msgOf(result, "patchDate");
         if (msg && !msg.startsWith("error") && !msg.includes("not found")) {
           autoFixed.push(`Computed missing return: ${msg}`);
           runs = await getRuns(30);
@@ -249,7 +271,7 @@ export async function GET(request: Request) {
       const hasPrior = runs.some(r => r.date < oldest.date);
       if (!hasPrior) {
         const result = await callDebug(`clearReturnForDate=${oldest.date}`);
-        const msg = result?.clearReturnForDate ?? "";
+        const msg = msgOf(result, "clearReturnForDate");
         if (msg && !msg.startsWith("error")) {
           autoFixed.push(`Cleared bogus 0% inception return on ${oldest.date}`);
         }
@@ -281,7 +303,7 @@ export async function GET(request: Request) {
       const hasMissingSell = posIssues.some((p: any) => p.type === "missing_from_live_no_sell_record");
       if (hasMissingSell) {
         const result = await callDebug("patchTrades=1");
-        const msg = result?.patchTrades ?? "";
+        const msg = msgOf(result, "patchTrades");
         if (msg && !msg.startsWith("error")) {
           autoFixed.push(`Live verify found missing sells — re-patched: ${msg}`);
           runs = await getRuns(30);

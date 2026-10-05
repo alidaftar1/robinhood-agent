@@ -26,7 +26,9 @@ export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;
 
-  const results: Record<string, string> = {};
+  // Mostly human-readable strings, but `patchTradesRefused` carries STRUCTURED data: the
+  // autopilot must be able to branch on a refusal without pattern-matching prose.
+  const results: Record<string, unknown> = {};
 
   // Test Yahoo Finance
   try {
@@ -149,10 +151,45 @@ export async function GET(request: Request) {
         // fill, which is why these stay state:"inferred" (lib/slippage excludes them). The cash-flow
         // identity is no substitute — cashAfter includes T+1 settlement from the prior day's sells,
         // which inflates apparent proceeds.
-        const inferredSells = buildInferredSells(prevDay, { positions: latest.positions, trades: realTrades });
+        const plan = buildInferredSells(prevDay, { positions: latest.positions, trades: realTrades });
 
-        if (inferredSells.length > 0) {
-          const patchedTrades = [...realTrades, ...inferredSells];
+        if (plan.unreconstructable.length > 0) {
+          // The day's INVENTORY disagrees with its records. The sells we CAN reconstruct are still
+          // written — the objection is to the day's number, not to those records, and discarding a
+          // perfectly good KO exit because MSFT is unexplained loses information for nothing. But
+          // the return is WITHHELD rather than recomputed.
+          //
+          // Withheld, not left alone: the stored number was computed at write time without the
+          // missing sells, so it is already the artifact (the -25%-style phantom loss). Leaving it
+          // would turn a repairable wrong number into a permanent one, since patchTrades is the only
+          // path that rebuilds sells and patchDate never re-derives them. CLAUDE.md's rule is to
+          // withhold what cannot be established, and null is the only branch that actually does.
+          //
+          // returnLocked because Fix 2 of the 8am autopilot calls patchDate on ANY null return, so
+          // an unlocked null is immediately recomputed from the very inventory just declared wrong.
+          // It is recoverable: /api/debug?patchDate=DATE&unlock=1 once the book is reconciled. A
+          // cleared day is a hole in the compounded record (see the TER 07-27 entry in
+          // autopilot-known-issues), which is why this raises an issue rather than going quiet.
+          const detail = plan.unreconstructable
+            .map(u => `${u.symbol} (${u.reason}${u.excessQty != null ? ` ${u.excessQty.toFixed(6)}` : ""})`)
+            .join(", ");
+          const patchedTrades = [...realTrades, ...plan.sells];
+          await updateLatestRun({
+            ...latest, trades: patchedTrades,
+            agenticDailyReturn: null, agenticImpliedTransfer: null, returnLocked: true,
+          });
+          console.error("PATCH_TRADES_UNRECONSTRUCTABLE", { date: latest.date, unreconstructable: plan.unreconstructable });
+          // STRUCTURED, not just prose. The autopilot classifies patchTrades' outcome by string
+          // matching, and a "REFUSED …" message passed its "looks like a successful fix" test — so
+          // the refusal was filed under auto-fixes, the email subject stayed HEALTHY, and the
+          // pre-existing orphan alert was cancelled. Callers must branch on this field.
+          results.patchTradesRefused = plan.unreconstructable;
+          results.patchTrades = `WITHHELD ${latest.date} — inventory disagrees with the records: ${detail}. `
+            + `Wrote ${plan.sells.length} reconstructable sell(s); the day's return is cleared and LOCKED rather than `
+            + `recomputed from a known-wrong book. Reconcile against Robinhood, then `
+            + `/api/debug?patchDate=${latest.date}&unlock=1.`;
+        } else if (plan.sells.length > 0) {
+          const patchedTrades = [...realTrades, ...plan.sells];
           const agenticResult = latest.portfolioAfter
             ? computeDailyReturn(
                 parseFloat(latest.portfolioAfter.totalValue),
@@ -162,7 +199,32 @@ export async function GET(request: Request) {
             : null;
 
           await updateLatestRun({ ...latest, trades: patchedTrades, agenticDailyReturn: agenticResult?.dailyReturn ?? null, agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null });
-          results.patchTrades = `patched ${inferredSells.length} sell(s): ${inferredSells.map(s => `${s.symbol}@$${s.avgPrice}[${s.strategy}]`).join(", ")} → return ${agenticResult?.dailyReturn != null ? (agenticResult.dailyReturn * 100).toFixed(2) + "%" : "null"}`;
+          results.patchTrades = `patched ${plan.sells.length} sell(s): ${plan.sells.map(s => `${s.symbol} ${s.quantity}@$${s.avgPrice}[${s.strategy}]`).join(", ")} → return ${agenticResult?.dailyReturn != null ? (agenticResult.dailyReturn * 100).toFixed(2) + "%" : "null"}`;
+        } else if ((latest.trades ?? []).length !== realTrades.length) {
+          // Nothing left to infer, but the STORE still holds inferred sells that are no longer
+          // derivable — the disposal they stood in for now has a real fill on record. Writing the
+          // stripped list is not housekeeping: the stale estimate and the real fill both count as
+          // proceeds in computeDailyReturn, and findReRecordedSells cannot collapse them because
+          // its twin test needs the duplicate's quantity to cover the whole excess, which a PARTIAL
+          // inferred sell never does. Two sells for one disposal is the TER 07-27 shape, which
+          // stored a -0.08% day as +13.27%. Writing partial quantities (new on 2026-10-05) is what
+          // brought this within reach, so it is closed here rather than left to the merge layer.
+          const obsolete = (latest.trades ?? []).filter(t => t.state === "inferred" && t.side === "sell");
+          const agenticResult = latest.portfolioAfter
+            ? computeDailyReturn(
+                parseFloat(latest.portfolioAfter.totalValue),
+                parseFloat(prevDay.portfolioAfter.totalValue),
+                latest.positions, prevDay.positions, realTrades
+              )
+            : null;
+          await updateLatestRun({
+            ...latest, trades: realTrades,
+            agenticDailyReturn: agenticResult?.dailyReturn ?? null,
+            agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null,
+          });
+          results.patchTrades = `dropped ${obsolete.length} obsolete inferred sell(s) now covered by real fills `
+            + `(${obsolete.map(t => `${t.symbol} x${t.quantity}`).join(", ")}) → return `
+            + `${agenticResult?.dailyReturn != null ? (agenticResult.dailyReturn * 100).toFixed(2) + "%" : "null"}`;
         } else {
           results.patchTrades = "no missing sells detected";
         }

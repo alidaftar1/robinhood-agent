@@ -943,10 +943,47 @@ export function inferSellStrategy(
   return buy?.strategy === "influencer" ? "influencer" : "main";
 }
 
+/** Why a symbol's change could not be turned into a sell record. */
+export type UnreconstructableReason =
+  /**
+   * Share count rose by more than the records explain — an unrecorded BUY, the mirror of the case
+   * this function repairs. Deliberately NOT reconstructed: a sell can be priced at the held run's
+   * mark because the shares left at whatever the market gave, but inventing a buy fabricates a COST
+   * BASIS and spends cash nothing accounted for.
+   */
+  | "shares-appeared"
+  /**
+   * A quantity string that will not parse, or is negative. Treating it as 0 is the FAIL-OPEN branch
+   * and the worst one available here: "we cannot read the holding" silently becomes "the holding is
+   * zero", i.e. SELL EVERYTHING — measured, a today-side quantity of "", "abc" or "0" fabricated a
+   * full exit of a still-held position. CLAUDE.md names this trap directly ("dropping a bad input is
+   * usually the fail-OPEN branch"), so an unreadable count withholds instead.
+   */
+  | "unreadable-quantity"
+  /**
+   * Shares left but no row in the held run can price them — so there is no honest mark to use. Only
+   * reachable for a symbol that was never a held position (it reaches the loop through the trade
+   * records), where writing a sell meant persisting `avgPrice: "NaN"`.
+   */
+  | "no-usable-price";
+
+/** What patchTrades should write, plus what it must NOT paper over. */
+export type InferredSellPlan = {
+  /** Reconstructed sells, ready to append. Always `state: "inferred"`. */
+  sells: TradeSnapshot[];
+  /**
+   * Discrepancies this function refuses to invent a trade for. A non-empty list means the day's
+   * INVENTORY disagrees with its records, so the caller must not publish a return computed from it
+   * — see the patchTrades branch in /api/debug, which withholds the number and raises an issue
+   * rather than recomputing around a known-wrong book.
+   */
+  unreconstructable: Array<{ symbol: string; reason: UnreconstructableReason; excessQty?: number }>;
+};
+
 /**
- * Reconstruct the SELL records for positions that vanished between two runs with no sell on record.
+ * Reconstruct the SELL records implied by a position's share count falling between two runs.
  *
- * Extracted from /api/debug?patchTrades so the risky part is testable. Two things here are easy to
+ * Extracted from /api/debug?patchTrades so the risky part is testable. Three things here are easy to
  * get wrong and silently corrupt the permanent history:
  *
  *   · WHICH RUN answers the sleeve question. It must be the run that still HELD the position
@@ -959,48 +996,140 @@ export function inferSellStrategy(
  *   · The price is an ESTIMATE — the held run's snapshot mark, not an observed fill. Callers must
  *     keep `state: "inferred"` on these so consumers that need real fills can exclude them;
  *     lib/slippage's collectFills does, and must continue to.
+ *   · QUANTITY, not symbol membership, is the test. This was the bug until 2026-10-05: asking only
+ *     whether a symbol had DISAPPEARED meant a partial sale reconstructed nothing, and
+ *     computeDailyReturn then published a number it could not establish — measured, selling 5 of 10
+ *     shares on a flat day stored -25.00% with a phantom +$500 transfer, and 1 of 10 stored -5.00%,
+ *     under the autopilot's |return| > 30% alarm, so nothing fired and it compounded into the
+ *     dashboard index permanently. A full exit is just the case where the shortfall happens to be
+ *     the whole position; there was never a reason to treat it as the only case.
+ *
+ * The accounting identity, per symbol:
+ *
+ *     unexplained = heldQty + recordedBuyQty - recordedSellQty - qtyNow
+ *
+ * Positive ⇒ shares left without a sell on record ⇒ reconstruct one for exactly that many.
+ * Negative ⇒ shares arrived without a buy on record ⇒ `unreconstructable` (see the type above).
+ * Zero ⇒ the records already explain the change; nothing to do.
+ *
+ * Share counts are compared against the module's shared QTY_EPSILON rather than for equality —
+ * fills are fractional ("1.743251"), so an exact test would manufacture dust sells.
+ *
+ * Previously-inferred sells are excluded from `recordedSellQty` so the plan is IDEMPOTENT: the
+ * caller strips them, the shortfall recomputes to the same number, and a corrected estimate can
+ * replace an earlier bad one. Buys are counted in every state, matching computeDailyReturn, which
+ * includes all placed trades because the decision model emits "submitted" rather than "filled".
  *
  * The common case is no longer a timed-out sell session: it is the OWNER selling in the Robinhood
- * app, which the trade route cannot see at all. For a COMPLETE exit this path is the only record
- * such a sell ever gets.
- *
- * KNOWN GAP — PARTIAL EXITS ARE NOT HANDLED. The test for "was it sold" is symbol membership
- * (`!presentNow.has`), never quantity, so an unrecorded sale of PART of a position reconstructs
- * nothing and computeDailyReturn then publishes a number it cannot establish: measured, selling 5
- * of 10 shares on a flat day stores -25.00% with a phantom +$500 transfer, and 1 of 10 stores
- * -5.00% — under the autopilot's |return| > 30% alarm, so nothing fires and it compounds into the
- * dashboard index permanently. That is the exact failure the Data-integrity rules exist to prevent,
- * and it is PRE-EXISTING (the inline code this replaced keyed on membership identically) — stated
- * here rather than silently inherited. The fix is quantity accounting
- * (heldQty + recordedBuys - recordedSells - todayQty) with a withheld/null day when the shortfall
- * cannot be reconstructed; evals/sell-strategy-tag.test.ts pins the current behaviour so the gap is
- * visible and the fix has a failing case to turn green.
+ * app, which the trade route cannot see at all. This path is the only record such a sell ever gets,
+ * whether they sold the whole position or part of it.
  */
 export function buildInferredSells(
   heldRun: Pick<TradeRun, "positions" | "influencerPositions" | "trades">,
   missingRun: Pick<TradeRun, "positions" | "trades">,
-): TradeSnapshot[] {
-  const presentNow = new Set(missingRun.positions.map(p => p.symbol));
-  // Previously-inferred sells are deliberately NOT treated as "recorded": the caller re-derives
-  // them so a corrected formula can replace an earlier bad estimate.
-  const recordedSells = new Set(
-    (missingRun.trades ?? [])
-      .filter(t => t.side === "sell" && !(t.state === "inferred"))
-      .map(t => t.symbol),
-  );
-  return heldRun.positions
-    .filter(p => !presentNow.has(p.symbol) && !recordedSells.has(p.symbol))
-    .map(pos => {
-      const price = parseFloat(pos.price) > 0 ? parseFloat(pos.price) : parseFloat(pos.avgCost);
-      return {
-        symbol: pos.symbol,
-        side: "sell" as const,
-        quantity: pos.quantity,
-        avgPrice: price.toFixed(2),
-        state: "inferred",
-        strategy: inferSellStrategy(pos.symbol, heldRun.influencerPositions, heldRun.trades ?? []),
-      };
+): InferredSellPlan {
+  const sells: TradeSnapshot[] = [];
+  const unreconstructable: InferredSellPlan["unreconstructable"] = [];
+
+  /**
+   * Share count for one symbol, or null when any contributing row is unreadable.
+   *
+   * Rows are SUMMED, not indexed: a run can legitimately carry the same symbol twice, and taking
+   * the first row would under-count the holding and invent a sell for the difference.
+   *
+   * null rather than 0 on bad input is the whole point — see "unreadable-quantity" above. A
+   * NEGATIVE count is treated as unreadable too: nothing here shorts, so it cannot be a holding,
+   * and left alone it would ENLARGE the fabricated sale.
+   */
+  const sumQty = (rows: PositionSnapshot[], symbol: string): number | null => {
+    let total = 0;
+    for (const r of rows) {
+      if (r.symbol !== symbol) continue;
+      const q = parseFloat(r.quantity);
+      if (!Number.isFinite(q) || q < 0) return null;
+      total += q;
+    }
+    return total;
+  };
+
+  // Trade quantities. Buys are counted in EVERY state, matching computeDailyReturn, which includes
+  // all placed trades because the decision model emits "submitted" rather than "filled". The
+  // trade-off is pinned by a test: an order recorded but never filled makes the expected holding
+  // too high, so the shortfall absorbs it. Keeping the two in step matters more than either rule on
+  // its own — if they disagree, the sell records and the day's arithmetic describe different books.
+  // Previously-inferred SELLS are excluded so the plan is idempotent (the caller strips them, the
+  // shortfall recomputes to the same number, and a corrected estimate can replace a bad one).
+  const tradeQty = (side: "buy" | "sell", symbol: string): number | null => {
+    let total = 0;
+    for (const t of missingRun.trades ?? []) {
+      if (t.side !== side || t.symbol !== symbol) continue;
+      if (side === "sell" && t.state === "inferred") continue;
+      const q = parseFloat(t.quantity);
+      if (!Number.isFinite(q) || q < 0) return null;
+      total += q;
+    }
+    return total;
+  };
+
+  // Every symbol either run KNOWS ABOUT, positions and trades alike. Positions alone was a silent
+  // hole: a recorded buy with no position row in either snapshot was never examined, so the day's
+  // return booked the whole purchase as a loss while this reported "nothing to do" — and at
+  // realistic proportions ($200 on a $2,000 book, ~-10%) that sits under the |return| > 30% alarm,
+  // the exact silent shape this function exists to kill.
+  const symbols = [...new Set([
+    ...heldRun.positions.map(p => p.symbol),
+    ...missingRun.positions.map(p => p.symbol),
+    ...(missingRun.trades ?? []).map(t => t.symbol),
+  ])];
+
+  for (const symbol of symbols) {
+    const heldQty = sumQty(heldRun.positions, symbol);
+    const qtyNow = sumQty(missingRun.positions, symbol);
+    const boughtQty = tradeQty("buy", symbol);
+    const soldQty = tradeQty("sell", symbol);
+    if (heldQty == null || qtyNow == null || boughtQty == null || soldQty == null) {
+      unreconstructable.push({ symbol, reason: "unreadable-quantity" });
+      continue;
+    }
+
+    const unexplained = heldQty + boughtQty - soldQty - qtyNow;
+    if (unexplained < -QTY_EPSILON) {
+      unreconstructable.push({ symbol, reason: "shares-appeared", excessQty: -unexplained });
+      continue;
+    }
+    if (unexplained <= QTY_EPSILON) continue;
+
+    // Price from the HELD run's row — the last mark before the shares left, never today's mark.
+    // Sells reaching this path are overwhelmingly declines (stop-outs, drop-check exits, an owner
+    // cutting a loser), so pricing them at a later mark would bias proceeds DOWN systematically.
+    const row = heldRun.positions.find(p => p.symbol === symbol && parseFloat(p.price) > 0)
+      ?? heldRun.positions.find(p => p.symbol === symbol);
+    const price = parseFloat(row?.price ?? "") > 0 ? parseFloat(row!.price) : parseFloat(row?.avgCost ?? "");
+    if (!Number.isFinite(price) || price <= 0) {
+      // Reachable for a symbol that never was a held position — it arrived via the trade records,
+      // so there is no row to price. Writing the record anyway persisted `avgPrice: "NaN"`, which
+      // computeT1Drag then silently dropped from its estimate and the email rendered verbatim.
+      unreconstructable.push({ symbol, reason: "no-usable-price", excessQty: unexplained });
+      continue;
+    }
+
+    sells.push({
+      symbol,
+      side: "sell" as const,
+      // The SHORTFALL, not the whole holding — for a full exit the two are the same number.
+      // toFixed(6) is the broker's own precision: all 346 quantities across 30 runs of stored
+      // history carry exactly 6 decimals, so this both matches the surrounding data and keeps a
+      // full exit BYTE-IDENTICAL to the verbatim string the previous implementation wrote. Raw
+      // String() does not: measured, 10 - 9.1 persisted "0.9000000000000004" into permanent trade
+      // records, which the owner's email and the reviewer's prompt then rendered unformatted, and
+      // which findReRecordedSells (exact float-equality on the quantity string) could never twin.
+      quantity: unexplained.toFixed(6),
+      avgPrice: price.toFixed(2),
+      state: "inferred",
+      strategy: inferSellStrategy(symbol, heldRun.influencerPositions, heldRun.trades ?? []),
     });
+  }
+  return { sells, unreconstructable };
 }
 
 /**
