@@ -4,7 +4,7 @@ import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { prunePicksByFirstSeen, resetLedger } from "@/lib/influencer-ledger";
-import { planSellTagBackfill, applySellTagBackfill, replaceRuns } from "@/lib/run-store";
+import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells } from "@/lib/run-store";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -142,21 +142,16 @@ export async function GET(request: Request) {
       if (latest?.returnLocked) {
         results.patchTrades = `skipped — return for ${latest.date} is locked (known artifact)`;
       } else if (latest && prevDay?.portfolioAfter) {
-        const todaySymbols = new Set(latest.positions.map(p => p.symbol));
-        // Strip any previously inferred sells so we can re-derive them with the corrected formula
+        // Strip any previously inferred sells so we can re-derive them with the corrected formula.
         const realTrades = (latest.trades ?? []).filter(t => !(t.state === "inferred" && t.side === "sell"));
-        const recordedSells = new Set(realTrades.filter(t => t.side === "sell").map(t => t.symbol));
-        const missingSellPos = prevDay.positions.filter(p => !todaySymbols.has(p.symbol) && !recordedSells.has(p.symbol));
+        // prevDay is the run that still HELD these positions, so it is the run that can answer which
+        // sleeve each belonged to. Price is prevDay's snapshot mark: an ESTIMATE, not an observed
+        // fill, which is why these stay state:"inferred" (lib/slippage excludes them). The cash-flow
+        // identity is no substitute — cashAfter includes T+1 settlement from the prior day's sells,
+        // which inflates apparent proceeds.
+        const inferredSells = buildInferredSells(prevDay, { positions: latest.positions, trades: realTrades });
 
-        if (missingSellPos.length > 0) {
-          // Use prevDay position's stored price as best estimate of fill price.
-          // The cash-flow identity is unreliable here: cashAfter includes T+1
-          // settlement from the previous day's sells, inflating apparent proceeds.
-          const inferredSells = missingSellPos.map(pos => {
-            const avgPrice = parseFloat(pos.price) > 0 ? parseFloat(pos.price) : parseFloat(pos.avgCost);
-            return { symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred" };
-          });
-
+        if (inferredSells.length > 0) {
           const patchedTrades = [...realTrades, ...inferredSells];
           const agenticResult = latest.portfolioAfter
             ? computeDailyReturn(
@@ -167,7 +162,7 @@ export async function GET(request: Request) {
             : null;
 
           await updateLatestRun({ ...latest, trades: patchedTrades, agenticDailyReturn: agenticResult?.dailyReturn ?? null, agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null });
-          results.patchTrades = `patched ${inferredSells.length} sell(s): ${inferredSells.map(s => `${s.symbol}@$${s.avgPrice}`).join(", ")} → return ${agenticResult?.dailyReturn != null ? (agenticResult.dailyReturn * 100).toFixed(2) + "%" : "null"}`;
+          results.patchTrades = `patched ${inferredSells.length} sell(s): ${inferredSells.map(s => `${s.symbol}@$${s.avgPrice}[${s.strategy}]`).join(", ")} → return ${agenticResult?.dailyReturn != null ? (agenticResult.dailyReturn * 100).toFixed(2) + "%" : "null"}`;
         } else {
           results.patchTrades = "no missing sells detected";
         }

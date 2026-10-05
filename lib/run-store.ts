@@ -940,6 +940,50 @@ export function inferSellStrategy(
 }
 
 /**
+ * Reconstruct the SELL records for positions that vanished between two runs with no sell on record.
+ *
+ * Extracted from /api/debug?patchTrades so the risky part is testable. Two things here are easy to
+ * get wrong and silently corrupt the permanent history:
+ *
+ *   · WHICH RUN answers the sleeve question. It must be the run that still HELD the position
+ *     (`heldRun`), never the run it is missing from — the latter's influencerPositions no longer
+ *     contains it, so every sleeve exit would be tagged "main". Consulting the wrong run is exactly
+ *     what left 67 of 81 historical sells untagged.
+ *   · The price is an ESTIMATE — the held run's snapshot mark, not an observed fill. Callers must
+ *     keep `state: "inferred"` on these so consumers that need real fills can exclude them;
+ *     lib/slippage's collectFills does, and must continue to.
+ *
+ * The common case is no longer a timed-out sell session: it is the OWNER selling in the Robinhood
+ * app, which the trade route cannot see at all. This path is the only record such a sell ever gets.
+ */
+export function buildInferredSells(
+  heldRun: Pick<TradeRun, "positions" | "influencerPositions" | "trades">,
+  missingRun: Pick<TradeRun, "positions" | "trades">,
+): TradeSnapshot[] {
+  const presentNow = new Set(missingRun.positions.map(p => p.symbol));
+  // Previously-inferred sells are deliberately NOT treated as "recorded": the caller re-derives
+  // them so a corrected formula can replace an earlier bad estimate.
+  const recordedSells = new Set(
+    (missingRun.trades ?? [])
+      .filter(t => t.side === "sell" && !(t.state === "inferred"))
+      .map(t => t.symbol),
+  );
+  return heldRun.positions
+    .filter(p => !presentNow.has(p.symbol) && !recordedSells.has(p.symbol))
+    .map(pos => {
+      const price = parseFloat(pos.price) > 0 ? parseFloat(pos.price) : parseFloat(pos.avgCost);
+      return {
+        symbol: pos.symbol,
+        side: "sell" as const,
+        quantity: pos.quantity,
+        avgPrice: price.toFixed(2),
+        state: "inferred",
+        strategy: inferSellStrategy(pos.symbol, heldRun.influencerPositions, heldRun.trades ?? []),
+      };
+    });
+}
+
+/**
  * Backfill the `strategy` tag on SELLS that were written without one.
  *
  * 67 of 81 stored sells have no tag, because the original tagger searched the previous run's BUYS
