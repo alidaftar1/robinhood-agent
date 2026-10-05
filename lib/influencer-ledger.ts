@@ -476,7 +476,28 @@ function mean(xs: Array<number | null>): number | null {
   return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
 }
 
-export function rollupChannels(
+/**
+ * What the ledger is MEASURING but cannot report yet.
+ *
+ * A credit whose 30-day window has not closed contributes to nothing — correctly, since a
+ * three-day-old pick must not move a thirty-day statistic. But a channel with ONLY pending credits
+ * produces no row at all, so between the ledger's reset and the first maturity the email had zero
+ * channels and dropped the whole section. An empty ledger, a broken ledger and a ledger that is
+ * working exactly as designed were indistinguishable, which is the kind of silence that gets read
+ * as a bug. These counts are what makes the difference visible — counts only, deliberately: showing
+ * the provisional measured-to-now numbers would invite reading a four-day move as signal, the exact
+ * thing the horizon exists to prevent.
+ */
+export type PendingSummary = {
+  /** Channel-credits whose window is still open. */
+  credits: number;
+  /** Distinct channels holding at least one of them. */
+  channels: number;
+  /** Date the EARLIEST of those windows closes, or null if none are pending. */
+  nextMaturity: string | null;
+};
+
+export function rollupWithPending(
   picks: PickOutcome[],
   spyByDate: Map<string, number>,
   spyNow: number | null,
@@ -487,13 +508,14 @@ export function rollupChannels(
    *  down rather than speed it up. A credit with no scoreAtEntry predates sub-floor tracking and is
    *  a buy-floor pick by construction. */
   cohort?: (scoreAtEntry: number) => boolean,
-): ChannelStats[] {
+): { channels: ChannelStats[]; pending: PendingSummary } {
   type Credit = {
     channel: string; ticker: string; ret: number; alpha: number | null; sectorAlpha: number | null;
     inherited: boolean; closed: boolean; heldDays: number; start: string; end: string;
   };
   const credits: Credit[] = [];
   const pendingByChannel = new Map<string, number>();
+  let earliestMaturity: string | null = null;
   for (const p of picks) {
     if (p.currentPrice == null) continue;
     for (const ch of p.channels) {
@@ -528,7 +550,13 @@ export function rollupChannels(
       // PENDING: bars exist (so the horizon is knowable) but day 30 has not traded and there is no
       // avoid — the window is unfinished, so this pick contributes to NOTHING. Counting a partial
       // window would let a 3-day-old pick move a 30-day statistic.
-      if (!closedAt && bars) { pendingByChannel.set(ch, (pendingByChannel.get(ch) ?? 0) + 1); continue; }
+      if (!closedAt && bars) {
+        pendingByChannel.set(ch, (pendingByChannel.get(ch) ?? 0) + 1);
+        // When this credit's window WILL close, so the report can say so rather than just "pending".
+        const matures = addDays(baseDate, HORIZON_DAYS);
+        if (!earliestMaturity || matures < earliestMaturity) earliestMaturity = matures;
+        continue;
+      }
       const endPrice = closedAt ? closedAt.price : p.currentPrice;
       const spyEnd = closedAt ? (spyByDate.get(closedAt.date) ?? null) : spyNow;
       const heldDays = closedAt ? Math.round((Date.parse(closedAt.date) - Date.parse(baseDate)) / 86_400_000) : p.daysElapsed;
@@ -565,7 +593,7 @@ export function rollupChannels(
   const byChannel = new Map<string, Credit[]>();
   for (const c of credits) byChannel.set(c.channel, [...(byChannel.get(c.channel) ?? []), c]);
 
-  return [...byChannel.entries()]
+  const channels = [...byChannel.entries()]
     .map(([channel, rows]) => {
       const rets = rows.map((r) => r.ret);
       const alphas = rows.map((r) => r.alpha).filter((a): a is number => a != null);
@@ -597,12 +625,31 @@ export function rollupChannels(
     // to vs-SPY then raw, so a channel with no sector-mapped picks still sorts sensibly.
     .sort((a, b) => (b.avgSectorAlphaPct ?? b.avgAlphaPct ?? b.avgReturnPct) - (a.avgSectorAlphaPct ?? a.avgAlphaPct ?? a.avgReturnPct));
 
+  // Pending is reported SEPARATELY rather than as rows with picks: 0. A zero-pick row would divide
+  // by rets.length in hitRatePct and avgReturnPct and put NaN straight into the email.
+  return {
+    channels,
+    pending: {
+      credits: [...pendingByChannel.values()].reduce((a, b) => a + b, 0),
+      channels: pendingByChannel.size,
+      nextMaturity: earliestMaturity,
+    },
+  };
+}
+
+/** The channel rows alone — the long-standing shape, kept so every caller and test that treats the
+ *  rollup as an array is unaffected. Both read the SAME computation; there is no second rule for
+ *  what counts as pending. */
+export function rollupChannels(
+  ...args: Parameters<typeof rollupWithPending>
+): ChannelStats[] {
+  return rollupWithPending(...args).channels;
 }
 
 // Score every tracked pick's forward return and roll up per channel. Read-only.
 export async function computeAttribution(
   today: string,
-): Promise<{ picks: PickOutcome[]; channels: ChannelStats[]; channelsBelowFloor: ChannelStats[] }> {
+): Promise<{ picks: PickOutcome[]; channels: ChannelStats[]; channelsBelowFloor: ChannelStats[]; pending: PendingSummary }> {
   // Read-only path: a null (read error) is safe to treat as empty here — nothing is written.
   const ledger = await ledgerGet();
   const entries = Object.values(ledger ?? {});
@@ -685,11 +732,12 @@ export async function computeAttribution(
   }));
   // TWO COHORTS, never pooled. `channels` is what the sleeve would actually buy; the sub-floor set
   // is the control that says whether the buy floor is doing any work.
-  const channels = rollupChannels(picks, spyByDate, spyNow, barsByTicker, sectorBarsByEtf, (sc) => sc >= INFLUENCER_BUY_FLOOR);
+  const above = rollupWithPending(picks, spyByDate, spyNow, barsByTicker, sectorBarsByEtf, (sc) => sc >= INFLUENCER_BUY_FLOOR);
+  const channels = above.channels;
   const channelsBelowFloor = rollupChannels(picks, spyByDate, spyNow, barsByTicker, sectorBarsByEtf, (sc) => sc < INFLUENCER_BUY_FLOOR);
 
   picks.sort((a, b) => (b.returnPct ?? -Infinity) - (a.returnPct ?? -Infinity));
-  return { picks, channels, channelsBelowFloor };
+  return { picks, channels, channelsBelowFloor, pending: above.pending };
 }
 
 /**

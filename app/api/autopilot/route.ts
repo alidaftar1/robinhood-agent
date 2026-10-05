@@ -7,7 +7,7 @@ import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcer
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
-import { computeAttribution, type ChannelStats } from "@/lib/influencer-ledger";
+import { computeAttribution, type ChannelStats, type PendingSummary } from "@/lib/influencer-ledger";
 import { computeSlippage, type SlippageStats } from "@/lib/slippage";
 import { computeSignalAttribution, type SignalStat } from "@/lib/signal-ledger";
 import { getInfluencerSignals } from "@/lib/influencer-signals";
@@ -504,13 +504,19 @@ export async function GET(request: Request) {
   // picks have some age; day-0 picks read ~0% by construction.
   let ledgerChannels: ChannelStats[] = [];
   let ledgerBelowFloor: ChannelStats[] = [];
+  // Credits whose 30-day window is still open. Without this the section vanishes entirely during
+  // the warm-up — a working ledger looks exactly like a broken or empty one.
+  let ledgerPending: PendingSummary = { credits: 0, channels: 0, nextMaturity: null };
+  // A read/compute failure must not be reported as "nothing is pending": that is the silence this
+  // whole block exists to remove.
+  let ledgerFailed = false;
   // Execution cost. The one live measure that resolves in WEEKS rather than years, and the only one
   // nothing was tracking — a persistent 50bp/yr would swamp anything the ranking logic argues about
   // while being invisible in every return number, because it is already baked into the fill.
   let slippage: SlippageStats[] = [];
   try { slippage = computeSlippage(runs); } catch { /* best-effort */ }
-  try { ({ channels: ledgerChannels, channelsBelowFloor: ledgerBelowFloor } = await computeAttribution(today)); }
-  catch { /* ledger is best-effort; skip the section if it can't compute */ }
+  try { ({ channels: ledgerChannels, channelsBelowFloor: ledgerBelowFloor, pending: ledgerPending } = await computeAttribution(today)); }
+  catch { ledgerFailed = true; /* best-effort, but SAID — see the block below */ }
   const agedChannels = ledgerChannels.filter((c) => c.avgReturnPct !== 0 || c.hitRatePct !== 0);
 
   // Signal-attribution ledger: which entry signals (★INS, ⚡NEWS, ↓FIRM, earnings record, …) have
@@ -668,6 +674,18 @@ export async function GET(request: Request) {
     <strong>🎬 Influencer signals this week:</strong>
     <p style="margin:6px 0 0;font-size:13px;color:#6b7280">None — ${influencerEmptyReason}.</p>
   </div>`}
+
+  ${ledgerChannels.length === 0 && (ledgerPending.credits > 0 || ledgerFailed)
+    ? `<div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🎬 Influencer-pick ledger — ${ledgerFailed ? "could not be computed" : "warming up"}:</strong>
+    <p style="margin:6px 0 0;font-size:13px;color:#6b7280">${ledgerFailed
+      ? "The attribution read failed this morning. The ledger itself is unaffected — this is a reporting gap, not lost data."
+      : `Tracking <strong>${ledgerPending.credits}</strong> channel-credit${ledgerPending.credits === 1 ? "" : "s"} `
+        + `across <strong>${ledgerPending.channels}</strong> channel${ledgerPending.channels === 1 ? "" : "s"}. `
+        + `No 30-day window has closed yet${ledgerPending.nextMaturity ? `; the first matures <strong>${escapeHtml(ledgerPending.nextMaturity)}</strong>` : ""}. `
+        + `Returns are deliberately withheld until then — a few days of a 30-day window is noise, not signal.`}</p>
+  </div>`
+    : ""}
 
   ${ledgerChannels.length > 0
     ? `<div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:12px 16px;margin-bottom:16px;border-radius:4px">

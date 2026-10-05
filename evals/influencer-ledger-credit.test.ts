@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { rollupChannels, migratedChannelEntries, type PickOutcome, type LedgerPick } from "../lib/influencer-ledger";
+import { rollupChannels, rollupWithPending, migratedChannelEntries, type PickOutcome, type LedgerPick } from "../lib/influencer-ledger";
 import type { DatedBars } from "../lib/market-data";
 
 // THE BUG THIS GUARDS: every channel listed on a ticker used to be credited with the ticker's
@@ -487,5 +487,78 @@ describe("rollupChannels — score cohorts", () => {
     const below = rollupChannels([mk("OLD", undefined, 130)], spy, 520, b, new Map(), sc => sc < 3);
     expect(atFloor[0].picks).toBe(1);
     expect(below).toEqual([]);
+  });
+});
+
+// ── the pending tally ────────────────────────────────────────────────────────
+// Between the ledger's reset and the first 30-day maturity EVERY credit is pending, and a channel
+// with only pending credits produces no row. The email's section was gated on row count, so it
+// disappeared for the whole warm-up and a healthy ledger was indistinguishable from a broken or
+// empty one — which is exactly how it got reported as missing on 2026-10-05. The counts are
+// reported instead; returns stay withheld, because a few days of a 30-day window is noise.
+describe("rollupWithPending — reporting the warm-up", () => {
+  const d = (iso: string) => Math.floor(Date.parse(`${iso}T13:30:00Z`) / 1000);
+  // Bars that STOP before day 30, so no window can close.
+  const youngBars: DatedBars = {
+    ts: ["2026-10-01", "2026-10-02", "2026-10-05"].map(d),
+    closes: [100, 103, 106],
+  };
+  const pick = (ticker: string, channels: string[], firstSeen: string): PickOutcome => ({
+    ticker, channels, maxScore: 4, maxConfidence: "high",
+    firstSeenDate: firstSeen, lastSeenDate: firstSeen, priceAtSignal: 100,
+    currentPrice: 106, returnPct: 6, marketReturnPct: null, alphaPct: null, daysElapsed: 4,
+    channelEntries: Object.fromEntries(channels.map(c =>
+      [c, { firstSeenDate: firstSeen, priceAtSignal: 100, scoreAtEntry: 4 }])),
+  });
+  const barsFor = (...tickers: string[]) => new Map(tickers.map(t => [t, youngBars]));
+
+  test("no rows, but the pending credits and channels are COUNTED", () => {
+    const r = rollupWithPending(
+      [pick("AAA", ["Ch1", "Ch2"], "2026-10-01"), pick("BBB", ["Ch1"], "2026-10-02")],
+      new Map(), null, barsFor("AAA", "BBB"),
+    );
+    expect(r.channels).toEqual([]);           // nothing may be reported as a result yet
+    expect(r.pending.credits).toBe(3);        // AAA x2 channels + BBB x1
+    expect(r.pending.channels).toBe(2);       // Ch1, Ch2
+  });
+
+  test("nextMaturity is the EARLIEST window's close, not the latest", () => {
+    // Reporting the latest would overstate how long the owner has to wait.
+    const r = rollupWithPending(
+      [pick("AAA", ["Ch1"], "2026-10-02"), pick("BBB", ["Ch1"], "2026-09-29")],
+      new Map(), null, barsFor("AAA", "BBB"),
+    );
+    expect(r.pending.nextMaturity).toBe("2026-10-29");  // 09-29 + 30d, not 10-02 + 30d
+  });
+
+  test("maturity counts from the channel's OWN baseline, not the last mention", () => {
+    // The live shape: a pick first seen 09-29 is still being mentioned today. Measuring from
+    // lastSeenDate pushes the reported date a week out and overstates the wait — and every other
+    // test here has firstSeen == lastSeen, so that mutation was invisible until this case.
+    const stale: PickOutcome = {
+      ...pick("AAA", ["Ch1"], "2026-09-29"), lastSeenDate: "2026-10-05", daysElapsed: 6,
+    };
+    const r = rollupWithPending([stale], new Map(), null, barsFor("AAA"));
+    expect(r.pending.credits).toBe(1);
+    expect(r.pending.nextMaturity).toBe("2026-10-29");  // 09-29 + 30d, NOT 10-05 + 30d
+  });
+
+  test("a MATURED credit leaves pending and becomes a row", () => {
+    // The control: once a window closes the count must fall, or "warming up" would be permanent.
+    const matured: DatedBars = { ts: ["2026-09-01", "2026-10-01"].map(d), closes: [100, 130] };
+    const r = rollupWithPending(
+      [pick("AAA", ["Ch1"], "2026-09-01")], new Map(), null, new Map([["AAA", matured]]),
+    );
+    expect(r.pending.credits).toBe(0);
+    expect(r.pending.nextMaturity).toBeNull();
+    expect(r.channels.map(c => [c.channel, c.picks])).toEqual([["Ch1", 1]]);
+  });
+
+  test("rollupChannels returns the SAME rows — one computation, two shapes", () => {
+    // Guards the façade: a second pending rule would drift from the one that gates the email.
+    const picks = [pick("AAA", ["Ch1"], "2026-09-01")];
+    const bars = new Map([["AAA", { ts: ["2026-09-01", "2026-10-01"].map(d), closes: [100, 130] } as DatedBars]]);
+    expect(rollupChannels(picks, new Map(), null, bars))
+      .toEqual(rollupWithPending(picks, new Map(), null, bars).channels);
   });
 });
