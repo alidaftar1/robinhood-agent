@@ -457,3 +457,102 @@ describe("computeSleeveReturns — a fully-closed sleeve still has a return", ()
     expect(r.influencerDailyReturn!).toBeCloseTo(0.10, 6);
   });
 });
+
+// ── planCapture: the owner's own trades become real records ──────────────────
+// /api/verify has detected the owner's manual fills every day and nothing ever wrote them down, so
+// patchTrades estimated the sells at the previous mark ($5.07 of permanent error across KO and NEM
+// on 2026-10-05) and REFUSED on the buys, withholding the day's return entirely.
+import { planCapture, type LiveOrder } from "../lib/run-store";
+
+describe("planCapture", () => {
+  const pos = (symbol: string, quantity: string, price: string): PositionSnapshot =>
+    ({ symbol, quantity, avgCost: price, price } as PositionSnapshot);
+  const order = (side: string, symbol: string, quantity: string, avgPrice: string, over: Partial<LiveOrder> = {}): LiveOrder =>
+    ({ side, symbol, quantity, avgPrice, state: "filled", createdAt: "2026-10-06", ...over });
+  const held = {
+    positions: [pos("KO", "0.637741", "85.86"), pos("APA", "11.787693", "43.52")],
+    influencerPositions: [] as PositionSnapshot[], trades: [] as TradeSnapshot[],
+  };
+  const T = "2026-10-06";
+
+  test("the QUANTITY comes from positions, the PRICE from the broker", () => {
+    // The whole design. The broker's reader rounds to 2dp, so KO came back as both "0.64" and
+    // "0.637741"; trusting it would leave the book 0.0023 out — 20x QTY_EPSILON — forever.
+    const latest = { positions: [pos("APA", "11.787693", "43.52")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(held, latest, [order("sell", "KO", "0.64", "86.4219")], T);
+    expect(p.record.map(t => [t.symbol, t.quantity, t.avgPrice, t.state])).toEqual([
+      ["KO", "0.637741", "86.42", "filled"],   // exact quantity, real price, real state
+    ]);
+    expect(p.reconciles).toBe(true);
+  });
+
+  test("an unrecorded BUY is recorded instead of refused", () => {
+    // patchTrades can only refuse this: inventing a buy fabricates a cost basis. A filled buy order
+    // IS the cost basis, so the refusal becomes a recording.
+    const latest = { positions: [pos("KO", "0.637741", "85.86"), pos("APA", "11.787693", "43.52"), pos("HWM", "0.5", "227.80")],
+                     trades: [] as TradeSnapshot[] };
+    const p = planCapture(held, latest, [order("buy", "HWM", "0.50", "227.80")], T);
+    expect(p.record.map(t => [t.side, t.symbol, t.quantity, t.avgPrice])).toEqual([["buy", "HWM", "0.500000", "227.80"]]);
+    expect(p.residual).toEqual([]);
+    expect(p.reconciles).toBe(true);
+  });
+
+  test("a PARTIAL sale is captured at the exact shortfall", () => {
+    const latest = { positions: [pos("KO", "0.637741", "85.86"), pos("APA", "6", "43.52")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(held, latest, [order("sell", "APA", "5.79", "44.14")], T);
+    expect(p.record.map(t => [t.symbol, t.quantity, t.avgPrice])).toEqual([["APA", "5.787693", "44.14"]]);
+  });
+
+  test("a real fill SUPERSEDES the estimate patchTrades already wrote", () => {
+    const latest = {
+      positions: [pos("APA", "11.787693", "43.52")],
+      trades: [{ symbol: "KO", side: "sell", quantity: "0.637741", avgPrice: "85.86", state: "inferred", strategy: "main" as const }],
+    };
+    const p = planCapture(held, latest, [order("sell", "KO", "0.637741", "86.4219")], T);
+    expect(p.supersede.map(t => t.state)).toEqual(["inferred"]);
+    expect(p.record[0].avgPrice).toBe("86.42");
+  });
+
+  test("NOTHING is invented — an order that matches no position change is ignored", () => {
+    // The safety property. This can only PRICE a change the book already shows.
+    const latest = { positions: held.positions, trades: [] as TradeSnapshot[] };
+    const p = planCapture(held, latest, [order("sell", "TSLA", "3", "400")], T);
+    expect(p.record).toEqual([]);
+    expect(p.reconciles).toBe(true);
+  });
+
+  test("an order whose quantity is nowhere near the shortfall is not evidence of it", () => {
+    const latest = { positions: [pos("KO", "0.637741", "85.86"), pos("APA", "6", "43.52")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(held, latest, [order("sell", "APA", "1.0", "44.14")], T);  // 1.0 vs 5.79
+    expect(p.record).toEqual([]);
+    expect(p.reconciles).toBe(false);  // still unexplained — must not read as clean
+  });
+
+  test("only TODAY's FILLED orders count", () => {
+    const latest = { positions: [pos("APA", "11.787693", "43.52")], trades: [] as TradeSnapshot[] };
+    for (const bad of [order("sell", "KO", "0.64", "86.42", { state: "cancelled" }),
+                       order("sell", "KO", "0.64", "86.42", { createdAt: "2026-09-30" })]) {
+      expect(planCapture(held, latest, [bad], T).record).toEqual([]);
+    }
+  });
+
+  test("reconciles is FALSE when something is still unexplained after writing", () => {
+    // Writing something must not make the day read as clean. Here the KO sell is captured but an
+    // unexplained HWM arrival remains.
+    const latest = { positions: [pos("APA", "11.787693", "43.52"), pos("HWM", "0.5", "227.80")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(held, latest, [order("sell", "KO", "0.637741", "86.4219")], T);
+    expect(p.record.length).toBe(1);
+    expect(p.reconciles).toBe(false);
+    expect(p.residual.map(r => [r.symbol, r.reason])).toEqual([["HWM", "shares-appeared"]]);
+  });
+
+  test("IDEMPOTENT — a second pass records nothing", () => {
+    const latest = { positions: [pos("APA", "11.787693", "43.52")], trades: [] as TradeSnapshot[] };
+    const first = planCapture(held, latest, [order("sell", "KO", "0.637741", "86.4219")], T);
+    const after = { positions: latest.positions, trades: [...latest.trades, ...first.record] };
+    const second = planCapture(held, after, [order("sell", "KO", "0.637741", "86.4219")], T);
+    expect(second.record).toEqual([]);
+    expect(second.reconciles).toBe(true);
+  });
+
+});

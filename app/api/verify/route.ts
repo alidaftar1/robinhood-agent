@@ -2,7 +2,7 @@ import { requireCronAuth } from "@/lib/auth";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { getRuns, mergeRunsByDate } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate, planCapture, updateRunByDate, computeDailyReturn, computeSleeveReturns, clampSleeveReturn } from "@/lib/run-store";
 
 export const maxDuration = 90;
 
@@ -246,6 +246,61 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     }
   }
 
+  // ── ?capture=1 — record the owner's own trades ─────────────────────────────
+  // Read-only by DEFAULT. This endpoint is an audit, and an audit that writes on every call cannot
+  // be trusted to tell you what it found; the flag makes the write explicit at the call site.
+  //
+  // Everything above merely REPORTS fills that exist at the broker and not in the run. The owner
+  // trades manually in this account, so those reports recur daily, and until now nothing acted on
+  // them: patchTrades estimated the sells at the previous snapshot's mark and REFUSED on the buys,
+  // withholding the whole day's return. Here the real fills become real records.
+  let capture: Record<string, unknown> | null = null;
+  const wantCapture = new URL(request.url).searchParams.get("capture") === "1";
+  if (wantCapture && storedRun && liveOrders) {
+    const prevRun = merged.find(r => r.date < storedRun.date);
+    if (!prevRun) {
+      capture = { ok: false, reason: "no previous run to use as a baseline" };
+    } else if (storedRun.returnLocked) {
+      // A locked day was withheld deliberately. Unlock it explicitly once reconciled rather than
+      // having an audit call quietly overwrite the decision to withhold.
+      capture = { ok: false, reason: `${storedRun.date} is returnLocked — reconcile, then /api/debug?patchDate=${storedRun.date}&unlock=1` };
+    } else {
+      const plan = planCapture(prevRun, storedRun, liveOrders, today);
+      if (plan.record.length === 0) {
+        capture = { ok: true, recorded: 0, reconciles: plan.reconciles, note: "no live order matched an unexplained position change" };
+      } else {
+        const trades = [...(storedRun.trades ?? []).filter(t => !plan.supersede.includes(t)), ...plan.record];
+        const agentic = storedRun.portfolioAfter && prevRun.portfolioAfter
+          ? computeDailyReturn(
+              parseFloat(storedRun.portfolioAfter.totalValue), parseFloat(prevRun.portfolioAfter.totalValue),
+              storedRun.positions, prevRun.positions, trades)
+          : null;
+        const rawSleeves = computeSleeveReturns(
+          storedRun.positions ?? [], trades,
+          storedRun.influencerPositions ?? [], prevRun.influencerPositions ?? [], prevRun.positions ?? []);
+        const written = await updateRunByDate(storedRun.date, (run) => ({
+          ...run, trades,
+          agenticDailyReturn: agentic?.dailyReturn ?? null,
+          agenticImpliedTransfer: agentic?.impliedTransfer ?? null,
+          influencerDailyReturn: clampSleeveReturn(rawSleeves.influencerDailyReturn),
+          mainDailyReturn: clampSleeveReturn(rawSleeves.mainDailyReturn),
+        }));
+        console.log("CAPTURED_UNCAPTURED_ORDERS", {
+          date: storedRun.date, recorded: plan.record.length, superseded: plan.supersede.length,
+          reconciles: plan.reconciles, residual: plan.residual,
+        });
+        capture = {
+          ok: written, recorded: plan.record.length, superseded: plan.supersede.length,
+          // reconciles=false means something is STILL unexplained — the day is not clean just
+          // because records were written, and the caller must keep reporting it.
+          reconciles: plan.reconciles, residual: plan.residual,
+          trades: plan.record.map(t => `${t.side} ${t.symbol} x${t.quantity} @$${t.avgPrice}[${t.strategy ?? "?"}]`),
+          dailyReturn: agentic?.dailyReturn ?? null,
+        };
+      }
+    }
+  }
+
   const status = discrepancies.length === 0 ? "ok"
     : (liveBalance === null || livePositions === null) ? "partial"
     : "discrepancy";
@@ -253,6 +308,7 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
   return Response.json({
     date: today,
     status,
+    capture,
     live: {
       balance: liveBalance,
       positions: livePositions,

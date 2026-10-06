@@ -1147,6 +1147,115 @@ export function buildInferredSells(
   return { sells, unreconstructable };
 }
 
+/** A filled order as /api/verify reads it back from the broker. */
+export type LiveOrder = {
+  symbol: string; side: string; quantity: string; avgPrice: string; state: string; createdAt?: string;
+};
+
+export type CapturePlan = {
+  /** Trades to append, at the broker's OBSERVED price and state "filled". */
+  record: TradeSnapshot[];
+  /** Inferred sells to drop because a real fill now covers the same disposal. */
+  supersede: TradeSnapshot[];
+  /** Discrepancies no live order explains — these still fall through to patchTrades. */
+  residual: InferredSellPlan["unreconstructable"];
+  /** True when every discrepancy was matched, i.e. the book reconciles from records afterwards. */
+  reconciles: boolean;
+};
+
+/**
+ * Turn the broker's filled orders into REAL trade records for trades the agent never saw.
+ *
+ * The owner trades manually in the same account. /api/verify has detected those fills every day —
+ * `uncapturedOrders` — and nothing has ever written them down, so patchTrades was left to ESTIMATE
+ * the sells at the previous snapshot's mark (a permanent error: $5.07 across KO and NEM on
+ * 2026-10-05) and to REFUSE outright on the buys, withholding the day's return.
+ *
+ * TWO SOURCES, EACH FOR WHAT IT IS GOOD AT. The quantity comes from the POSITION ARITHMETIC, never
+ * from the order: /api/verify reads orders through an LLM that formats them to two decimals, so the
+ * same KO sale came back as both "0.64" and "0.637741", and 0.0023 of drift is 20x QTY_EPSILON —
+ * enough to leave the book permanently unbalanced. The positions snapshot is exact. The PRICE comes
+ * from the order, because it is the only place a real fill price exists at all.
+ *
+ * So a live order is used as EVIDENCE that a disposal happened and at what price, and the share
+ * count is still derived from the identity in buildInferredSells. An order whose quantity is
+ * nowhere near the observed shortfall is not evidence of that shortfall and is ignored.
+ *
+ * Nothing is recorded that the book does not already show: if no live order matches a discrepancy
+ * it stays in `residual` and patchTrades handles it exactly as before. This cannot invent a trade,
+ * only price one.
+ */
+export function planCapture(
+  heldRun: Pick<TradeRun, "positions" | "influencerPositions" | "trades">,
+  latest: Pick<TradeRun, "positions" | "trades">,
+  liveOrders: LiveOrder[],
+  today: string,
+): CapturePlan {
+  // Previously-inferred sells are estimates standing in for a real fill, so they must not count as
+  // "already recorded" — superseding them is the point.
+  const inferredSells = (latest.trades ?? []).filter(t => t.side === "sell" && t.state === "inferred");
+  const realTrades = (latest.trades ?? []).filter(t => !(t.side === "sell" && t.state === "inferred"));
+
+  // What the records fail to explain, by the same identity patchTrades uses.
+  const gaps = buildInferredSells(heldRun, { positions: latest.positions, trades: realTrades });
+
+  const candidates = liveOrders.filter(o =>
+    o.state === "filled" && (!o.createdAt || o.createdAt === today) && parseFloat(o.avgPrice) > 0);
+  // Defensive only, and currently unreachable: a symbol yields at most one gap, and `matches`
+  // requires the side to agree, so no order can be offered to two gaps. Kept because that is a
+  // property of buildInferredSells' output rather than of this function — mutation-checked as inert,
+  // so do not write a test for it and do not mistake it for a live guard.
+  const used = new Set<LiveOrder>();
+  // An order corroborates a shortfall when its quantity is CLOSE to it. Tolerance is the larger of
+  // one cent of a share and 2% — the formatting loss is proportional, so a fixed epsilon would
+  // reject every fractional position while 2% of a real trade is far below any plausible mix-up.
+  const matches = (o: LiveOrder, side: string, symbol: string, qty: number) => {
+    if (used.has(o) || o.side !== side || o.symbol !== symbol) return false;
+    const oq = parseFloat(o.quantity);
+    return Number.isFinite(oq) && Math.abs(oq - qty) <= Math.max(0.01, qty * 0.02);
+  };
+
+  const record: TradeSnapshot[] = [];
+  const supersede: TradeSnapshot[] = [];
+  const residual: InferredSellPlan["unreconstructable"] = [];
+
+  // SELLS the records are missing — buildInferredSells already priced them at the held run's mark;
+  // a real fill replaces that estimate.
+  for (const est of gaps.sells) {
+    const qty = parseFloat(est.quantity);
+    const hit = candidates.find(o => matches(o, "sell", est.symbol, qty));
+    if (!hit) continue; // no evidence — leave it to patchTrades to estimate as before
+    used.add(hit);
+    record.push({ ...est, avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled" });
+    supersede.push(...inferredSells.filter(t => t.symbol === est.symbol));
+  }
+
+  // SHARES THAT APPEARED — the case patchTrades can only refuse, because inventing a buy fabricates
+  // a cost basis. A filled buy order IS that cost basis, so the refusal becomes a recording.
+  for (const u of gaps.unreconstructable) {
+    if (u.reason !== "shares-appeared" || u.excessQty == null) { residual.push(u); continue; }
+    const hit = candidates.find(o => matches(o, "buy", u.symbol, u.excessQty!));
+    if (!hit) { residual.push(u); continue; }
+    used.add(hit);
+    record.push({
+      symbol: u.symbol, side: "buy", quantity: u.excessQty.toFixed(6),
+      avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled",
+      // Sleeve membership is read from the run that held the book, the same rule sells use.
+      strategy: inferSellStrategy(u.symbol, heldRun.influencerPositions, heldRun.trades ?? []),
+    });
+  }
+
+  // Did it work? Re-run the identity over the trade list we would persist. Anything still
+  // outstanding means the capture did NOT make the book add up, and the caller must not treat the
+  // day as reconciled just because something was written.
+  const after = [...realTrades.filter(t => !supersede.includes(t)), ...record];
+  const check = buildInferredSells(heldRun, { positions: latest.positions, trades: after });
+  return {
+    record, supersede, residual,
+    reconciles: check.sells.length === 0 && check.unreconstructable.length === 0,
+  };
+}
+
 /**
  * Backfill the `strategy` tag on SELLS that were written without one.
  *
