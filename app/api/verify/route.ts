@@ -265,7 +265,7 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
       // having an audit call quietly overwrite the decision to withhold.
       capture = { ok: false, reason: `${storedRun.date} is returnLocked — reconcile, then /api/debug?patchDate=${storedRun.date}&unlock=1` };
     } else {
-      const plan = planCapture(prevRun, storedRun, liveOrders, today);
+      const plan = planCapture(prevRun, storedRun, liveOrders, { from: prevRun.date, to: storedRun.date });
       if (plan.record.length === 0) {
         capture = { ok: true, recorded: 0, reconciles: plan.reconciles, note: "no live order matched an unexplained position change" };
       } else {

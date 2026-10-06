@@ -473,7 +473,7 @@ describe("planCapture", () => {
     positions: [pos("KO", "0.637741", "85.86"), pos("APA", "11.787693", "43.52")],
     influencerPositions: [] as PositionSnapshot[], trades: [] as TradeSnapshot[],
   };
-  const T = "2026-10-06";
+  const T = { from: "2026-10-05", to: "2026-10-06" };
 
   test("the QUANTITY comes from positions, the PRICE from the broker", () => {
     // The whole design. The broker's reader rounds to 2dp, so KO came back as both "0.64" and
@@ -528,10 +528,20 @@ describe("planCapture", () => {
     expect(p.reconciles).toBe(false);  // still unexplained — must not read as clean
   });
 
-  test("only TODAY's FILLED orders count", () => {
+  test("a fill from the PREVIOUS day is in the window, not stale", () => {
+    // The lag is structural: a run snapshots at 07:30, so a trade made during 2026-10-06 is only
+    // visible in 10-07's positions and is reconciled then. Filtering to the calendar day rejected
+    // exactly the orders being reconciled — this is the case that caught it live.
+    const latest = { positions: [pos("APA", "11.787693", "43.52")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(held, latest, [order("sell", "KO", "0.637741", "86.4219", { createdAt: "2026-10-05" })],
+                          { from: "2026-10-05", to: "2026-10-06" });
+    expect(p.record.map(t => [t.symbol, t.avgPrice])).toEqual([["KO", "86.42"]]);
+  });
+
+  test("only FILLED orders INSIDE the window count", () => {
     const latest = { positions: [pos("APA", "11.787693", "43.52")], trades: [] as TradeSnapshot[] };
     for (const bad of [order("sell", "KO", "0.64", "86.42", { state: "cancelled" }),
-                       order("sell", "KO", "0.64", "86.42", { createdAt: "2026-09-30" })]) {
+                       order("sell", "KO", "0.64", "86.42", { createdAt: "2026-09-30" })]) {  // before the window
       expect(planCapture(held, latest, [bad], T).record).toEqual([]);
     }
   });

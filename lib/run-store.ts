@@ -1189,7 +1189,17 @@ export function planCapture(
   heldRun: Pick<TradeRun, "positions" | "influencerPositions" | "trades">,
   latest: Pick<TradeRun, "positions" | "trades">,
   liveOrders: LiveOrder[],
-  today: string,
+  /**
+   * The dates this reconciliation spans: `from` is the run that still held the book, `to` is the
+   * run being repaired. NOT "today".
+   *
+   * A run snapshots at 07:30, so a trade made during a session lands in the NEXT run's window and
+   * is reconciled a day later — the same lag patchTrades has always had. Filtering to the calendar
+   * day therefore rejected exactly the orders being reconciled: the owner's 2026-10-06 fills would
+   * have been discarded on 10-07 for being "stale". The window is inclusive of both ends because a
+   * fill can fall either side of the 07:30 boundary.
+   */
+  window: { from: string; to: string },
 ): CapturePlan {
   // Previously-inferred sells are estimates standing in for a real fill, so they must not count as
   // "already recorded" — superseding them is the point.
@@ -1200,7 +1210,9 @@ export function planCapture(
   const gaps = buildInferredSells(heldRun, { positions: latest.positions, trades: realTrades });
 
   const candidates = liveOrders.filter(o =>
-    o.state === "filled" && (!o.createdAt || o.createdAt === today) && parseFloat(o.avgPrice) > 0);
+    o.state === "filled"
+    && (!o.createdAt || (o.createdAt >= window.from && o.createdAt <= window.to))
+    && parseFloat(o.avgPrice) > 0);
   // Defensive only, and currently unreachable: a symbol yields at most one gap, and `matches`
   // requires the side to agree, so no order can be offered to two gaps. Kept because that is a
   // property of buildInferredSells' output rather than of this function — mutation-checked as inert,
