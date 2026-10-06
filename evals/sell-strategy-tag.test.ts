@@ -390,3 +390,70 @@ describe("inferred sells repair the sleeve returns, not just the headline", () =
     expect(raw.influencerDailyReturn).toBeCloseTo(0, 6);
   });
 });
+
+// ── an exit day is a real day ────────────────────────────────────────────────
+// computeSleeveReturns used to require positions TODAY, which deleted every day a sleeve was fully
+// closed out. A 2-name sleeve empties precisely when its positions are stopped out at -5%, knocked
+// out by the drop-check, or exited on bad news — loss days by construction — so the holding days
+// kept their gains while the exits that paid for them vanished. Over the 30 stored runs the
+// influencer sleeve read +2.87% with those days dropped and -6.79% with them counted.
+describe("computeSleeveReturns — a fully-closed sleeve still has a return", () => {
+  const p = (symbol: string, quantity: string, price: string): PositionSnapshot =>
+    ({ symbol, quantity, avgCost: price, price } as PositionSnapshot);
+  const sell = (symbol: string, quantity: string, avgPrice: string): TradeSnapshot =>
+    ({ symbol, side: "sell", quantity, avgPrice, state: "filled" });
+  // Yesterday the sleeve held CRM 2 @ $100. Today it is empty: stopped out at $90, a REAL -10% day.
+  const prevPositions = [p("CRM", "2", "100"), p("APA", "4", "50")];
+  const prevInfluencer = [p("CRM", "2", "100")];
+
+  test("the stop-out day is COUNTED, not discarded", () => {
+    const r = computeSleeveReturns(
+      [p("APA", "4", "50")], [sell("CRM", "2", "90")], [], prevInfluencer, prevPositions);
+    expect(r.influencerDailyReturn).not.toBeNull();
+    expect(r.influencerDailyReturn!).toBeCloseTo(-0.10, 6);   // (180 - 200) / 200
+  });
+
+  test("the MAIN book gets the same treatment — one rule, both sleeves", () => {
+    const r = computeSleeveReturns(
+      [p("CRM", "2", "100")], [sell("APA", "4", "45")],
+      [p("CRM", "2", "100")], prevInfluencer, prevPositions);
+    expect(r.mainDailyReturn!).toBeCloseTo(-0.10, 6);         // (180 - 200) / 200
+  });
+
+  test("a sleeve empty on BOTH days is still null — that is a zero denominator", () => {
+    const r = computeSleeveReturns([p("APA", "4", "50")], [], [], [], [p("APA", "4", "50")]);
+    expect(r.influencerDailyReturn).toBeNull();
+  });
+
+  test("an exit with NO sell on record reads ~-100% and the clamp nulls it", () => {
+    // The backstop: counting exit days must not turn an unrecorded sale into a published -100%.
+    const r = computeSleeveReturns([p("APA", "4", "50")], [], [], prevInfluencer, prevPositions);
+    expect(clampSleeveReturn(r.influencerDailyReturn)).toBeNull();
+  });
+
+  test("a sleeve REBUILT from cash is still null — the tiny-denominator guard", () => {
+    // Pre-existing and load-bearing, and nothing covered it. 2026-07-09 liquidated the main book to
+    // ~$33.60 and 07-10 rebuilt it to ~$2,038 from settled cash; a sub-dollar real P&L over a $33.60
+    // base amplified into a phantom -2.05%, which compounded the dashboard's Main Book Return from
+    // -4.25% to -6.22%. A prior book under 10% of today's is a rebuild, not a day's performance.
+    const yst = [p("APA", "1", "33.60")];
+    const today = [p("APA", "1", "33.60"), p("MRK", "20", "100")];
+    const r = computeSleeveReturns(today, [], [], [], yst);
+    expect(r.mainDailyReturn).toBeNull();
+  });
+
+  test("but a LIQUIDATION is not a rebuild — the guard is directional", () => {
+    // The mirror of the case above, and the reason the guard compares yesterday to TODAY rather
+    // than taking an absolute floor: shrinking to nothing must still produce a number.
+    const yst = [p("APA", "1", "33.60"), p("MRK", "20", "100")];
+    const r = computeSleeveReturns([], [sell("APA", "1", "33.60"), sell("MRK", "20", "100")], [], [], yst);
+    expect(r.mainDailyReturn!).toBeCloseTo(0, 6);
+  });
+
+  test("CONTROL — an ordinary holding day is unaffected", () => {
+    const r = computeSleeveReturns(
+      [p("CRM", "2", "110"), p("APA", "4", "50")], [],
+      [p("CRM", "2", "110")], prevInfluencer, prevPositions);
+    expect(r.influencerDailyReturn!).toBeCloseTo(0.10, 6);
+  });
+});

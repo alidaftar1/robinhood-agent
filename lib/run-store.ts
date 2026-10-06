@@ -732,14 +732,29 @@ export function computeSleeveReturns(
   // the small-sleeve case first.
   const materialBase = (today: PositionSnapshot[], yst: PositionSnapshot[]) =>
     value(yst) >= 0.10 * value(today);
-  const influencer = influToday.length > 0 && influYesterday.length > 0 && materialBase(influToday, influYesterday)
-    ? computeDailyReturn(value(influToday), value(influYesterday), influToday, influYesterday,
-        trades.filter(t => isInfluencer(t.symbol)))
-    : null;
-  const main = mainToday.length > 0 && mainYesterday.length > 0 && materialBase(mainToday, mainYesterday)
-    ? computeDailyReturn(value(mainToday), value(mainYesterday), mainToday, mainYesterday,
-        trades.filter(t => !isInfluencer(t.symbol)))
-    : null;
+
+  // AN EXIT DAY IS A REAL DAY. Requiring positions TODAY used to be part of this test, which
+  // silently deleted every day a sleeve was fully closed out — and a sleeve empties precisely when
+  // its positions are stopped out (-5%), knocked out by the drop-check, or exited on bad news.
+  // Those are LOSS days by construction, so dropping them is not neutral: the holding days keep
+  // their gains while the exits that paid for them vanish. Measured over the 30 stored runs, the
+  // influencer sleeve read +2.87% with exit days dropped and -6.79% with them counted — a 9.7-point
+  // overstatement, all in the flattering direction (2026-08-28 PYPL/IMAX -7.32% and 2026-09-10 CRM
+  // -2.23% were both discarded). It is the same defect as the SPCX round-trip the % index lost in
+  // July, which is recorded as "the compounded-% approach fundamentally can't show the sleeve
+  // honestly" — it can, once the exits are in it.
+  //
+  // The day is perfectly computable: computeDailyReturn divides by YESTERDAY's value, so an empty
+  // book today is just `pnl = proceeds - yesterdayValue`. Only the YESTERDAY side must be non-empty
+  // (a zero denominator), which is the guard that remains. If the sells are missing from the record
+  // the result is ~-100%, and clampSleeveReturn still nulls it rather than publishing a phantom.
+  const sleeveReturn = (today: PositionSnapshot[], yst: PositionSnapshot[], tr: TradeSnapshot[]) =>
+    yst.length > 0 && materialBase(today, yst)
+      ? computeDailyReturn(value(today), value(yst), today, yst, tr)
+      : null;
+
+  const influencer = sleeveReturn(influToday, influYesterday, trades.filter(t => isInfluencer(t.symbol)));
+  const main = sleeveReturn(mainToday, mainYesterday, trades.filter(t => !isInfluencer(t.symbol)));
 
   return {
     influencerDailyReturn: influencer?.dailyReturn ?? null,
