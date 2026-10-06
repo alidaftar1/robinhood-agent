@@ -285,9 +285,14 @@ export async function GET(request: Request) {
   let verifyResult: VerifyResult | null = null;
 
   try {
-    const verifyRes = await fetch(`${host}/api/verify`, {
+    // ?capture=1 — RECORD the owner's manual fills rather than only reporting them. Without the
+    // flag verify is read-only, which is right for an audit called from anywhere else, but this is
+    // the one caller whose job is to repair the run before the email goes out. Ordered BEFORE the
+    // patchTrades fallback below on purpose: a real fill at its real price beats an estimate at the
+    // previous snapshot's mark, and whatever capture cannot explain still falls through to it.
+    const verifyRes = await fetch(`${host}/api/verify?capture=1`, {
       headers: { Authorization: `Bearer ${secret}` },
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(90_000),
     });
     if (verifyRes.ok) {
       verifyResult = await verifyRes.json() as VerifyResult;
@@ -297,6 +302,18 @@ export async function GET(request: Request) {
   }
 
   if (verifyResult) {
+    const cap = (verifyResult as { capture?: { recorded?: number; reconciles?: boolean; trades?: string[]; residual?: unknown[] } }).capture;
+    if (cap?.recorded) {
+      autoFixed.push(`Recorded ${cap.recorded} of your own fill(s) from the broker: ${(cap.trades ?? []).join(", ")}.`);
+      runs = await getRuns(30);
+      todayRun = runs.find(r => r.date === today) ?? todayRun;
+    }
+    if (cap && cap.recorded !== undefined && cap.reconciles === false && (cap.residual?.length ?? 0) > 0) {
+      // Writing something is not the same as the book adding up. Say so, or a partial capture reads
+      // as a completed repair.
+      issues.push(`Holdings still disagree with the records after capturing broker fills: `
+        + `${JSON.stringify(cap.residual)}. Reconcile against Robinhood.`);
+    }
     if (verifyResult.status === "discrepancy") {
       // Auto-fix: if position issues include missing-sell, run patchTrades
       const posIssues = verifyResult.diff?.positionIssues ?? [];
