@@ -395,7 +395,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     const sympathyNote = heldOnSympathy.length > 0 ? `\n\nHELD on sympathy (stop-loss judged broad-market): ${heldOnSympathy.join(", ")}.` : "";
     const soldList = trades.filter((t) => t.side === "sell").map((t) => `${t.symbol} x${t.quantity} @ ${t.avgPrice}`).join(", ") || "none confirmed";
 
-    await saveRun({
+    const saved = await saveRun({
       timestamp: runTimestamp,
       date: today,
       summary: `[RISK-EXIT] Sold: ${soldList}.${sympathyNote}`,
@@ -409,13 +409,26 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     });
 
     const dashboardUrl = dashboardPublicUrl(process.env.APP_URL);
+    // The orders are REAL whether or not the run persisted, so the sale is still reported — but the
+    // header must not say the system is in a good state when its own ledger is missing the trade.
+    // This is the 2026-10-06 ILMN case: a correct -5.8% stop, a real fill at $276.75, an
+    // unpersisted run, and a "🔴 Risk-Exit Triggered" email that read like everything worked.
     await sendAlert(
-      `${hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`,
-      `Sold: ${soldList}.${sympathyNote}\n\nCheck the dashboard:\n${dashboardUrl}`,
+      saved
+        ? `${hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`
+        : `🚨 Risk-Exit EXECUTED but NOT RECORDED — ${today}`,
+      saved
+        ? `Sold: ${soldList}.${sympathyNote}\n\nCheck the dashboard:\n${dashboardUrl}`
+        : `Sold: ${soldList}.${sympathyNote}\n\n`
+          + `THE ORDERS WENT THROUGH — the run could not be written to the store, so the trade is `
+          + `missing from the ledger every return and attribution figure is computed from. It will `
+          + `show up as an "uncaptured order" in /api/verify; the next autopilot run should capture `
+          + `it (verify?capture=1). If it does not, record it before trusting any return number.\n\n`
+          + `${dashboardUrl}`,
     );
 
-    console.log("DROP_CHECK_COMPLETE", { sold: [...soldSymbols], heldOnSympathy });
-    return Response.json({ success: true, sold: [...soldSymbols], heldOnSympathy, date: today });
+    console.log("DROP_CHECK_COMPLETE", { sold: [...soldSymbols], heldOnSympathy, saved });
+    return Response.json({ success: true, persisted: saved, sold: [...soldSymbols], heldOnSympathy, date: today });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("DROP_CHECK_ERROR", message);

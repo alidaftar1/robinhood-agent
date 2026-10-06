@@ -198,7 +198,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     const influencerPositions = positions.filter((p) => influencerSymbols.has(p.symbol));
     const soldList = trades.filter((t) => t.side === "sell").map((t) => `${t.symbol} x${t.quantity} @ ${t.avgPrice}`).join(", ") || "none confirmed";
 
-    await saveRun({
+    const saved = await saveRun({
       timestamp: runTimestamp,
       date: today,
       summary: `[EARNINGS EXIT] Sold before earnings: ${soldList}. Freed cash held for the morning rebalance.`,
@@ -212,9 +212,15 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     });
 
     const dashboardUrl = dashboardPublicUrl(process.env.APP_URL);
+    // Same guard as drop-check: the orders are real either way, but a success header must not go
+    // out when the run itself did not persist. See saveRun's contract.
     await sendAlert(
-      `📋 Earnings Exit Triggered — ${today}`,
-      `Sold before earnings: ${soldList}.\nFreed cash held — the morning rebalance redeploys it under the full ruleset.\n\nCheck the dashboard:\n${dashboardUrl}`,
+      saved ? `📋 Earnings Exit Triggered — ${today}` : `🚨 Earnings Exit EXECUTED but NOT RECORDED — ${today}`,
+      `Sold before earnings: ${soldList}.\nFreed cash held — the morning rebalance redeploys it under the full ruleset.`
+      + (saved ? "" : `\n\nTHE ORDERS WENT THROUGH — the run could not be written to the store, so the trade is `
+          + `missing from the ledger. It will appear as an "uncaptured order" in /api/verify and should be `
+          + `captured by the next autopilot run.`)
+      + `\n\nCheck the dashboard:\n${dashboardUrl}`,
     );
 
     console.log("EARNINGS_EXIT_COMPLETE", { sold: [...soldSymbols] });

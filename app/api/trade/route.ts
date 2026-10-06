@@ -1727,7 +1727,19 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // (Personal-account comparison removed: the agentic MCP token is sandboxed to the
     // agentic account — agentic_allowed:false on the individual account — so the personal
     // snapshot could never be read; the fetch just hung ~25s every run.)
-    await saveRun({ ...baseRun, portfolioAfter, positions, trades, personal: null });
+    const saved = await saveRun({ ...baseRun, portfolioAfter, positions, trades, personal: null });
+    // Not fatal to the trades — they are already placed — but the run IS the ledger, so a failed
+    // write means today's fills exist only at the broker. Say so loudly; /api/verify?capture=1 is
+    // what recovers it.
+    if (!saved) {
+      console.error("TRADE_RUN_NOT_PERSISTED", { date: today, trades: trades.length });
+      await sendAlert(
+        `🚨 Trade run NOT RECORDED — ${today}`,
+        `The orders were placed but the run could not be written to the store, so today's fills are `
+        + `missing from the ledger. They will surface as "uncaptured orders" in /api/verify; the next `
+        + `autopilot run should capture them.`,
+      ).catch(() => {});
+    }
     console.log("CORE_RUN_SAVED");
 
     // Signal-attribution ledger: snapshot the signals present on each confirmed BUY, so their

@@ -143,15 +143,38 @@ export async function redisPost(command: string, body: unknown, signal?: AbortSi
   return json.result;
 }
 
-export async function saveRun(run: TradeRun): Promise<void> {
+/**
+ * Persist a run. Returns whether it actually landed — DO NOT IGNORE IT.
+ *
+ * This used to return void and swallow every error, which made an unpersisted run indistinguishable
+ * from a saved one AT THE CALL SITE. On 2026-10-06 the main-book stop correctly sold ILMN at
+ * $276.75 on a -5.8% break, the save did not land, and drop-check carried straight on to email
+ * "🔴 Risk-Exit Triggered" — a success notice for a run that does not exist. The fill then surfaced
+ * as an "uncaptured order", the reviewer built a false theory on it, and the trade is absent from
+ * the record that every return, sleeve split and attribution number is computed from. There are
+ * ZERO [RISK-EXIT] runs across the whole stored history, so this is unlikely to have been the first.
+ *
+ * Callers that go on to CLAIM something happened — an alert, an email, a success response — must
+ * branch on this. A write that silently does nothing is the most expensive kind of failure here,
+ * because everything downstream keeps working on a book that is quietly wrong.
+ *
+ * Deliberately still does not throw: the trade route calls this AFTER orders are placed, and an
+ * exception there would abort the rest of the post-trade bookkeeping over a storage problem that
+ * has already happened. The caller decides what a failed save means for it.
+ */
+export async function saveRun(run: TradeRun): Promise<boolean> {
   try {
     const serialized = JSON.stringify(run);
     await redisPost("pipeline", [
       ["LPUSH", RUNS_KEY, serialized],
       ["LTRIM", RUNS_KEY, 0, MAX_RUNS - 1],
     ]);
-  } catch {
-    console.warn("Upstash unavailable — run not saved to dashboard");
+    return true;
+  } catch (e) {
+    // Loud, and specific about the consequence — "not saved to dashboard" undersold it: the run
+    // store is the ledger, not a display cache.
+    console.error("SAVE_RUN_FAILED", { date: run.date, timestamp: run.timestamp, error: String(e) });
+    return false;
   }
 }
 

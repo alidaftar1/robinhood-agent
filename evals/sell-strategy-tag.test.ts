@@ -566,3 +566,38 @@ describe("planCapture", () => {
   });
 
 });
+
+// ── saveRun must be able to say it failed ────────────────────────────────────
+// It returned void and swallowed every error, so an unpersisted run was indistinguishable from a
+// saved one at the call site. On 2026-10-06 the main-book stop correctly sold ILMN at $276.75 on a
+// -5.8% break, the save did not land, and drop-check went straight on to email "🔴 Risk-Exit
+// Triggered" — a success notice for a run that does not exist. Zero [RISK-EXIT] runs exist across
+// the whole stored history.
+import { saveRun } from "../lib/run-store";
+
+describe("saveRun reports whether the write landed", () => {
+  const run = { timestamp: "2026-10-06T17:00:00Z", date: "2026-10-06", summary: "[RISK-EXIT] Sold: ILMN", positions: [], trades: [] } as any;
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+
+  test("returns FALSE when the store is unreachable, instead of pretending", () => {
+    // The whole point: a caller that goes on to claim success must be able to branch on this.
+    process.env.UPSTASH_REDIS_REST_URL = "http://127.0.0.1:1";  // nothing listens here
+    return saveRun(run).then((ok) => {
+      expect(ok).toBe(false);
+    }).finally(() => {
+      if (url === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
+      else process.env.UPSTASH_REDIS_REST_URL = url;
+    });
+  });
+
+  test("it still does not THROW — the trade route calls it after orders are placed", () => {
+    // A storage failure must not abort post-trade bookkeeping over something already done.
+    process.env.UPSTASH_REDIS_REST_URL = "http://127.0.0.1:1";
+    return saveRun(run).then((ok) => {
+      expect(ok).toBe(false);   // resolved, not rejected
+    }).finally(() => {
+      if (url === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
+      else process.env.UPSTASH_REDIS_REST_URL = url;
+    });
+  });
+});
