@@ -99,6 +99,35 @@ export const FIXTURES: ReviewerFixture[] = [
     }),
   },
   {
+    // 2026-10-06, the live false positive. The owner trades manually in this account, so a run can
+    // legitimately show fills the agent never placed. The reviewer reported HIGH that the three
+    // DECIDED buys (MU/ROST/GOOGL) had filled at the broker and gone unrecorded — none of them
+    // appears in the uncaptured orders, which are the owner's own TRGP/LLY/HWM/MRVL top-ups and
+    // TGT/APA/EXPD/ILMN sells. It also reported the cap-drop notes as missing while all three are
+    // on this very run. Both cost nothing to check and both are stated in the registry; this
+    // fixture is what makes "it stopped doing that" a measured claim rather than a hope.
+    id: "owner-manual-trades-not-a-lost-fill",
+    shouldFlag: true,
+    expected:
+      "the position/cash discrepancies come from the OWNER's own manual trades, NOT from the decided buys MU/ROST/GOOGL going unrecorded — and the cap correctly dropped those three WITH notes on this run, so they are not missing",
+    note: "10-06: reviewer joined TRADE_DECISION.buys to uncapturedOrders without intersecting symbols, and read the cap notes off the previous day's run.",
+    run: mkRun({
+      date: "2026-10-06", cash: 533.88,
+      buySizingAdjustments: [
+        "MU buy DROPPED — main book at its 6-position cap (8 kept, 0 new slot(s) available)",
+        "ROST buy DROPPED — main book at its 6-position cap (8 kept, 0 new slot(s) available)",
+        "GOOGL buy DROPPED — main book at its 6-position cap (8 kept, 0 new slot(s) available)",
+      ],
+      positions: [p("APA", "11.78", "43.52"), p("HWM", "0.88", "231.48"), p("LLY", "0.10", "1145.88"),
+                  p("MRVL", "0.37", "272.24"), p("EXPD", "0.41", "192.23"), p("TRGP", "0.27", "283.44"),
+                  p("TGT", "0.36", "151.56"), p("ILMN", "0.19", "277.88"), p("NVDA", "2.09", "237.03"),
+                  p("AVGO", "0.56", "361.36")],
+      influencerPositions: [p("NVDA", "2.09", "237.03"), p("AVGO", "0.56", "361.36")],
+      agenticDailyReturn: 0.0112, mainDailyReturn: 0.0057, influencerDailyReturn: 0.0253,
+      summary: "## Analysis\nMain book is at the 6-position cap with 8 held, so no new names could be added. TRADE_DECISION:{\"thesis\":\"...\",\"sells\":[],\"buys\":[{\"symbol\":\"MU\",\"quantity\":1,\"price\":175,\"strategy\":\"main\"},{\"symbol\":\"ROST\",\"quantity\":1,\"price\":160,\"strategy\":\"main\"},{\"symbol\":\"GOOGL\",\"quantity\":1,\"price\":150,\"strategy\":\"main\"}]}",
+    }),
+  },
+  {
     id: "clean-run-control",
     shouldFlag: false,
     note: "A healthy, internally-consistent, diversified run — the reviewer should stay quiet (specificity).",

@@ -28,6 +28,30 @@ export interface KnownIssue {
 
 export const KNOWN_ISSUES: KnownIssue[] = [
   {
+    date: "2026-10-06",
+    title: "Uncaptured orders attributed to the agent's own dropped buys, without matching symbols",
+    lesson:
+      "The owner trades MANUALLY in this account — that is normal, not a defect. On 10-06 he sold TGT/EXPD/ILMN, trimmed APA and topped up TRGP/LLY/HWM/MRVL by hand. The reviewer saw TRADE_DECISION.buys = [MU, ROST, GOOGL] and 8 uncaptured orders, and reported HIGH that the three decided buys had filled at the broker but gone unrecorded (the registry #32 signature). None of MU, ROST or GOOGL appeared in ANY of the 8 orders: the two lists were joined on vibes, not on symbols. The real cause was the owner's own trading, and the three buys were correctly DROPPED by the position cap.",
+    check:
+      "Before attributing uncaptured orders to a decided-but-unrecorded buy, INTERSECT the symbol sets. If no symbol in diff.uncapturedOrders matches a symbol in TRADE_DECISION.buys, the orders are not those buys — they are almost certainly the owner's own trades, and the correct report is reconciliation, not a lost fill. Since 2026-10-06 /api/verify?capture=1 records the owner's fills into trades[] at their real broker prices, so uncaptured orders SURVIVING into the email means capture failed or was not run — check the `capture` block (recorded / reconciles / residual) before theorising about execution failures.",
+  },
+  {
+    date: "2026-10-06",
+    title: "A guard's note read from the WRONG day's run and reported missing",
+    lesson:
+      "The reviewer reported HIGH that today's three decided buys had vanished with 'no buySizingAdjustments note', citing a cap-drop note 'from the previous day's run'. All three notes were present in TODAY's run — 'MU/ROST/GOOGL buy DROPPED — main book at its 6-position cap (8 kept, 0 new slot(s) available)'. It had read 10-05's note, which says '10 kept', and concluded today's was absent. Registry #25 says every drop path must leave a note; the note was there and the cap was working exactly as designed.",
+    check:
+      "buySizingAdjustments is PER-RUN. Before reporting a missing drop note, read the notes on the run being reviewed and quote them. The cap note embeds the position count ('N kept'); if that number does not match today's main-book size you are reading another day's run. A buy dropped WITH a matching note is a guard working, never an anomaly.",
+  },
+  {
+    date: "2026-10-06",
+    title: "A repaired whole-account return left the SLEEVE split computed from the unrepaired trades",
+    lesson:
+      "patchTrades recomputed agenticDailyReturn from the repaired trade list but not the per-sleeve returns, so computeSleeveReturns still saw NEM and KO leave the main book with no offsetting sell and booked their whole value as a loss: mainDailyReturn -27.65% beside a CORRECT whole-account +1.12%. The whole-account figure escaped because it divides by TOTAL value, which includes the cash the sale produced. It compounded into the dashboard's headline Main Book Return as -30.90%. Nothing caught it — clampSleeveReturn only fires above 50%, and no deterministic check compares the two. The OWNER spotted it on the dashboard.",
+    check:
+      "Compare mainDailyReturn and influencerDailyReturn against agenticDailyReturn for the day. A sleeve return that differs from the whole-account return by more than a few percentage points, on a day with no large position change in that sleeve, is a phantom from unrecorded trades rather than performance — say so. Also treat a REPAIR that moves any return in the FLATTERING direction as suspect and state the before/after explicitly: on 2026-10-06 a recomputeSleeves run that correctly fixed the main book simultaneously nulled two influencer LOSS days and moved that sleeve +8.3 points, and the fix was only noticed because the owner said the card looked wrong.",
+  },
+  {
     date: "2026-06-23",
     title: "Silent self-heal masks a failed morning",
     lesson:
