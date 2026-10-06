@@ -339,3 +339,54 @@ describe("buildInferredSells", () => {
     expect(out.unreconstructable).toEqual([]);
   });
 });
+
+// ── the repair must fix the SLEEVE split too ─────────────────────────────────
+// patchTrades recomputed only the whole-account return, so computeSleeveReturns still ran against
+// the unrepaired trade list: the sold position vanished from the main book with no offsetting sell
+// and its ENTIRE value booked as a phantom loss for that sleeve. Live on 2026-10-06 that stored
+// mainDailyReturn -27.65% beside a correct whole-account +1.12% — the whole-account figure divides
+// by TOTAL value including the cash the sale produced, so it absorbed what the sleeve could not —
+// and it compounded into the dashboard's headline Main Book Return as -30.90%. Nothing clamped it
+// (SLEEVE_EXTREME_RETURN is 50%) and no reviewer check covers it.
+import { computeSleeveReturns, clampSleeveReturn } from "../lib/run-store";
+
+describe("inferred sells repair the sleeve returns, not just the headline", () => {
+  const p = (symbol: string, quantity: string, price: string): PositionSnapshot =>
+    ({ symbol, quantity, avgCost: price, price } as PositionSnapshot);
+  // Yesterday: main KO (2 x $55 = $110) + APA (4 x $50 = $200) + sleeve NVDA (2 x $180).
+  // Today KO is gone, sold by hand. APA survives on purpose: selling the ONLY main position empties
+  // the sleeve, and computeSleeveReturns nulls a sleeve whose book collapses (the rebuilt-from-cash
+  // guard), which would mask the bug instead of exposing it. Prices are flat, so the true main
+  // return is 0 and anything else is an artifact.
+  const prevPositions = [p("KO", "2", "55"), p("APA", "4", "50"), p("NVDA", "2", "180")];
+  const prevInfluencer = [p("NVDA", "2", "180")];
+  const positions = [p("APA", "4", "50"), p("NVDA", "2", "180")];
+  const influencer = [p("NVDA", "2", "180")];
+
+  test("WITHOUT the inferred sell the main sleeve books a phantom total loss", () => {
+    // Characterises the bug, so the fix below is measured against a real baseline.
+    const raw = computeSleeveReturns(positions, [], influencer, prevInfluencer, prevPositions);
+    // KO's $110 against a $310 main book = -35.5%, on a day the main book did not move at all.
+    expect(raw.mainDailyReturn!).toBeCloseTo(-110 / 310, 6);
+  });
+
+  test("WITH it the main sleeve is flat, and the clamp is NOT what saves us", () => {
+    const { sells } = buildInferredSells(
+      { positions: prevPositions, influencerPositions: prevInfluencer, trades: [] },
+      { positions, trades: [] });
+    expect(sells.map(t => [t.symbol, t.strategy])).toEqual([["KO", "main"]]);
+    const raw = computeSleeveReturns(positions, sells, influencer, prevInfluencer, prevPositions);
+    expect(raw.mainDailyReturn).toBeCloseTo(0, 6);
+    // The phantom was -27.65% live — well inside the 50% clamp, which is why it reached the
+    // dashboard. Pinning this stops anyone concluding the clamp covers this class of bug.
+    expect(clampSleeveReturn(-0.2765)).toBe(-0.2765);
+  });
+
+  test("the influencer sleeve is untouched by a MAIN-book repair", () => {
+    const { sells } = buildInferredSells(
+      { positions: prevPositions, influencerPositions: prevInfluencer, trades: [] },
+      { positions, trades: [] });
+    const raw = computeSleeveReturns(positions, sells, influencer, prevInfluencer, prevPositions);
+    expect(raw.influencerDailyReturn).toBeCloseTo(0, 6);
+  });
+});

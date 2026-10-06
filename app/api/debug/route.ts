@@ -4,7 +4,7 @@ import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { prunePicksByFirstSeen, resetLedger } from "@/lib/influencer-ledger";
-import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells } from "@/lib/run-store";
+import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, clampSleeveReturn } from "@/lib/run-store";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -153,6 +153,26 @@ export async function GET(request: Request) {
         // which inflates apparent proceeds.
         const plan = buildInferredSells(prevDay, { positions: latest.positions, trades: realTrades });
 
+        // Sleeve returns are derived from the trade list too, so a repair that recomputes only the
+        // whole-account number leaves them computed against the UNREPAIRED one. That is not cosmetic:
+        // computeSleeveReturns sees the sold position vanish from the main book with no offsetting
+        // sell, and books its entire value as a phantom loss for that sleeve — 2026-10-06 stored
+        // mainDailyReturn -27.65% (NEM $419.79 + KO $54.75 against a ~$1,716 main book) while the
+        // whole-account return was a correct +1.12%, because that one divides by TOTAL value
+        // including the cash the sale produced. It compounded into the dashboard's headline Main
+        // Book Return as -30.90%. Under SLEEVE_EXTREME_RETURN (50%) nothing clamped it, and no
+        // reviewer check covers it. ?recomputeSleeves repairs history; this stops it recurring.
+        const sleevesFor = (trades: typeof realTrades) => {
+          const raw = computeSleeveReturns(
+            latest.positions ?? [], trades,
+            latest.influencerPositions ?? [], prevDay.influencerPositions ?? [], prevDay.positions ?? [],
+          );
+          return {
+            influencerDailyReturn: clampSleeveReturn(raw.influencerDailyReturn),
+            mainDailyReturn: clampSleeveReturn(raw.mainDailyReturn),
+          };
+        };
+
         if (plan.unreconstructable.length > 0) {
           // The day's INVENTORY disagrees with its records. The sells we CAN reconstruct are still
           // written — the objection is to the day's number, not to those records, and discarding a
@@ -177,6 +197,10 @@ export async function GET(request: Request) {
           await updateLatestRun({
             ...latest, trades: patchedTrades,
             agenticDailyReturn: null, agenticImpliedTransfer: null, returnLocked: true,
+            // The per-sleeve split is derived from the SAME inventory, so it is no more
+            // establishable than the whole-account number. Leaving the old values would publish a
+            // main/influencer attribution computed from a book we have just declared wrong.
+            influencerDailyReturn: null, mainDailyReturn: null,
           });
           console.error("PATCH_TRADES_UNRECONSTRUCTABLE", { date: latest.date, unreconstructable: plan.unreconstructable });
           // STRUCTURED, not just prose. The autopilot classifies patchTrades' outcome by string
@@ -198,7 +222,7 @@ export async function GET(request: Request) {
               )
             : null;
 
-          await updateLatestRun({ ...latest, trades: patchedTrades, agenticDailyReturn: agenticResult?.dailyReturn ?? null, agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null });
+          await updateLatestRun({ ...latest, trades: patchedTrades, agenticDailyReturn: agenticResult?.dailyReturn ?? null, agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null, ...sleevesFor(patchedTrades) });
           results.patchTrades = `patched ${plan.sells.length} sell(s): ${plan.sells.map(s => `${s.symbol} ${s.quantity}@$${s.avgPrice}[${s.strategy}]`).join(", ")} → return ${agenticResult?.dailyReturn != null ? (agenticResult.dailyReturn * 100).toFixed(2) + "%" : "null"}`;
         } else if ((latest.trades ?? []).length !== realTrades.length) {
           // Nothing left to infer, but the STORE still holds inferred sells that are no longer
@@ -221,6 +245,7 @@ export async function GET(request: Request) {
             ...latest, trades: realTrades,
             agenticDailyReturn: agenticResult?.dailyReturn ?? null,
             agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null,
+            ...sleevesFor(realTrades),
           });
           results.patchTrades = `dropped ${obsolete.length} obsolete inferred sell(s) now covered by real fills `
             + `(${obsolete.map(t => `${t.symbol} x${t.quantity}`).join(", ")}) → return `
