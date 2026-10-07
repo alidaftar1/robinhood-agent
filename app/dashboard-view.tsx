@@ -780,6 +780,16 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
               <div style={s.runHeader}>
                 <div>
                   <div style={s.date}>{run.date}</div>
+                  {/* A run is a WINDOW, not a day, and heading it with a single date is what makes
+                      its contents look misfiled. The snapshot is 07:30 PT, so this card covers
+                      07:30 the previous session to 07:30 today — the last ~5.5h of one session plus
+                      the first hour of the next. The return is measured across exactly that span,
+                      and a trade filled inside it belongs here even though it happened "yesterday".
+                      Saying so is cheaper and more honest than moving trades to a card whose return
+                      does not contain them. */}
+                  <div style={s.meta}>
+                    covers {runs[i + 1]?.date ?? "start"} 7:30am → {run.date} 7:30am PT
+                  </div>
                   <div style={s.meta}>
                     {new Date(run.timestamp).toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit" })} PT ·{" "}
                     {run.market.stocksLoaded} stocks · {run.market.headlinesLoaded} headlines
@@ -824,7 +834,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                   <div style={s.tradesLabel}>
                     {filledOn === run.date
                       ? "Trades executed"
-                      : `Filled ${filledOn} · recorded in this run (runs snapshot at 7:30am)`}
+                      : `Filled ${filledOn} — inside this window`}
                   </div>
                   <div style={s.tradeRow}>
                     {(group ?? []).map((t, j) => (
