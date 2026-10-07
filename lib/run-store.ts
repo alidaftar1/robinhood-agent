@@ -20,6 +20,23 @@ export interface TradeSnapshot {
   avgPrice: string;
   state: string;
   strategy?: "main" | "influencer"; // which sub-portfolio this trade belongs to
+  /**
+   * WHO placed this order. The owner trades this account by hand periodically, so "a fill exists"
+   * and "the agent did it" are different facts and must not share a field.
+   *
+   * MUST BE STAMPED AT WRITE TIME — it cannot be recovered afterwards. The obvious discriminators
+   * all fail: a human fill and an agent fill are both `state: "filled"` at the broker, and
+   * `refPrice` is absent on both (only the trade route stamps it; drop-check and earnings-exit do
+   * not). 2026-10-06 is the worked example — the agent's own ILMN stop-loss and the owner's seven
+   * trades were indistinguishable in the store, which is what let the skeptical reviewer build a
+   * false theory about unrecorded agent buys, and what made me misattribute the ILMN exit to the
+   * owner.
+   *
+   * "agent"  — placed by /api/trade, /api/drop-check or /api/earnings-exit.
+   * "human"  — discovered at the broker by planCapture with no agent order behind it.
+   * absent   — written before this field existed. UNKNOWN, not "agent": do not default it.
+   */
+  actor?: "agent" | "human";
   /** The date the fill actually happened, when the broker told us — NOT the run's date.
    *
    *  A run snapshots at 07:30, so a trade made during a session falls between that snapshot and the
@@ -1275,7 +1292,7 @@ export function planCapture(
     if (!hit) continue; // no evidence — leave it to patchTrades to estimate as before
     used.add(hit);
     record.push({
-      ...est, avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled",
+      ...est, avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled", actor: "human",
       ...(hit.createdAt ? { tradedOn: hit.createdAt } : {}),
     });
     supersede.push(...inferredSells.filter(t => t.symbol === est.symbol));
@@ -1290,7 +1307,7 @@ export function planCapture(
     used.add(hit);
     record.push({
       symbol: u.symbol, side: "buy", quantity: u.excessQty.toFixed(6),
-      avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled",
+      avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled", actor: "human",
       ...(hit.createdAt ? { tradedOn: hit.createdAt } : {}),
       // Sleeve membership is read from the run that held the book, the same rule sells use.
       strategy: inferSellStrategy(u.symbol, heldRun.influencerPositions, heldRun.trades ?? []),
@@ -1350,6 +1367,38 @@ export function applySellTagBackfill(
     for (const { symbol, strategy } of p.tagged) {
       const t = (run.trades ?? []).find(x => x.side === "sell" && x.symbol === symbol && !x.strategy);
       if (t) { t.strategy = strategy; n++; }
+    }
+  }
+  return n;
+}
+
+/**
+ * Set `actor` (and optionally `tradedOn`) on trades that predate those fields.
+ *
+ * Provenance CANNOT be inferred after the fact — a human fill and an agent fill are both
+ * `state: "filled"`, and `refPrice` is absent on both, so there is no signal in the record to read.
+ * The only correct source is whoever knows: for a run written before the field existed, that is the
+ * owner. This exists so those rows can be corrected deliberately rather than guessed at, and so the
+ * guess never gets encoded as a heuristic.
+ *
+ * Only ever FILLS A GAP: a trade that already carries `actor` is left alone, so a correction cannot
+ * overwrite what a writer recorded first-hand. Matching is by symbol+side, which is unambiguous
+ * within one run — a run never holds two trades of the same side on the same symbol (the executor
+ * emits one order per symbol per side).
+ *
+ * Returns the number of trades changed. Pure: the caller decides whether to persist.
+ */
+export function applyActorTag(
+  run: TradeRun,
+  tags: Array<{ symbol: string; side: string; actor: "agent" | "human"; tradedOn?: string }>,
+): number {
+  let n = 0;
+  for (const tag of tags) {
+    for (const t of run.trades ?? []) {
+      if (t.symbol !== tag.symbol || t.side !== tag.side || t.actor) continue;
+      t.actor = tag.actor;
+      if (tag.tradedOn) t.tradedOn = tag.tradedOn;
+      n++;
     }
   }
   return n;

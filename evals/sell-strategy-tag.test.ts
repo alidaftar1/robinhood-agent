@@ -620,3 +620,75 @@ describe("saveRun reports whether the write landed", () => {
     });
   });
 });
+
+// ── provenance: who placed the trade ─────────────────────────────────────────
+// The owner trades this account by hand periodically, so "a fill exists" and "the agent did it" are
+// different facts. They cannot be told apart after the fact — both are state:"filled" and neither
+// carries refPrice (only the trade route stamps it; drop-check and earnings-exit do not) — so the
+// tag has to be written by whoever placed the order. On 2026-10-06 that gap let the reviewer report
+// the agent's decided buys as having executed unrecorded, and led me to misattribute the agent's own
+// ILMN stop-loss to the owner.
+import { collectFills } from "../lib/slippage";
+import { applyActorTag } from "../lib/run-store";
+
+describe("trade provenance", () => {
+  const pos2 = (symbol: string, quantity: string, price: string): PositionSnapshot =>
+    ({ symbol, quantity, avgCost: price, price } as PositionSnapshot);
+  const ord = (side: string, symbol: string, quantity: string, avgPrice: string): LiveOrder =>
+    ({ side, symbol, quantity, avgPrice, state: "filled", createdAt: "2026-10-06" });
+
+  test("a captured fill is tagged human — the agent did not place it", () => {
+    const heldRun = {
+      positions: [pos2("KO", "2", "55"), pos2("APA", "4", "50")],
+      influencerPositions: [] as PositionSnapshot[], trades: [] as TradeSnapshot[],
+    };
+    const p = planCapture(heldRun, { positions: [pos2("APA", "4", "50")], trades: [] },
+                          [ord("sell", "KO", "2", "56.10")], { from: "2026-10-05", to: "2026-10-06" });
+    expect(p.record[0].actor).toBe("human");
+  });
+
+  test("a captured BUY is tagged human too", () => {
+    const heldRun = {
+      positions: [pos2("KO", "2", "55")],
+      influencerPositions: [] as PositionSnapshot[], trades: [] as TradeSnapshot[],
+    };
+    const p = planCapture(heldRun, { positions: [pos2("KO", "2", "55"), pos2("HWM", "1", "228")], trades: [] },
+                          [ord("buy", "HWM", "1", "227.80")], { from: "2026-10-05", to: "2026-10-06" });
+    expect(p.record.map(t => [t.side, t.actor])).toEqual([["buy", "human"]]);
+  });
+
+  test("an INFERRED trade gets no actor — a reconstruction does not know who placed it", () => {
+    // Guessing "human" here would be wrong exactly when it matters: the 2026-10-06 ILMN exit was
+    // the AGENT's stop-loss whose run failed to persist.
+    const heldRun = {
+      positions: [pos2("KO", "2", "55"), pos2("APA", "4", "50")],
+      influencerPositions: [] as PositionSnapshot[], trades: [] as TradeSnapshot[],
+    };
+    const out = buildInferredSells(heldRun, { positions: [pos2("APA", "4", "50")], trades: [] });
+    expect(out.sells[0].actor).toBeUndefined();
+  });
+
+  test("applyActorTag fills a gap but NEVER overwrites a first-hand tag", () => {
+    const run = { date: "2026-10-06", trades: [
+      { symbol: "ILMN", side: "sell", quantity: "0.2", avgPrice: "276.75", state: "filled", actor: "agent" as const },
+      { symbol: "TGT", side: "sell", quantity: "0.37", avgPrice: "154.17", state: "filled" },
+    ] } as any;
+    const n = applyActorTag(run, [
+      { symbol: "ILMN", side: "sell", actor: "human" },           // must be refused
+      { symbol: "TGT", side: "sell", actor: "human", tradedOn: "2026-10-06" },
+    ]);
+    expect(n).toBe(1);
+    expect(run.trades[0].actor).toBe("agent");                     // untouched
+    expect(run.trades[1].actor).toBe("human");
+    expect(run.trades[1].tradedOn).toBe("2026-10-06");
+  });
+
+  test("slippage EXCLUDES human fills — it measures the AGENT's execution", () => {
+    const runs = [{ date: "2026-10-06", trades: [
+      { symbol: "AAA", side: "buy", quantity: "1", avgPrice: "101", state: "filled", refPrice: "100", actor: "agent" as const },
+      { symbol: "BBB", side: "buy", quantity: "1", avgPrice: "110", state: "filled", refPrice: "100", actor: "human" as const },
+    ] }] as any;
+    const fills = collectFills(runs);
+    expect(fills.map(f => f.symbol)).toEqual(["AAA"]);
+  });
+});

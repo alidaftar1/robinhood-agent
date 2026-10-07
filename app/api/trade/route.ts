@@ -1377,7 +1377,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
           const v = verified.get(s.symbol);
           if (!v) continue;
           const fill = parseFloat(v.avgPrice) > 0 ? v.avgPrice : String(priceMap.get(s.symbol) ?? 0);
-          trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, strategy: sellStrategyTag(s.symbol), ...refPriceOf(s.symbol) });
+          trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, actor: "agent", strategy: sellStrategyTag(s.symbol), ...refPriceOf(s.symbol) });
           // Record a MAIN-book discretionary sell so a next-run re-buy trips the rotation-churn flag.
           // (Influencer-sleeve sells have their own rotation logic; the churn concern is the main book.)
           // EXCLUDE a concentration TRIM — it's a risk reduction of a still-held name, not an exit, so
@@ -1518,7 +1518,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
           if (!real) continue;
           const strategy: "main" | "influencer" =
             (b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol))) ? "influencer" : "main";
-          trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state, strategy, ...refPriceOf(b.symbol) });
+          trades.push({ symbol: b.symbol, side: "buy", quantity: real.quantity, avgPrice: real.avgPrice, state: real.state, actor: "agent", strategy, ...refPriceOf(b.symbol) });
         }
         if (missing.length > 0) {
           console.warn("BUY_STILL_MISSING_AFTER_RETRY", { missing: missing.map(b => b.symbol) });
@@ -1589,7 +1589,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
             const avgPrice = priceMap.get(pos.symbol) ?? parseFloat(pos.avgCost);
             // Tagged like any other sell — an inferred sell is still a real disposal, and leaving it
             // untagged is one of the ways the sleeve accounting lost track of closed positions.
-            trades.push({ symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred", strategy: sellStrategyTag(pos.symbol) });
+            trades.push({ symbol: pos.symbol, side: "sell", quantity: pos.quantity, avgPrice: avgPrice.toFixed(2), state: "inferred", strategy: sellStrategyTag(pos.symbol) });  // no actor: a reconstruction does not know who placed it
             console.log("INFERRED_SELL", { symbol: pos.symbol, quantity: pos.quantity, avgPrice: avgPrice.toFixed(2) });
           }
         }

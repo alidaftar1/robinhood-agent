@@ -339,7 +339,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
         const v = verified.get(s.symbol);
         if (!v) continue;
         const fill = parseFloat(v.avgPrice) > 0 ? v.avgPrice : String(liteMap.get(s.symbol)?.price ?? priceMap.get(s.symbol) ?? 0);
-        trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, strategy: sellStrategyTag(s.symbol) });
+        trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, actor: "agent", strategy: sellStrategyTag(s.symbol) });
       }
       if (missing.length > 0) {
         console.warn("DROP_CHECK_SELL_STILL_MISSING", { missing: missing.map((s) => s.symbol) });

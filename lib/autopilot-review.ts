@@ -70,6 +70,13 @@ function compactRun(r: TradeRun, isRebalanceDay?: boolean) {
       price: t.avgPrice,
       state: t.state,
       strategy: t.strategy ?? "main",
+      // WHO placed it. Without this the reviewer cannot tell the owner's manual trades from the
+      // agent's, and on 2026-10-06 it did exactly that: it saw eight fills it had no decision
+      // record for and reported HIGH that the agent's decided buys had executed unrecorded. The
+      // owner trades this account by hand periodically, so unexplained-looking fills are a NORMAL
+      // state. `undefined` means the record predates the field — unknown, not "agent".
+      actor: t.actor ?? "unknown",
+      ...(t.tradedOn ? { filledOn: t.tradedOn } : {}),
     })),
     positions: (r.positions ?? []).map((p) => ({
       symbol: p.symbol,
@@ -108,6 +115,18 @@ the run — do not assume which day it is:
     not reason about it, and do not treat a main-book buy on such a row as a bypassed guardrail.
 Idle cash is worth raising when it persists THROUGH a full rebalance window with buyable names
 available. The owner keeps catching problems the automated checks miss — your job is to catch them first.
+
+WHO TRADED — READ BEFORE REPORTING ANY "UNRECORDED FILL": the owner trades this account BY HAND
+periodically, and those fills are a NORMAL state, not a defect. Every trade carries \`actor\`:
+  · "human" — the OWNER placed it. It is already reconciled; report it as context if it matters
+    (concentration, cash), never as a lost agent order or an execution failure.
+  · "agent" — placed by the trade run, drop-check or earnings-exit.
+  · "unknown" — written before the field existed. Unknown is NOT "agent"; do not assume either way.
+A fill you have no agent decision record for is therefore expected. Before claiming a DECIDED buy
+executed without being recorded, INTERSECT the symbols: if nothing in the run's decided buys appears
+among the unexplained fills, they are not those buys. Note also that \`filledOn\` may be an EARLIER
+date than the run's — a run snapshots at 07:30, so a trade made during a session is recorded on the
+NEXT run. That is correct, not a backdated or duplicated record.
 
 You are reviewing a recovered, reconciled run, so do NOT re-report things the deterministic layer already handles (cash reconciliation, missing-sell patching, extreme >30% returns). Look for JUDGMENT-level problems: bad entries, derived numbers that don't add up, concentration drift, signs the morning silently failed and recovered, anything that smells wrong.
 

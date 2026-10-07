@@ -55,6 +55,13 @@ export function collectFills(runs: TradeRun[]): Fill[] {
       // `inferred` sells are reconstructed by patchTrades, not observed fills — their avgPrice is a
       // derived estimate, so including them would measure our own arithmetic, not the broker's.
       if (t.state === "inferred") continue;
+      // A HUMAN trade is a real fill, but it is not the AGENT's execution. Slippage asks "what did
+      // the agent's own order cost against the price it decided on", so the owner's manual fills
+      // belong to a different question entirely. They are excluded here EXPLICITLY rather than
+      // left to fall out of the missing-refPrice check below: that is an accident of the owner not
+      // having a decision price, and the day someone stamps one it would silently start polluting
+      // the one measurement that resolves in weeks.
+      if (t.actor === "human") continue;
       const bps = slippageBps(t);
       if (bps == null) continue;
       out.push({ date: r.date, symbol: t.symbol, side: t.side, slippageBps: bps });

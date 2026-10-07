@@ -356,8 +356,9 @@ export async function GET(request: Request) {
 
   // A fill made during a session lands on the NEXT run, because runs snapshot at 07:30. Correct for
   // the return window, misleading as a date — so say so when the broker told us it differs.
-  const whenFilled = (t: { tradedOn?: string }) =>
-    t.tradedOn && t.tradedOn !== today ? ` (filled ${t.tradedOn})` : "";
+  const whenFilled = (t: { tradedOn?: string; actor?: string }) =>
+    (t.actor === "human" ? " 👤manual" : "")
+    + (t.tradedOn && t.tradedOn !== today ? ` (filled ${t.tradedOn})` : "");
 
   // ─── Derive display data from (possibly repaired) run ────────────────────────
 

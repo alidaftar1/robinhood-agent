@@ -4,7 +4,7 @@ import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { prunePicksByFirstSeen, resetLedger } from "@/lib/influencer-ledger";
-import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, clampSleeveReturn } from "@/lib/run-store";
+import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, clampSleeveReturn, applyActorTag } from "@/lib/run-store";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -337,6 +337,33 @@ export async function GET(request: Request) {
       results.patchPositionPrice = ok ? `set ${sym} price=${price} on ${date}` : `no run found for ${date}`;
     } else {
       results.patchPositionPrice = "bad format — use DATE:SYMBOL:PRICE";
+    }
+  }
+
+  // Stamp provenance on trades written before `actor` existed. Format:
+  //   ?tagActor=DATE:SYMBOL:SIDE:agent|human[,SYMBOL:SIDE:actor...]
+  // Needed because provenance is NOT recoverable from the record — a human fill and an agent fill
+  // are both state:"filled" with no refPrice — so the only correct source is someone who knows.
+  // Never overwrites a tag a writer set first-hand; it only fills gaps.
+  const tagActor = url.searchParams.get("tagActor");
+  if (tagActor) {
+    const [date, ...rest] = tagActor.split(":");
+    const tags: Array<{ symbol: string; side: string; actor: "agent" | "human" }> = [];
+    for (const part of rest.join(":").split(",")) {
+      const [symbol, side, actor] = part.split(":");
+      if (symbol && (side === "buy" || side === "sell") && (actor === "agent" || actor === "human")) {
+        tags.push({ symbol, side, actor });
+      }
+    }
+    if (!date || tags.length === 0) {
+      results.tagActor = "bad format — use DATE:SYMBOL:SIDE:agent|human[,SYMBOL:SIDE:actor...]";
+    } else {
+      let changed = 0;
+      const ok = await updateRunByDate(date, (run) => { changed = applyActorTag(run, tags); return run; });
+      results.tagActor = ok
+        ? `tagged ${changed} trade(s) on ${date}: ${tags.map(t => `${t.side} ${t.symbol}=${t.actor}`).join(", ")}`
+          + (changed < tags.length ? ` — ${tags.length - changed} already tagged or not found (never overwritten)` : "")
+        : `no run found for ${date}`;
     }
   }
 

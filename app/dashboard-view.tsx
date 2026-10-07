@@ -810,6 +810,12 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                         <span>{t.side === "buy" ? "▲ BUY" : "▼ SELL"}</span>
                         <span>{t.symbol} ×{fmtQty(t.quantity)} @ ${parseFloat(t.avgPrice || "0").toFixed(2)}</span>
                         {t.strategy === "influencer" && <span style={{ fontSize: 10, opacity: 0.7 }}>📺</span>}
+                        {/* The owner trades this account by hand periodically. Marked so a manual
+                            fill is never read as the agent's decision — it affects the book but not
+                            the strategy's track record. */}
+                        {t.actor === "human" && (
+                          <span style={{ fontSize: 10, opacity: 0.8 }} title="Placed manually by you, not by the agent">👤 manual</span>
+                        )}
                         {/* Runs snapshot at 07:30, so a fill made during a session is recorded on the
                             NEXT run — right for the return window, wrong as a date. Shown only when
                             the broker told us it differs, so an ordinary same-day fill stays clean. */}
