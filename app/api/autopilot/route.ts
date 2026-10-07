@@ -184,6 +184,50 @@ export async function GET(request: Request) {
     }
   }
 
+  // ─── Live Robinhood verification ─────────────────────────────────────────────
+  // /api/verify runs Haiku+MCP server-side — compares live state to stored run.
+  //
+  // RUNS BEFORE THE AUTO-REPAIR PHASE, and the order is the whole point. ?capture=1 records the
+  // owner's manual fills from the broker at their REAL prices; patchTrades can only ESTIMATE the
+  // sells at the previous snapshot's mark and must REFUSE outright on the buys. Ground truth first,
+  // reconstruction for whatever is left over.
+  //
+  // It was the other way round on 2026-10-07 and the consequence was not merely a worse estimate:
+  // patchTrades ran first, found four unexplained arrivals (the owner's TRGP/LLY/HWM/MRVL top-ups),
+  // withheld the day's return and LOCKED it — and capture then declined, because declining on a
+  // locked run is exactly what it should do. The repair that could have fixed the day was shut out
+  // by the repair that could not. Do not move this back below the auto-repair phase.
+  let verifyResult: VerifyResult | null = null;
+
+  try {
+    const verifyRes = await fetch(`${host}/api/verify?capture=1`, {
+      headers: { Authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(90_000),
+    });
+    if (verifyRes.ok) {
+      verifyResult = await verifyRes.json() as VerifyResult;
+    }
+  } catch {
+    // Verification failed — non-fatal, note in email
+  }
+
+  {
+    const cap = (verifyResult as { capture?: { recorded?: number; reconciles?: boolean; trades?: string[]; residual?: unknown[] } } | null)?.capture;
+    if (cap?.recorded) {
+      autoFixed.push(`Recorded ${cap.recorded} of your own fill(s) from the broker: ${(cap.trades ?? []).join(", ")}.`);
+      // Refetch so the auto-repair phase below sees the captured trades and does not re-derive a
+      // discrepancy that no longer exists.
+      runs = await getRuns(30);
+      todayRun = runs.find(r => r.date === today) ?? todayRun;
+    }
+    if (cap && cap.recorded !== undefined && cap.reconciles === false && (cap.residual?.length ?? 0) > 0) {
+      // Writing something is not the same as the book adding up. Say so, or a partial capture reads
+      // as a completed repair.
+      issues.push(`Holdings still disagree with the records after capturing broker fills: `
+        + `${JSON.stringify(cap.residual)}. Reconcile against Robinhood.`);
+    }
+  }
+
   // ─── Auto-repair phase ────────────────────────────────────────────────────────
   // Fix issues mechanically before deciding what to alert on.
 
@@ -279,41 +323,7 @@ export async function GET(request: Request) {
     }
   }
 
-  // ─── Live Robinhood verification ─────────────────────────────────────────────
-  // /api/verify runs Haiku+MCP server-side — compares live state to stored run.
-
-  let verifyResult: VerifyResult | null = null;
-
-  try {
-    // ?capture=1 — RECORD the owner's manual fills rather than only reporting them. Without the
-    // flag verify is read-only, which is right for an audit called from anywhere else, but this is
-    // the one caller whose job is to repair the run before the email goes out. Ordered BEFORE the
-    // patchTrades fallback below on purpose: a real fill at its real price beats an estimate at the
-    // previous snapshot's mark, and whatever capture cannot explain still falls through to it.
-    const verifyRes = await fetch(`${host}/api/verify?capture=1`, {
-      headers: { Authorization: `Bearer ${secret}` },
-      signal: AbortSignal.timeout(90_000),
-    });
-    if (verifyRes.ok) {
-      verifyResult = await verifyRes.json() as VerifyResult;
-    }
-  } catch {
-    // Verification failed — non-fatal, note in email
-  }
-
   if (verifyResult) {
-    const cap = (verifyResult as { capture?: { recorded?: number; reconciles?: boolean; trades?: string[]; residual?: unknown[] } }).capture;
-    if (cap?.recorded) {
-      autoFixed.push(`Recorded ${cap.recorded} of your own fill(s) from the broker: ${(cap.trades ?? []).join(", ")}.`);
-      runs = await getRuns(30);
-      todayRun = runs.find(r => r.date === today) ?? todayRun;
-    }
-    if (cap && cap.recorded !== undefined && cap.reconciles === false && (cap.residual?.length ?? 0) > 0) {
-      // Writing something is not the same as the book adding up. Say so, or a partial capture reads
-      // as a completed repair.
-      issues.push(`Holdings still disagree with the records after capturing broker fills: `
-        + `${JSON.stringify(cap.residual)}. Reconcile against Robinhood.`);
-    }
     if (verifyResult.status === "discrepancy") {
       // Auto-fix: if position issues include missing-sell, run patchTrades
       const posIssues = verifyResult.diff?.positionIssues ?? [];

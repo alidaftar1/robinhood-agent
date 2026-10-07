@@ -260,10 +260,6 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     const prevRun = merged.find(r => r.date < storedRun.date);
     if (!prevRun) {
       capture = { ok: false, reason: "no previous run to use as a baseline" };
-    } else if (storedRun.returnLocked) {
-      // A locked day was withheld deliberately. Unlock it explicitly once reconciled rather than
-      // having an audit call quietly overwrite the decision to withhold.
-      capture = { ok: false, reason: `${storedRun.date} is returnLocked — reconcile, then /api/debug?patchDate=${storedRun.date}&unlock=1` };
     } else {
       const plan = planCapture(prevRun, storedRun, liveOrders, { from: prevRun.date, to: storedRun.date });
       if (plan.record.length === 0) {
@@ -278,12 +274,19 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
         const rawSleeves = computeSleeveReturns(
           storedRun.positions ?? [], trades,
           storedRun.influencerPositions ?? [], prevRun.influencerPositions ?? [], prevRun.positions ?? []);
+        // THE LOCK CLEARS ONLY IF THE BOOK NOW ADDS UP. patchTrades withholds and locks a day whose
+        // inventory disagrees with its records; that lock exists to stop patchDate recomputing from
+        // a book known to be wrong. Capture supplies the very records that were missing, so once
+        // `reconciles` is true the reason for the lock is gone and holding it would strand the day
+        // permanently — the owner would have to unlock by hand after every manual trade. If capture
+        // could NOT explain everything, the lock stays exactly where it was.
         const written = await updateRunByDate(storedRun.date, (run) => ({
           ...run, trades,
           agenticDailyReturn: agentic?.dailyReturn ?? null,
           agenticImpliedTransfer: agentic?.impliedTransfer ?? null,
           influencerDailyReturn: clampSleeveReturn(rawSleeves.influencerDailyReturn),
           mainDailyReturn: clampSleeveReturn(rawSleeves.mainDailyReturn),
+          ...(plan.reconciles ? { returnLocked: false } : {}),
         }));
         console.log("CAPTURED_UNCAPTURED_ORDERS", {
           date: storedRun.date, recorded: plan.record.length, superseded: plan.supersede.length,
