@@ -1392,6 +1392,18 @@ export function applySellTagBackfill(
 export function applyActorTag(
   run: TradeRun,
   tags: Array<{ symbol: string; side: string; actor?: "agent" | "human"; tradedOn?: string }>,
+  /**
+   * Replace a value that is already recorded. Off by default, because a later guess must not
+   * override what a writer knew first-hand.
+   *
+   * It exists because a first-hand tag can still be a FALSE CLAIM. On 2026-10-06 the drop-check
+   * recorded the owner's own ILMN sale as `actor: "agent"`: it triggered on a stale 07:30 snapshot
+   * that still showed ILMN held, tried to sell a position the owner had already closed, and
+   * verifySells — which asks the broker for "sell orders placed today" and matches BY SYMBOL — found
+   * the owner's fill and accepted it as confirmation of its own order. Only the owner can settle
+   * that, so the owner needs a way to say so.
+   */
+  force = false,
 ): { actors: number; dates: number } {
   let actors = 0, dates = 0;
   for (const tag of tags) {
@@ -1400,8 +1412,8 @@ export function applyActorTag(
       // The two fields have DIFFERENT rules and must be applied independently. Treating them as one
       // unit meant a trade that already carried `actor` could never be given its fill date — which
       // is precisely the state the first pass left every corrected trade in.
-      if (tag.actor && !t.actor) { t.actor = tag.actor; actors++; }
-      if (tag.tradedOn && !t.tradedOn) { t.tradedOn = tag.tradedOn; dates++; }
+      if (tag.actor && (force || !t.actor)) { t.actor = tag.actor; actors++; }
+      if (tag.tradedOn && (force || !t.tradedOn)) { t.tradedOn = tag.tradedOn; dates++; }
     }
   }
   return { actors, dates };

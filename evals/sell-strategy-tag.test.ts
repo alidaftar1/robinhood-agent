@@ -713,3 +713,26 @@ describe("trade provenance", () => {
     expect(fills.map(f => f.symbol)).toEqual(["AAA"]);
   });
 });
+
+// A writer's own tag can be a FALSE CLAIM. On 2026-10-06 drop-check recorded the owner's ILMN sale
+// as its own: it triggered on a stale 07:30 snapshot that still showed ILMN held, tried to sell a
+// position already closed, and verifySells — which asks the broker for "sell orders placed today"
+// and matches BY SYMBOL — accepted the owner's fill as confirmation of its own order.
+describe("applyActorTag force", () => {
+  const mk = () => ({ date: "2026-10-06", trades: [
+    { symbol: "ILMN", side: "sell", quantity: "0.199144", avgPrice: "276.75", state: "filled", actor: "agent" as const, tradedOn: "2026-10-06" },
+  ] }) as any;
+
+  test("without force a recorded tag stands — a later guess must not override first-hand data", () => {
+    const run = mk();
+    expect(applyActorTag(run, [{ symbol: "ILMN", side: "sell", actor: "human" }])).toEqual({ actors: 0, dates: 0 });
+    expect(run.trades[0].actor).toBe("agent");
+  });
+
+  test("with force the owner can correct it — only the owner knows who placed the order", () => {
+    const run = mk();
+    expect(applyActorTag(run, [{ symbol: "ILMN", side: "sell", actor: "human" }], true)).toEqual({ actors: 1, dates: 0 });
+    expect(run.trades[0].actor).toBe("human");
+    expect(run.trades[0].tradedOn).toBe("2026-10-06");   // untouched — not supplied
+  });
+});

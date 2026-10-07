@@ -362,11 +362,14 @@ export async function GET(request: Request) {
       results.tagActor = "bad format — use DATE:SYMBOL:SIDE:agent|human[:YYYY-MM-DD][,...]";
     } else {
       let changed = { actors: 0, dates: 0 };
-      const ok = await updateRunByDate(date, (run) => { changed = applyActorTag(run, tags); return run; });
+      // &force=1 replaces a value already recorded — needed when a WRITER's own tag is a false
+      // claim (see applyActorTag). Explicit so it can never happen by accident.
+      const force = url.searchParams.get("force") === "1";
+      const ok = await updateRunByDate(date, (run) => { changed = applyActorTag(run, tags, force); return run; });
       results.tagActor = ok
         ? `${date}: set actor on ${changed.actors} trade(s), fill date on ${changed.dates} `
           + `(${tags.map(t => `${t.side} ${t.symbol}${t.actor ? "=" + t.actor : ""}${t.tradedOn ? "@" + t.tradedOn : ""}`).join(", ")}). `
-          + `Fields already recorded are never overwritten.`
+          + (force ? "FORCED — existing values were replaced." : "Fields already recorded are never overwritten.")
         : `no run found for ${date}`;
     }
   }
