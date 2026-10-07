@@ -354,6 +354,11 @@ export async function GET(request: Request) {
     autoFixed.push("Live verify skipped — /api/verify unavailable.");
   }
 
+  // A fill made during a session lands on the NEXT run, because runs snapshot at 07:30. Correct for
+  // the return window, misleading as a date — so say so when the broker told us it differs.
+  const whenFilled = (t: { tradedOn?: string }) =>
+    t.tradedOn && t.tradedOn !== today ? ` (filled ${t.tradedOn})` : "";
+
   // ─── Derive display data from (possibly repaired) run ────────────────────────
 
   const trades = todayRun?.trades ?? [];
@@ -644,8 +649,8 @@ export async function GET(request: Request) {
     ${row("Buying power", buyingPower ? `$${parseFloat(buyingPower).toFixed(2)}` : "—", "#f9fafb")}
     ${row("Agentic return", fmt(agenticReturn))}
     ${row("Personal return", fmt(personalReturn), "#f9fafb")}
-    ${row("Buys", buys.length > 0 ? buys.map((t) => `${t.symbol} ×${t.quantity} @$${t.avgPrice}`).join(", ") : "none")}
-    ${row("Sells", sells.length > 0 ? sells.map((t) => `${t.symbol} ×${t.quantity} @$${t.avgPrice}${t.state === "inferred" ? " (inferred)" : ""}`).join(", ") : "none", "#f9fafb")}
+    ${row("Buys", buys.length > 0 ? buys.map((t) => `${t.symbol} ×${t.quantity} @$${t.avgPrice}${whenFilled(t)}`).join(", ") : "none")}
+    ${row("Sells", sells.length > 0 ? sells.map((t) => `${t.symbol} ×${t.quantity} @$${t.avgPrice}${t.state === "inferred" ? " (inferred)" : ""}${whenFilled(t)}`).join(", ") : "none", "#f9fafb")}
     ${row("Positions", positions.length > 0 ? positions.map((p) => p.symbol).join(", ") : "none")}
   </table>
 

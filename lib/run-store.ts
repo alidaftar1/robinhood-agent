@@ -20,6 +20,19 @@ export interface TradeSnapshot {
   avgPrice: string;
   state: string;
   strategy?: "main" | "influencer"; // which sub-portfolio this trade belongs to
+  /** The date the fill actually happened, when the broker told us — NOT the run's date.
+   *
+   *  A run snapshots at 07:30, so a trade made during a session falls between that snapshot and the
+   *  NEXT one and is therefore recorded on the next day's run. That is correct for RETURN
+   *  accounting: the day's return is measured snapshot-to-snapshot, and the trade's P&L belongs to
+   *  that window. It is wrong as a statement of WHEN, and with nothing to say otherwise the
+   *  dashboard dated the owner's 2026-10-06 trades to 10-07.
+   *
+   *  Only set where there is evidence: planCapture matches a real broker order and copies its
+   *  createdAt. An INFERRED trade leaves this undefined, because the reconstruction knows a position
+   *  changed between two snapshots and genuinely cannot know when. Absent means "no better
+   *  information than the run's date", never "same day". */
+  tradedOn?: string;
   /** The quote this trade was DECIDED on — marketData's price for the symbol at analysis time.
    *
    *  Stored so execution cost is measurable at all. Slippage is the one live question that resolves
@@ -1261,7 +1274,10 @@ export function planCapture(
     const hit = candidates.find(o => matches(o, "sell", est.symbol, qty));
     if (!hit) continue; // no evidence — leave it to patchTrades to estimate as before
     used.add(hit);
-    record.push({ ...est, avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled" });
+    record.push({
+      ...est, avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled",
+      ...(hit.createdAt ? { tradedOn: hit.createdAt } : {}),
+    });
     supersede.push(...inferredSells.filter(t => t.symbol === est.symbol));
   }
 
@@ -1275,6 +1291,7 @@ export function planCapture(
     record.push({
       symbol: u.symbol, side: "buy", quantity: u.excessQty.toFixed(6),
       avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled",
+      ...(hit.createdAt ? { tradedOn: hit.createdAt } : {}),
       // Sleeve membership is read from the run that held the book, the same rule sells use.
       strategy: inferSellStrategy(u.symbol, heldRun.influencerPositions, heldRun.trades ?? []),
     });

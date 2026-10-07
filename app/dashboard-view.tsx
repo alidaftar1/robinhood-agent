@@ -810,6 +810,14 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                         <span>{t.side === "buy" ? "▲ BUY" : "▼ SELL"}</span>
                         <span>{t.symbol} ×{fmtQty(t.quantity)} @ ${parseFloat(t.avgPrice || "0").toFixed(2)}</span>
                         {t.strategy === "influencer" && <span style={{ fontSize: 10, opacity: 0.7 }}>📺</span>}
+                        {/* Runs snapshot at 07:30, so a fill made during a session is recorded on the
+                            NEXT run — right for the return window, wrong as a date. Shown only when
+                            the broker told us it differs, so an ordinary same-day fill stays clean. */}
+                        {t.tradedOn && t.tradedOn !== run.date && (
+                          <span style={{ fontSize: 10, opacity: 0.7 }} title={`Filled ${t.tradedOn}; recorded on this run because runs snapshot at 07:30`}>
+                            · {t.tradedOn.slice(5)}
+                          </span>
+                        )}
                       </span>
                     ))}
                   </div>

@@ -528,6 +528,25 @@ describe("planCapture", () => {
     expect(p.reconciles).toBe(false);  // still unexplained — must not read as clean
   });
 
+  test("the broker's fill DATE is stamped, so the run's date stops standing in for it", () => {
+    // Runs snapshot at 07:30, so a fill made during a session is recorded on the NEXT run. Right for
+    // the return window, wrong as a statement of when — the owner's 2026-10-06 trades showed on the
+    // dashboard as 10-07. Only set where there is evidence; an inferred trade must leave it unset
+    // rather than claim the run's date.
+    const latest = { positions: [pos("APA", "11.787693", "43.52")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(held, latest, [order("sell", "KO", "0.637741", "86.4219", { createdAt: "2026-10-06" })],
+                          { from: "2026-10-06", to: "2026-10-07" });
+    expect(p.record[0].tradedOn).toBe("2026-10-06");
+  });
+
+  test("an order with no date leaves tradedOn UNSET, never defaulted", () => {
+    const latest = { positions: [pos("APA", "11.787693", "43.52")], trades: [] as TradeSnapshot[] };
+    const o = { side: "sell", symbol: "KO", quantity: "0.637741", avgPrice: "86.42", state: "filled" } as LiveOrder;
+    const p = planCapture(held, latest, [o], { from: "2026-10-05", to: "2026-10-06" });
+    expect(p.record.length).toBe(1);
+    expect(p.record[0].tradedOn).toBeUndefined();
+  });
+
   test("a fill from the PREVIOUS day is in the window, not stale", () => {
     // The lag is structural: a run snapshots at 07:30, so a trade made during 2026-10-06 is only
     // visible in 10-07's positions and is reconciled then. Filtering to the calendar day rejected
