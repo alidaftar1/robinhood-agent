@@ -792,7 +792,10 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                       <span style={s.badge}>Cash ${parseFloat(pv.cash || "0").toFixed(2)}</span>
                     </>
                   )}
-                  {pv && (run.trades ?? []).length === 0 && (
+                  {/* HOLD means THE AGENT did nothing on this date. A run carrying only trades the
+                      owner filled on an earlier day is still a hold for the agent, and saying
+                      otherwise credits it with activity it had no part in. */}
+                  {pv && (run.trades ?? []).filter((t) => (t.tradedOn ?? run.date) === run.date && t.actor !== "human").length === 0 && (
                     <span style={{ ...s.badge, color: "#888", borderColor: "#2a2a2a" }}>HOLD</span>
                   )}
                   {run.spyPrice && (
@@ -801,11 +804,30 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                 </div>
               </div>
 
-              {(run.trades ?? []).length > 0 && (
-                <div style={s.tradesSection}>
-                  <div style={s.tradesLabel}>Trades executed</div>
+              {/* GROUPED BY WHEN THE FILL HAPPENED, not by which run holds it. A run snapshots at
+                  07:30, so a trade made during a session is recorded on the NEXT run — correct for
+                  the return window, which is measured snapshot to snapshot, but it meant a card
+                  headed "2026-10-07" listed seven trades the owner had made the day before under
+                  the heading "Trades executed". The trade stays on this run (moving it would put
+                  its P&L outside the window it belongs to); only the presentation tells the truth
+                  about the date. */}
+              {Object.entries(
+                (run.trades ?? []).reduce<Record<string, typeof run.trades>>((acc, t) => {
+                  const d = t.tradedOn ?? run.date;
+                  (acc[d] ||= []).push(t);
+                  return acc;
+                }, {}),
+              )
+                .sort(([a], [b]) => b.localeCompare(a))
+                .map(([filledOn, group]) => (
+                <div style={s.tradesSection} key={filledOn}>
+                  <div style={s.tradesLabel}>
+                    {filledOn === run.date
+                      ? "Trades executed"
+                      : `Filled ${filledOn} · recorded in this run (runs snapshot at 7:30am)`}
+                  </div>
                   <div style={s.tradeRow}>
-                    {(run.trades ?? []).map((t, j) => (
+                    {(group ?? []).map((t, j) => (
                       <span key={j} style={t.side === "buy" ? s.tradeBuy : s.tradeSell}>
                         <span>{t.side === "buy" ? "▲ BUY" : "▼ SELL"}</span>
                         <span>{t.symbol} ×{fmtQty(t.quantity)} @ ${parseFloat(t.avgPrice || "0").toFixed(2)}</span>
@@ -816,19 +838,11 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                         {t.actor === "human" && (
                           <span style={{ fontSize: 10, opacity: 0.8 }} title="Placed manually by you, not by the agent">👤 manual</span>
                         )}
-                        {/* Runs snapshot at 07:30, so a fill made during a session is recorded on the
-                            NEXT run — right for the return window, wrong as a date. Shown only when
-                            the broker told us it differs, so an ordinary same-day fill stays clean. */}
-                        {t.tradedOn && t.tradedOn !== run.date && (
-                          <span style={{ fontSize: 10, opacity: 0.7 }} title={`Filled ${t.tradedOn}; recorded on this run because runs snapshot at 07:30`}>
-                            · {t.tradedOn.slice(5)}
-                          </span>
-                        )}
                       </span>
                     ))}
                   </div>
                 </div>
-              )}
+              ))}
 
               {run.positions.length > 0 && (
                 <div>
