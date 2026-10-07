@@ -1381,27 +1381,30 @@ export function applySellTagBackfill(
  * owner. This exists so those rows can be corrected deliberately rather than guessed at, and so the
  * guess never gets encoded as a heuristic.
  *
- * Only ever FILLS A GAP: a trade that already carries `actor` is left alone, so a correction cannot
- * overwrite what a writer recorded first-hand. Matching is by symbol+side, which is unambiguous
- * within one run — a run never holds two trades of the same side on the same symbol (the executor
- * emits one order per symbol per side).
+ * Only ever FILLS A GAP, and PER FIELD: `actor` is never overwritten, because a writer that placed
+ * the order knows better than any later correction. `tradedOn` follows the same rule but is tracked
+ * separately — they are different facts, and bundling them meant an already-tagged trade could
+ * never be given its fill date. Matching is by symbol+side, which is unambiguous within one run: the
+ * executor emits one order per symbol per side.
  *
- * Returns the number of trades changed. Pure: the caller decides whether to persist.
+ * Returns how many of each field were filled. Pure: the caller decides whether to persist.
  */
 export function applyActorTag(
   run: TradeRun,
-  tags: Array<{ symbol: string; side: string; actor: "agent" | "human"; tradedOn?: string }>,
-): number {
-  let n = 0;
+  tags: Array<{ symbol: string; side: string; actor?: "agent" | "human"; tradedOn?: string }>,
+): { actors: number; dates: number } {
+  let actors = 0, dates = 0;
   for (const tag of tags) {
     for (const t of run.trades ?? []) {
-      if (t.symbol !== tag.symbol || t.side !== tag.side || t.actor) continue;
-      t.actor = tag.actor;
-      if (tag.tradedOn) t.tradedOn = tag.tradedOn;
-      n++;
+      if (t.symbol !== tag.symbol || t.side !== tag.side) continue;
+      // The two fields have DIFFERENT rules and must be applied independently. Treating them as one
+      // unit meant a trade that already carried `actor` could never be given its fill date — which
+      // is precisely the state the first pass left every corrected trade in.
+      if (tag.actor && !t.actor) { t.actor = tag.actor; actors++; }
+      if (tag.tradedOn && !t.tradedOn) { t.tradedOn = tag.tradedOn; dates++; }
     }
   }
-  return n;
+  return { actors, dates };
 }
 
 /** Write back a whole run list, newest-first. Used only by backfills. */

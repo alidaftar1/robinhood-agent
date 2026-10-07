@@ -341,28 +341,32 @@ export async function GET(request: Request) {
   }
 
   // Stamp provenance on trades written before `actor` existed. Format:
-  //   ?tagActor=DATE:SYMBOL:SIDE:agent|human[,SYMBOL:SIDE:actor...]
+  //   ?tagActor=DATE:SYMBOL:SIDE:agent|human[:YYYY-MM-DD][,...]   (actor "-" = date only)
   // Needed because provenance is NOT recoverable from the record — a human fill and an agent fill
   // are both state:"filled" with no refPrice — so the only correct source is someone who knows.
   // Never overwrites a tag a writer set first-hand; it only fills gaps.
   const tagActor = url.searchParams.get("tagActor");
   if (tagActor) {
+    // DATE:SYMBOL:SIDE:actor[:filledOn][,...] — filledOn optional, and `actor` may be "-" to set
+    // only the date on a trade whose provenance is already recorded.
     const [date, ...rest] = tagActor.split(":");
-    const tags: Array<{ symbol: string; side: string; actor: "agent" | "human" }> = [];
+    const tags: Array<{ symbol: string; side: string; actor?: "agent" | "human"; tradedOn?: string }> = [];
     for (const part of rest.join(":").split(",")) {
-      const [symbol, side, actor] = part.split(":");
-      if (symbol && (side === "buy" || side === "sell") && (actor === "agent" || actor === "human")) {
-        tags.push({ symbol, side, actor });
-      }
+      const [symbol, side, actor, filledOn] = part.split(":");
+      if (!symbol || (side !== "buy" && side !== "sell")) continue;
+      const a = actor === "agent" || actor === "human" ? actor : undefined;
+      const d = /^\d{4}-\d{2}-\d{2}$/.test(filledOn ?? "") ? filledOn : undefined;
+      if (a || d) tags.push({ symbol, side, ...(a ? { actor: a } : {}), ...(d ? { tradedOn: d } : {}) });
     }
     if (!date || tags.length === 0) {
-      results.tagActor = "bad format — use DATE:SYMBOL:SIDE:agent|human[,SYMBOL:SIDE:actor...]";
+      results.tagActor = "bad format — use DATE:SYMBOL:SIDE:agent|human[:YYYY-MM-DD][,...]";
     } else {
-      let changed = 0;
+      let changed = { actors: 0, dates: 0 };
       const ok = await updateRunByDate(date, (run) => { changed = applyActorTag(run, tags); return run; });
       results.tagActor = ok
-        ? `tagged ${changed} trade(s) on ${date}: ${tags.map(t => `${t.side} ${t.symbol}=${t.actor}`).join(", ")}`
-          + (changed < tags.length ? ` — ${tags.length - changed} already tagged or not found (never overwritten)` : "")
+        ? `${date}: set actor on ${changed.actors} trade(s), fill date on ${changed.dates} `
+          + `(${tags.map(t => `${t.side} ${t.symbol}${t.actor ? "=" + t.actor : ""}${t.tradedOn ? "@" + t.tradedOn : ""}`).join(", ")}). `
+          + `Fields already recorded are never overwritten.`
         : `no run found for ${date}`;
     }
   }

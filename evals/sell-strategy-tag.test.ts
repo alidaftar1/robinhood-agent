@@ -677,10 +677,31 @@ describe("trade provenance", () => {
       { symbol: "ILMN", side: "sell", actor: "human" },           // must be refused
       { symbol: "TGT", side: "sell", actor: "human", tradedOn: "2026-10-06" },
     ]);
-    expect(n).toBe(1);
+    expect(n).toEqual({ actors: 1, dates: 1 });
     expect(run.trades[0].actor).toBe("agent");                     // untouched
     expect(run.trades[1].actor).toBe("human");
     expect(run.trades[1].tradedOn).toBe("2026-10-06");
+  });
+
+  test("the fill DATE can be set on a trade whose actor is already recorded", () => {
+    // The two fields are independent. Bundling them meant every trade corrected in the first pass
+    // could never be given its date afterwards — which is exactly the state they were left in, and
+    // the date was the thing being asked about.
+    const run = { date: "2026-10-07", trades: [
+      { symbol: "APA", side: "sell", quantity: "5.78", avgPrice: "44.14", state: "filled", actor: "human" as const },
+    ] } as any;
+    const n = applyActorTag(run, [{ symbol: "APA", side: "sell", tradedOn: "2026-10-06" }]);
+    expect(n).toEqual({ actors: 0, dates: 1 });
+    expect(run.trades[0].actor).toBe("human");       // still first-hand, not re-stamped
+    expect(run.trades[0].tradedOn).toBe("2026-10-06");
+  });
+
+  test("an existing fill date is never overwritten either", () => {
+    const run = { date: "2026-10-07", trades: [
+      { symbol: "APA", side: "sell", quantity: "5.78", avgPrice: "44.14", state: "filled", tradedOn: "2026-10-06" },
+    ] } as any;
+    expect(applyActorTag(run, [{ symbol: "APA", side: "sell", tradedOn: "2026-01-01" }])).toEqual({ actors: 0, dates: 0 });
+    expect(run.trades[0].tradedOn).toBe("2026-10-06");
   });
 
   test("slippage EXCLUDES human fills — it measures the AGENT's execution", () => {
