@@ -10,6 +10,7 @@ import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-recon
 import { computeAttribution, type ChannelStats, type PendingSummary } from "@/lib/influencer-ledger";
 import { computeSlippage, type SlippageStats } from "@/lib/slippage";
 import { computeSignalAttribution, type SignalStat } from "@/lib/signal-ledger";
+import { computeExitAttribution, type TriggerStat } from "@/lib/exit-ledger";
 import { getInfluencerSignals } from "@/lib/influencer-signals";
 import { logReviewResult } from "@/lib/braintrust-trace";
 import { sendAlert } from "@/lib/alert";
@@ -556,6 +557,11 @@ export async function GET(request: Request) {
   // predicted, from our own buys. Best-effort; empty until buys accumulate.
   let signalStats: SignalStat[] = [];
   let signalBuysLogged = 0;
+  // Exits, the mirror of the above: which REASONS for selling actually beat holding.
+  let exitTriggers: TriggerStat[] = [];
+  let exitsLogged = 0;
+  try { const a = await computeExitAttribution(today); exitTriggers = a.triggers; exitsLogged = a.exits.length; }
+  catch { /* best-effort, like the other ledgers */ }
   try { const a = await computeSignalAttribution(today); signalStats = a.signals; signalBuysLogged = a.picks.length; }
   catch { /* best-effort */ }
 
@@ -769,6 +775,23 @@ export async function GET(request: Request) {
       ).join("")}
     </table>
     <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>vs avg pick</strong> = a signal's buys' average forward return minus the average over ALL buys (positive = the signal beat the typical pick; ranked by it). From our own trades, measured forward — small, mixed-horizon samples early, so a hint not a verdict.</p>`}
+  </div>`
+    : ""}
+
+  ${exitsLogged > 0
+    ? `<div style="background:#fef2f2;border-left:4px solid #ef4444;padding:12px 16px;margin-bottom:16px;border-radius:4px">
+    <strong>🚪 Exit ledger — which reasons for SELLING work:</strong>
+    ${exitTriggers.length === 0
+      ? `<p style="margin:6px 0 0;font-size:13px;color:#6b7280">Logged ${exitsLogged} exit${exitsLogged === 1 ? "" : "s"} — post-exit moves accumulate over the coming days.</p>`
+      : `<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+      <tr style="color:#6b7280"><td style="padding:3px 8px">Reason for selling</td><td style="padding:3px 8px;text-align:right">Exits</td><td style="padding:3px 8px;text-align:right">Avoided</td><td style="padding:3px 8px;text-align:right">Move after</td><td style="padding:3px 8px;text-align:right">Best / worst</td></tr>
+      ${exitTriggers.slice(0, 8).map((t) =>
+        // COLOURS ARE INVERTED vs every other table in this email, on purpose: a fall AFTER we sold
+        // is a GOOD exit. Getting this wrong would flip the meaning of the whole block.
+        `<tr><td style="padding:3px 8px">${escapeHtml(t.trigger)}${t.exits < 4 ? ` <span style="color:#9ca3af;font-size:11px">thin</span>` : ""}</td><td style="padding:3px 8px;text-align:right">${t.exits}</td><td style="padding:3px 8px;text-align:right">${t.avoidedRatePct.toFixed(0)}%</td><td style="padding:3px 8px;text-align:right;font-weight:bold;color:${t.avgReturnPct <= 0 ? "#059669" : "#dc2626"}">${t.avgReturnPct >= 0 ? "+" : ""}${t.avgReturnPct.toFixed(1)}%</td><td style="padding:3px 8px;text-align:right;color:#6b7280">${escapeHtml(t.bestExit)} / ${escapeHtml(t.worstExit)}</td></tr>`
+      ).join("")}
+    </table>
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af"><strong>READ THIS TABLE BACKWARDS from the others.</strong> <strong>Move after</strong> is the name's return SINCE we sold, so NEGATIVE (green) is a GOOD exit — the fall was avoided — and positive (red) means the name ran away after we left. <strong>Avoided</strong> is the share of that reason's exits the price fell after. The counterfactual is HOLDING, not whatever the proceeds bought instead, so this says whether a REASON to sell has edge, not whether the rotation paid. No horizon yet: a months-old exit and a days-old one are pooled, which flatters nothing but makes every trigger look worse in a rising market. Small samples — a hint, not a verdict.</p>`}
   </div>`
     : ""}
 
