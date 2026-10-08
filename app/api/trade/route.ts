@@ -5,7 +5,7 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
-import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
+import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
@@ -1863,7 +1863,38 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       ...trades,
     ];
 
-    const agenticResult = portfolioAfter && previousDayRun?.portfolioAfter
+    // DOES THE BOOK ADD UP BEFORE WE PUBLISH A NUMBER FROM IT? The owner trades this account by
+    // hand, and those fills are not in the store until the 8am autopilot captures them from the
+    // broker — so at 07:30 the previous day's snapshot can disagree with today's by whatever the
+    // owner did in between. computeDailyReturn cannot tell: it just divides, and on 2026-10-08 it
+    // published +12.63% for the account and +23.93% for the main book, with a -$316 implied
+    // transfer, because an unrecorded MU buy made the agent's own MU sale look like proceeds out of
+    // nowhere. Both sat on the dashboard until capture ran half an hour later. Neither tripped the
+    // |return| > 30% alarm.
+    //
+    // Same identity patchTrades uses. WITHHOLD rather than publish — a null for thirty minutes is a
+    // visible gap that capture then fills, while a wrong number is indistinguishable from a real
+    // day. Deliberately NOT locked: capture has not run yet, so the day is expected to be repaired,
+    // and locking would be the one thing that stops that.
+    const unreconciled = portfolioAfter && previousDayRun?.portfolioAfter
+      ? (() => {
+          const plan = buildInferredSells(previousDayRun, { positions, trades: allTradesToday });
+          return plan.sells.length > 0 || plan.unreconstructable.length > 0
+            ? [...plan.sells.map(t => `${t.symbol} -${t.quantity}`),
+               ...plan.unreconstructable.map(u => `${u.symbol} (${u.reason})`)]
+            : null;
+        })()
+      : null;
+    if (unreconciled) {
+      console.warn("RETURN_WITHHELD_BOOK_UNRECONCILED", { date: today, unreconciled });
+      buySizingAdjustments.push(
+        `Return WITHHELD — holdings disagree with the trade records (${unreconciled.join(", ")}). `
+        + `Almost always the owner's own manual fills, which /api/verify?capture=1 records from the `
+        + `broker in the 8am run; the day's return is computed then rather than published now from a `
+        + `book that does not add up.`);
+    }
+
+    const agenticResult = !unreconciled && portfolioAfter && previousDayRun?.portfolioAfter
       ? computeDailyReturn(
           parseFloat(portfolioAfter.totalValue),
           parseFloat(previousDayRun.portfolioAfter.totalValue),
