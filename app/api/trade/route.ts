@@ -15,6 +15,7 @@ import { isMarketHoliday, holidayTableCovers } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
+import { recordExits, triggerFromReason, type ExitRecord } from "@/lib/exit-ledger";
 import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
 import { buildFeatureRows, recordFeatureCapture } from "@/lib/feature-capture";
 import { applySellRail, MAX_DISCRETIONARY_EXITS } from "@/lib/sell-rail";
@@ -619,6 +620,8 @@ export async function GET(request: Request) {
     const runTimestamp = new Date().toISOString();
     let textContent = "";
     let trades: TradeSnapshot[] = [];
+    // Exit-ledger rows gathered as sells confirm; written once, after the orders settle.
+    const exitsToLog: ExitRecord[] = [];
 
     // ── SESSION 1: Analysis (Sonnet, no MCP) ────────────────────────────────
     // Pure reasoning — no tool calls. Should complete in ~30-60s.
@@ -1244,12 +1247,12 @@ export async function GET(request: Request) {
       }
     }
 
-    const sellsToExecute: Array<{ symbol: string; quantity: string; strategy?: string }> = [];
+    const sellsToExecute: Array<{ symbol: string; quantity: string; strategy?: string; reason?: string }> = [];
     for (const s of decision.sells) {
       const pos = (portfolioCtx?.positions ?? []).find(p => p.symbol === s.symbol);
       if (!pos) { console.warn("SELL_SKIPPED_NOT_HELD", { symbol: s.symbol }); continue; }
       const qtyStr = resolveSellQuantity(s, pos.quantity);
-      if (qtyStr && (parseFloat(qtyStr) || 0) > 0) sellsToExecute.push({ symbol: s.symbol, quantity: qtyStr, strategy: s.strategy });
+      if (qtyStr && (parseFloat(qtyStr) || 0) > 0) sellsToExecute.push({ symbol: s.symbol, quantity: qtyStr, strategy: s.strategy, reason: s.reason });
       else console.warn("SELL_SKIPPED_NOT_HELD", { symbol: s.symbol });
     }
     if (sellsToExecute.length !== decision.sells.length) {
@@ -1383,6 +1386,16 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
           // EXCLUDE a concentration TRIM — it's a risk reduction of a still-held name, not an exit, so
           // it must not enter the recent-sells registry (would poison the rebuy-cooldown + mislabel it).
           if (sellStrategyTag(s.symbol) !== "influencer" && !trimmedSymbols.has(s.symbol)) await recordSell(s.symbol, today, parseFloat(fill) || 0);
+          // EXIT LEDGER. A concentration TRIM reduces a still-held name rather than closing it, so
+          // it is labelled as such instead of being filed under whatever the model said. Note the
+          // limit of that: a trim IS still rolled up as its own trigger, and "what holding would
+          // have cost us" reads differently for a position we partly still hold — read the
+          // `concentration` row as risk-reduction timing, not as an exit decision.
+          exitsToLog.push({
+            symbol: s.symbol, date: today, strategy: sellStrategyTag(s.symbol) ?? "main",
+            priceAtExit: parseFloat(fill) || 0,
+            trigger: trimmedSymbols.has(s.symbol) ? "concentration" : triggerFromReason(s.reason),
+          });
         }
         if (missing.length > 0) {
           console.warn("SELL_STILL_MISSING_AFTER_RETRY", { missing: missing.map(s => s.symbol) });
@@ -1858,6 +1871,10 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     const earlierTodayRuns = (await getRuns(20)).filter(
       (r) => r.date === today && r.timestamp < runTimestamp
     );
+    // Collected during execution, written once after the orders settle — the ledger must never sit
+    // between a decision and an order.
+    await recordExits(exitsToLog).catch(() => 0);
+
     const allTradesToday: TradeSnapshot[] = [
       ...earlierTodayRuns.flatMap((r) => r.trades ?? []),
       ...trades,

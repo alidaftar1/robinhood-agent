@@ -1015,8 +1015,19 @@ describe("V1 notional prompt (deterministic — no LLM)", () => {
     expect(prompt).not.toMatch(/compute max_qty = floor/);
   });
   it("instructs INTENT sells (exit:\"all\" / fraction), not a share count", () => {
-    expect(prompt).toMatch(/"sells":\[\{"symbol":"X","exit":"all"\}\]/);
+    // Matches the fields that carry the INTENT, not the literal line — the payload legitimately
+    // grows (a `reason` token for the exit ledger was added 2026-10-08) and pinning the whole
+    // string made an honest format addition look like a regression.
+    expect(prompt).toMatch(/"sells":\[\{"symbol":"X","exit":"all"/);
     expect(prompt).toMatch(/Partial TRIM.*fraction/);
+  });
+  it("requires a structured sell REASON, with discretionary as the escape hatch", () => {
+    // The exit ledger measures per-trigger edge, so a mislabelled exit corrupts every other exit of
+    // that kind — the prompt must offer a catch-all rather than force a better-sounding label.
+    expect(prompt).toMatch(/"reason"/);
+    for (const r of ["news-down", "firm-down", "stale", "shortlist-drop", "concentration", "discretionary"]) {
+      expect(prompt).toContain(r);
+    }
   });
   it("renders a FRACTIONAL held quantity verbatim (no truncation)", () => {
     const line = prompt.split("\n").find(l => l.trim().startsWith("NVDA")) ?? "";

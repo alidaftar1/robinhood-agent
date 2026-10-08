@@ -18,7 +18,9 @@
 // sells only. Without that separation a cap could block real risk management during a sell-off,
 // which would be far worse than the problem it solves.
 //
-// Sells carry no structured reason — justification lives in thesis prose. So the rail does not read
+// A sell now carries a `reason` token, but THIS RAIL DELIBERATELY IGNORES IT — the token feeds
+// the exit ledger only. justifiedReason verifies from run DATA, never from something the model
+// asserts about itself; trusting it would hand the model a way around MAX_DISCRETIONARY_EXITS. So the rail does not read
 // intent; it VERIFIES the claim independently from data the run already has, and bounds only what
 // it cannot verify. A name that is genuinely underwater, stale, off-shortlist, downgraded, carrying
 // bearish news, or facing imminent earnings passes unconditionally, however many there are.

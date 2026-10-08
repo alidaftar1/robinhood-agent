@@ -23,6 +23,9 @@ export interface TradeDecisionSell {
   fraction?: number;
   quantity?: number;
   strategy?: string;
+  /** Why, as one token, for the exit ledger. OPTIONAL on purpose: a missing or unrecognised reason
+   *  must never fail a sell the model has decided on — it degrades to "discretionary". */
+  reason?: string;
 }
 
 export interface TradeDecisionBuy {

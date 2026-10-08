@@ -491,7 +491,15 @@ CONSTRAINTS:
 ${stopoutBlock}${recentSellsBlock}${valuationSection}${earningsReleaseSection}${influencerSection ?? ""}
 
 ${isRebalanceDay ? "Write a brief thesis (2–4 sentences): which shortlist names you're buying and why (momentum + quality), and" : "Write a brief thesis (2–4 sentences). MAIN-BOOK BUYS ARE CLOSED TODAY — do not name any main-book buy, and do not sell to free a slot. If no risk sell is due, say plainly that the main book is unchanged pending the rebalance — but a genuine risk sell (loss discipline / ⚡NEWS↓ / ↓FIRM / fell off the shortlist) is still CORRECT today and must not be withheld. Then state"} — per the hysteresis rule above — which current holdings you're selling WITH the specific reason for each (fell off the shortlist entirely / ↓FIRM / sector-cap trim${isRebalanceDay ? " / freeing a slot for a higher-conviction name" : ""}). Do NOT sell a ◆HELD name for merely ranking below newer names.${influencerSection ? " It MUST also state your influencer-sleeve decision: which influencer pick(s) you're buying and why, OR — if none — the specific disqualifier (priced above the per-position cap, imminent earnings, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer sleeve." : ""} Then compute sum(buys[i].dollarAmount) and verify it is ≤ ${bp}; if it exceeds, reduce dollar amounts or remove buys until it fits. Then output exactly one line:
-TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","exit":"all"}],"buys":[{"symbol":"X","dollarAmount":D,"strategy":"main"}]}
+TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","exit":"all","reason":"news-down"}],"buys":[{"symbol":"X","dollarAmount":D,"strategy":"main"}]}
+
+Every SELL needs a "reason" field, one of exactly: news-down (⚡NEWS↓ bearish event) · firm-down (analyst
+downgrade or PT cut) · stale (time-stop: held long, went nowhere) · shortlist-drop (fell off the
+quality-momentum shortlist) · concentration (sector-cap or per-position trim) · discretionary
+(anything else). It is the SAME reason your thesis already gives in prose, as one token — it feeds
+the exit ledger, which measures whether each kind of exit actually beats holding. Pick the one that
+genuinely drove the decision; if none fits, use discretionary rather than forcing a better-sounding
+label, because a mislabelled exit corrupts the measurement for every other exit of that kind.
 
 Rules:
 - buys = new or added positions, each sized as "dollarAmount" (US dollars, e.g. 250) — NOT a share count. sum(dollarAmount) ≤ settled buying power; min $50, max $${maxPos} each. The broker fills the fractional shares.

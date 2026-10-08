@@ -8,6 +8,7 @@ import { saveRun, getRuns, type PositionSnapshot, type TradeSnapshot, MAX_RUNS }
 import { recordStopout, resolveDropCheckExits, classifyExit, buildExitContext, symbolsWithMainOwnership, stopThresholdFor,
          MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT } from "@/lib/stopouts";
 import { sendAlert } from "@/lib/alert";
+import { recordExits, type ExitTrigger } from "@/lib/exit-ledger";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -237,6 +238,9 @@ List only the names to HOLD on sympathy; every stop-loss not listed will be SOLD
     // amount (incl. fractional) so no dangling fraction is left. Nothing else can be sold; and
     // there is no code path that constructs a BUY.
     const { exiting, heldOnSympathy } = resolveDropCheckExits(droppedPositions, sympathyHolds);
+    // Snapshot-vs-live divergences, surfaced in the run summary and the alert so an exit the agent
+    // SKIPPED is visible rather than silently absent.
+    const staleNotes: string[] = [];
     const sellsToExecute = exiting
       .map((e) => ({ symbol: e.position.symbol, quantity: e.position.quantity }))
       .filter((s) => (parseFloat(s.quantity) || 0) > 0);
@@ -287,7 +291,66 @@ List only the names to HOLD on sympathy; every stop-loss not listed will be SOLD
       }
     }
 
-    type VerifiedSell = { symbol: string; quantity: string; avgPrice: string; state: string };
+    type VerifiedSell = { symbol: string; quantity: string; avgPrice: string; state: string; id?: string };
+    /**
+     * Live holdings AND the sell orders already on the book, in ONE call — both are needed before
+     * placing and splitting them would double a 20s MCP round-trip on the risk path.
+     *
+     * Returns null on any failure. The caller then proceeds on the snapshot, which is the
+     * pre-2026-10-08 behaviour: degrading to "place the exit" is the right direction for a RISK
+     * path, since refusing to stop out because a status call failed is the worse error.
+     */
+    async function fetchLiveState(): Promise<{ positions: Array<{ symbol: string; quantity: string }>; sellIds: Set<string>; sawIds: boolean } | null> {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25_000);
+      try {
+        const resp = await (anthropic.beta.messages as any).create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 1024,
+          system: `For account ${ACCOUNT}: call get_equity_positions, then get_equity_orders filtered to today (${today}). Output exactly two lines:
+LIVE_POSITIONS:[{"symbol":"XX","quantity":"X.XX"}]
+PRIOR_SELLS:[{"id":"<order id>","symbol":"XX","quantity":"X.XX","avgPrice":"XX.XX","state":"XX"}]
+For positions use instrument_symbol and quantity. For PRIOR_SELLS include only SELL orders that are FILLED or PENDING (not cancelled or rejected), and copy each order id verbatim. If either is empty output []. Output nothing else.`,
+          messages: [{ role: "user", content: "Report live positions and today's sell orders." }],
+          mcp_servers: [mcpServer],
+          betas: ["mcp-client-2025-04-04"],
+        }, { signal: ctrl.signal });
+        const txt = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        const grab = (marker: string) => {
+          const i = txt.indexOf(marker);
+          if (i === -1) return null;
+          const m = txt.slice(i).match(/\[[\s\S]*?\]/);
+          try { return m ? JSON.parse(m[0]) : null; } catch { return null; }
+        };
+        const positions = grab("LIVE_POSITIONS:") as Array<{ symbol: string; quantity: string }> | null;
+        const priorSellsRaw = grab("PRIOR_SELLS:") as VerifiedSell[] | null;
+        // EVERY degraded shape must read as UNUSABLE, never as "the account is flat". The reader is
+        // an LLM, so the failure modes are not exceptions: it can echo the template verbatim (the
+        // placeholders here are already quoted strings, so "XX"/"X.XX" is VALID JSON — the trade
+        // route hit exactly this and guards against it), obey "if empty output []" when the MCP tool
+        // itself errored, or truncate the list under max_tokens. Each of those would otherwise mean
+        // "not held" and SKIP a real stop-loss.
+        if (!positions || positions.length === 0 || priorSellsRaw === null) return null;
+        const bad = positions.find(p => !/^[A-Z][A-Z.]{0,5}$/.test(String(p?.symbol ?? "").trim().toUpperCase())
+                                     || !(parseFloat(String(p?.quantity ?? "")) > 0));
+        if (bad) { console.warn("DROP_CHECK_LIVE_STATE_UNUSABLE", { row: bad }); return null; }
+        const priorSells = priorSellsRaw;
+        console.log("DROP_CHECK_LIVE_STATE", { positions: positions.length, priorSells: priorSells.length });
+        // Identity includes the quantity so a SECOND sell of the same name is still seen as new.
+        return {
+          positions: positions.map(p => ({ symbol: String(p.symbol).trim().toUpperCase(), quantity: String(p.quantity) })),
+          // ORDER IDS, not symbol|quantity. Both the agent and the owner exit a WHOLE position, so
+          // their quantities match and a quantity-keyed filter discards the agent's own fill.
+          sellIds: new Set(priorSells.map(o => String(o.id ?? "")).filter(Boolean)),
+          sawIds: priorSells.length === 0 || priorSells.some(o => o.id),
+        };
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     async function verifySells(): Promise<Map<string, VerifiedSell>> {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 20_000);
@@ -296,8 +359,8 @@ List only the names to HOLD on sympathy; every stop-loss not listed will be SOLD
           model: "claude-haiku-4-5-20251001",
           max_tokens: 512,
           system: `Call get_equity_orders for account ${ACCOUNT} filtered to today (${today}). Output exactly one line:
-VERIFIED_SELLS:[{"symbol":"XX","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
-Include only SELL orders placed today that are filled or pending (not cancelled/rejected). If none, output VERIFIED_SELLS:[]. Output nothing else.`,
+VERIFIED_SELLS:[{"id":"<order id>","symbol":"XX","quantity":"X","avgPrice":"XX.XX","state":"XX"}]
+Include only SELL orders placed today that are filled or pending (not cancelled/rejected). Copy each order id verbatim. If none, output VERIFIED_SELLS:[]. Output nothing else.`,
           messages: [{ role: "user", content: "Verify today's sell orders." }],
           mcp_servers: [mcpServer],
           betas: ["mcp-client-2025-04-04"],
@@ -310,12 +373,71 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
         if (idx === -1) return new Map();
         const arr = txt.slice(idx).match(/\[[\s\S]*\]/);
         if (!arr) return new Map();
-        return new Map((JSON.parse(arr[0]) as VerifiedSell[]).map((o) => [o.symbol, o]));
+        return new Map((JSON.parse(arr[0]) as VerifiedSell[]).map((o) => [String(o.symbol).trim().toUpperCase(), o]));
       } catch {
         return new Map();
       } finally {
         clearTimeout(timer);
       }
+    }
+
+    // ── BEFORE PLACING: is the book still what we think it is? ────────────────
+    // Exits are DETECTED from previousRun.positions, a 07:30 snapshot. The owner trades this
+    // account by hand during the session, so by 10:00 that snapshot can be hours out of date.
+    //
+    // 2026-10-06 is the worked example and it cost more than a stale order. The owner had already
+    // sold ILMN; the snapshot still showed it held; the stop triggered on a real -5.8% break and
+    // placed a sell for a position that no longer existed. Then verifySells — which asks the broker
+    // for "SELL orders placed today" and matches BY SYMBOL, with nothing distinguishing an order we
+    // placed from one the owner placed — found the OWNER's fill and recorded it as confirmation of
+    // our own. The agent reported a successful risk exit it had no part in, and the false
+    // attribution survived into the ledger.
+    //
+    // So: re-read holdings from the broker and take the PRE-EXISTING sell orders in the same call,
+    // but only once a drop has already been detected — the common path exits long before here, so
+    // this costs nothing on a quiet run.
+    const pre = sellsToExecute.length > 0 ? await fetchLiveState() : null;
+    if (pre) {
+      const liveQty = new Map(pre.positions.map(p => [p.symbol, parseFloat(p.quantity) || 0]));
+      // CORROBORATION GATE. The read may only VETO an exit if it demonstrably describes this
+      // account: at least one name we still hold and are NOT exiting must appear in it. Without
+      // that, a read that is well-formed but about nothing (or badly truncated) can silently
+      // cancel every stop. Skipping a stop costs unbounded downside with no retry until tomorrow —
+      // /api/drop-check with no scope, the only MAIN-book check, runs ONCE a day. Placing a sell
+      // for a position already closed costs a broker rejection. Those are not symmetric, so the
+      // risk path fails toward PLACING.
+      const exiting = new Set(sellsToExecute.map(s => s.symbol));
+      const corroborated = heldPositions.some(p => !exiting.has(p.symbol) && (liveQty.get(p.symbol) ?? 0) > 0);
+      if (!corroborated && heldPositions.some(p => !exiting.has(p.symbol))) {
+        console.warn("DROP_CHECK_LIVE_STATE_UNCORROBORATED — placing on the snapshot", {
+          live: [...liveQty.keys()], snapshot: heldPositions.map(p => p.symbol),
+        });
+        staleNotes.push("live holdings could not be corroborated — exits placed on the 07:30 snapshot");
+      } else {
+        const dropped: string[] = [];
+        for (let i = sellsToExecute.length - 1; i >= 0; i--) {
+          const s = sellsToExecute[i];
+          const live = liveQty.get(s.symbol) ?? 0;
+          const want = parseFloat(s.quantity) || 0;
+          if (live <= 0) { dropped.push(`${s.symbol} (no longer held)`); sellsToExecute.splice(i, 1); continue; }
+          // Only a MATERIAL shortfall re-sizes. The reader formats quantities to ~2dp, so a held
+          // 2.371 comes back "2.37" — re-sizing on that strands a dangling fraction (breaking this
+          // route's own "no dangling fraction is left" guarantee) and tells the owner they trimmed
+          // a position they never touched.
+          if (live < want * 0.995) {
+            dropped.push(`${s.symbol} (owner trimmed to ${live})`);
+            sellsToExecute[i] = { ...s, quantity: String(live) };
+          }
+        }
+        if (dropped.length > 0) {
+          console.warn("DROP_CHECK_STALE_SNAPSHOT", { adjusted: dropped });
+          staleNotes.push(...dropped);
+        }
+      }
+    } else if (sellsToExecute.length > 0) {
+      // Unusable read. Place on the snapshot — but say the attribution is unverified rather than
+      // asserting a clean exit, because nothing about risk management requires claiming one.
+      staleNotes.push("live holdings unreadable — exits placed on the 07:30 snapshot, attribution unverified");
     }
 
     if (sellsToExecute.length > 0) {
@@ -324,7 +446,20 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       // Verify REGARDLESS of ok: an aborted/timed-out place session can still have filled orders on
       // Robinhood. verifySells reads get_equity_orders (ground truth), so we record what truly filled
       // and never assume "nothing executed" just because the place call errored.
+      // Discard any order that was ALREADY on the book before we placed. verifySells matches by
+      // symbol and cannot tell whose order it found; without this, an exit the owner had already
+      // made counts as confirmation of ours (2026-10-06 ILMN). Only applied when the pre-read
+      // succeeded — with no "before" picture there is nothing to subtract.
+      // Was this fill OURS? Identified by ORDER ID — a quantity is not an identity, because both the
+      // agent and the owner exit a whole position, so their quantities match. Fails toward "ours"
+      // whenever ids are unavailable on either side: discarding a genuine fill is the worse error,
+      // since the sale then goes unrecorded while its proceeds sit in cash, double-counting the
+      // position in portfolioAfter and inflating the day's return.
+      const isOurs = (v: VerifiedSell) => !pre || !pre.sawIds || !v.id || !pre.sellIds.has(v.id);
       let verified = await verifySells();
+      // RETRY IS DECIDED ON THE RAW VERIFICATION, never on the ownership filter. A discarded
+      // pre-existing match must not read as "our order did not fill" — that would place a SECOND
+      // real sell order on a name someone has already exited.
       let missing = sellsToExecute.filter((s) => !verified.has(s.symbol));
       if (missing.length > 0) {
         console.warn("DROP_CHECK_SELL_VERIFY_MISSING — retrying", { missing: missing.map((s) => s.symbol) });
@@ -338,6 +473,11 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       for (const s of sellsToExecute) {
         const v = verified.get(s.symbol);
         if (!v) continue;
+        if (!isOurs(v)) {
+          console.warn("DROP_CHECK_PREEXISTING_ORDER_IGNORED", { symbol: s.symbol, orderId: v.id });
+          staleNotes.push(`${s.symbol} (filled by a pre-existing order, not ours)`);
+          continue;
+        }
         const fill = parseFloat(v.avgPrice) > 0 ? v.avgPrice : String(liteMap.get(s.symbol)?.price ?? priceMap.get(s.symbol) ?? 0);
         trades.push({ symbol: s.symbol, side: "sell", quantity: v.quantity, avgPrice: fill, state: v.state, actor: "agent", strategy: sellStrategyTag(s.symbol) });
       }
@@ -393,12 +533,15 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     const influencerPositions = positions.filter((p) => influencerSymbols.has(p.symbol));
 
     const sympathyNote = heldOnSympathy.length > 0 ? `\n\nHELD on sympathy (stop-loss judged broad-market): ${heldOnSympathy.join(", ")}.` : "";
+    const staleNote = staleNotes.length > 0
+      ? `\n\nSNAPSHOT WAS STALE — the live book had already changed, so these exits were adjusted or skipped: ${staleNotes.join(", ")}. Almost always the owner trading by hand during the session.`
+      : "";
     const soldList = trades.filter((t) => t.side === "sell").map((t) => `${t.symbol} x${t.quantity} @ ${t.avgPrice}`).join(", ") || "none confirmed";
 
     const saved = await saveRun({
       timestamp: runTimestamp,
       date: today,
-      summary: `[RISK-EXIT] Sold: ${soldList}.${sympathyNote}`,
+      summary: `[RISK-EXIT] Sold: ${soldList}.${sympathyNote}${staleNote}`,
       portfolioAfter,
       positions,
       trades,
@@ -407,6 +550,21 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       market: { stocksLoaded: marketData.stocks.length, headlinesLoaded: marketData.headlines.length },
       ...(spyPrice != null ? { spyPrice } : {}),
     });
+
+    // EXIT LEDGER — this path knows exactly why it sold, which is the whole point of recording it.
+    // Fail-safe: never blocks or alters the exit, and a write failure is swallowed inside.
+    await recordExits(
+      trades.filter(t => t.side === "sell" && parseFloat(t.avgPrice) > 0).map(t => {
+        const e = droppedPositions.find(d => d.position.symbol === t.symbol);
+        return {
+          symbol: t.symbol,
+          date: today,
+          strategy: t.strategy ?? "main",
+          priceAtExit: parseFloat(t.avgPrice),
+          trigger: (e?.reason === "profit" ? "take-profit" : "stop") as ExitTrigger,
+        };
+      }),
+    ).catch(() => 0);
 
     const dashboardUrl = dashboardPublicUrl(process.env.APP_URL);
     // The orders are REAL whether or not the run persisted, so the sale is still reported — but the
@@ -418,8 +576,8 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
         ? `${hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`
         : `🚨 Risk-Exit EXECUTED but NOT RECORDED — ${today}`,
       saved
-        ? `Sold: ${soldList}.${sympathyNote}\n\nCheck the dashboard:\n${dashboardUrl}`
-        : `Sold: ${soldList}.${sympathyNote}\n\n`
+        ? `Sold: ${soldList}.${sympathyNote}${staleNote}\n\nCheck the dashboard:\n${dashboardUrl}`
+        : `Sold: ${soldList}.${sympathyNote}${staleNote}\n\n`
           + `THE ORDERS WENT THROUGH — the run could not be written to the store, so the trade is `
           + `missing from the ledger every return and attribution figure is computed from. It will `
           + `show up as an "uncaptured order" in /api/verify; the next autopilot run should capture `

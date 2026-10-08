@@ -5,6 +5,7 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { getMarketData, fetchCurrentPrice, enrichPriceMap } from "@/lib/market-data";
 import { saveRun, getLatestRun, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { sendAlert } from "@/lib/alert";
+import { recordExits } from "@/lib/exit-ledger";
 import { isMarketHoliday } from "@/lib/holidays";
 import { fetchAgenticBalance } from "@/lib/robinhood-balance";
 
@@ -212,6 +213,13 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     });
 
     const dashboardUrl = dashboardPublicUrl(process.env.APP_URL);
+    await recordExits(
+      trades.filter(t => t.side === "sell" && parseFloat(t.avgPrice) > 0).map(t => ({
+        symbol: t.symbol, date: today, strategy: t.strategy ?? "main",
+        priceAtExit: parseFloat(t.avgPrice), trigger: "earnings" as const,
+      })),
+    ).catch(() => 0);
+
     // Same guard as drop-check: the orders are real either way, but a success header must not go
     // out when the run itself did not persist. See saveRun's contract.
     await sendAlert(
