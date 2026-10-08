@@ -298,11 +298,38 @@ export function checkHasReasoning(summary: string): CheckResult {
 
 /**
  * Claude must emit a PORTFOLIO_SNAPSHOT line at the end of its response.
- * This line is the production pipeline's source for portfolioAfter, positions, and trades —
- * without it, the run is saved with null portfolioAfter and the comparison chart breaks.
+ *
+ * WHAT THIS IS AND IS NOT, because the previous comment here was wrong and made a flaky failure
+ * look alarming. It used to say this line is "the production pipeline's source for portfolioAfter,
+ * positions and trades". It is not, and has not been for some time: /api/trade builds portfolioAfter
+ * in CODE from the live balance, the post-trade positions and the recorded trades
+ * (app/api/trade/route.ts, `const portfolioAfter = {`). Grep confirms the marker is parsed ONLY in
+ * this file. So a failure here means the model did not follow a formatting instruction — worth
+ * knowing, since the prompt still asks for it — and NOT that the pipeline is broken.
+ *
+ * The regex also used to require the JSON on ONE line (`.` does not match newlines), so a model
+ * that pretty-printed correct content failed. That was the single flakiest assertion in the suite:
+ * three identical full runs produced 3 / 3 / 1 failures, and this check was the one that moved.
+ * Tolerating a multi-line object matches what the rest of the repo already does with model JSON —
+ * see verifySells in app/api/drop-check, "Tolerate the model pretty-printing the array across lines
+ * despite 'one line'". The CONTENT requirements below are unchanged.
  */
+/** The marker, then the first complete {...} after it — newlines included. */
+export function extractSnapshot(summary: string): string | null {
+  const i = summary.search(/^PORTFOLIO_SNAPSHOT:/m);
+  if (i === -1) return null;
+  const rest = summary.slice(i).replace(/^PORTFOLIO_SNAPSHOT:/m, "");
+  let depth = 0, start = -1;
+  for (let j = 0; j < rest.length; j++) {
+    if (rest[j] === "{") { if (depth === 0) start = j; depth++; }
+    else if (rest[j] === "}") { depth--; if (depth === 0 && start !== -1) return rest.slice(start, j + 1); }
+  }
+  return null;
+}
+
 export function checkSnapshotPresent(summary: string): CheckResult {
-  const match = summary.match(/^PORTFOLIO_SNAPSHOT:(\{.+\})$/m);
+  const raw = extractSnapshot(summary);
+  const match = raw ? ([null, raw] as const) : null;
   if (!match) {
     return { name: "PORTFOLIO_SNAPSHOT line emitted", passed: false, detail: "missing PORTFOLIO_SNAPSHOT line" };
   }
@@ -333,7 +360,8 @@ export function checkSnapshotPresent(summary: string): CheckResult {
  * Validates that Claude is tracking its own cash balance correctly.
  */
 export function checkSnapshotCashMath(summary: string, calls: ToolCall[], scenario: Scenario): CheckResult {
-  const match = summary.match(/^PORTFOLIO_SNAPSHOT:(\{.+\})$/m);
+  const raw2 = extractSnapshot(summary);
+  const match = raw2 ? ([null, raw2] as const) : null;
   if (!match) {
     return { name: "PORTFOLIO_SNAPSHOT cash math correct", passed: false, detail: "no snapshot found" };
   }

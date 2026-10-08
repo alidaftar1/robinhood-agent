@@ -50,6 +50,33 @@ export function computeDecisionScores(
     }
   }
 
+  // ── EXITS AND ACCOUNTING ────────────────────────────────────────────────────
+  // Added 2026-10-08. The four scores above are all about the BUY, and were written when the
+  // agent's decisions were mostly buys. It has since grown a main-book position cap, an exit path
+  // with six triggers, a reconciliation layer and trade provenance — and Braintrust saw none of it,
+  // so a whole week of work on exits and accounting was invisible here while the traces still
+  // looked complete. These cover the half that was missing.
+
+  // Did the BOOK ADD UP? The single most valuable bit: a day whose holdings disagree with its trade
+  // records produced +12.63% on 2026-10-08 (true: -0.25%) and -27.65% for the main sleeve two days
+  // earlier, neither of which tripped any alarm. The run WITHHOLDS the return in that case now, so
+  // a null return alongside recorded trades is the signal, not an absence of data.
+  const hasTrades = (run.trades ?? []).length > 0;
+  const withheld = run.agenticDailyReturn == null && hasTrades;
+  scores.book_reconciled = withheld ? 0 : 1;
+
+  // Was any EXIT attributed? An unexplained sell is how a trade silently leaves the record.
+  const sells = (run.trades ?? []).filter((t) => t.side === "sell");
+  if (sells.length > 0) {
+    scores.sells_tagged = sells.every((t) => t.strategy) ? 1 : 0;
+    // Provenance cannot be recovered later — a human fill and an agent fill look identical.
+    scores.trades_attributed = (run.trades ?? []).every((t) => t.actor || t.state === "inferred") ? 1 : 0;
+    // An INFERRED sell is a reconstruction standing in for a fill nobody recorded. Some are
+    // expected (the owner trades by hand); a run that is MOSTLY inferred means the pipeline is
+    // guessing rather than observing.
+    scores.fills_observed = sells.filter((t) => t.state !== "inferred").length / sells.length;
+  }
+
   // Thesis is substantive (non-trivial length + at least one signal keyword).
   const thesis = typeof decision.thesis === "string" ? decision.thesis : "";
   const kw = ["momentum", "sector", "mom5", "alpha", "earnings", "insider", "upgrade", "thesis", "rotation", "signal", "conviction", "beta"];
@@ -109,6 +136,19 @@ export async function logTradeRun(args: {
         buySizingAdjustments: run.buySizingAdjustments ?? [],
         agenticDailyReturn: run.agenticDailyReturn ?? null,
         influencerDailyReturn: run.influencerDailyReturn ?? null,
+        mainDailyReturn: run.mainDailyReturn ?? null,
+        // The reconciliation layer, which had no representation here at all. returnWithheld says
+        // the book did not add up at write time; the exit/actor breakdown says what the run
+        // actually did and who did it.
+        returnWithheld: run.agenticDailyReturn == null && (run.trades ?? []).length > 0,
+        returnLocked: run.returnLocked ?? false,
+        impliedTransfer: run.agenticImpliedTransfer ?? null,
+        tradesByActor: (run.trades ?? []).reduce<Record<string, number>>((acc, t) => {
+          const k = t.actor ?? (t.state === "inferred" ? "inferred" : "unknown");
+          acc[k] = (acc[k] ?? 0) + 1; return acc;
+        }, {}),
+        mainPositions: (run.positions ?? []).filter(p =>
+          !(run.influencerPositions ?? []).some(i => i.symbol === p.symbol)).length,
       },
       // Deterministic guardrail scores on the model's proposed decision — surfaced next to each live
       // trace in the Logs tab (and averageable across runs), reusing the offline evals' invariants.
