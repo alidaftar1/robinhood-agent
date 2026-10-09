@@ -124,7 +124,11 @@ const idxOf = (c: string) => CAPTURE_COLUMNS.indexOf(c as never);
  * dates). When omitted the column is NULL and LIVE_PROXY degrades to momentum-only — a REAL
  * fidelity gap that must be reported with any result rather than quietly absorbed.
  *
- * Remaining unfillable columns (peTTM, peFY, daysToEarnings) stay NULL rather than taking a neutral
+ * `pe` is the point-in-time P/E from the SAME filing qualityPct came from, so it carries the same
+ * no-look-ahead guarantee; it fills peTTM. Absent for a loss-maker, which is NOT 'cheap' — a
+ * consumer must read missing as unknown and exclude, never as passing a cheapness test.
+ *
+ * Remaining unfillable columns (peFY, daysToEarnings) stay NULL rather than taking a neutral
  * default: 0 is a real, rankable value for every one of them.
  */
 export function buildCaptureDayFromHistory(
@@ -137,6 +141,7 @@ export function buildCaptureDayFromHistory(
    *  Omit to run momentum-only (the pre-Bundle behaviour) — the column then reads null and
    *  LIVE_PROXY degrades, which is a REAL fidelity gap and must be reported, not absorbed. */
   qualityPct?: Map<string, number>,
+  pe?: Map<string, number>,
 ): CaptureDay {
   const rows: CaptureDay["rows"] = [];
   const posForDate = indexByDate.get(date);
@@ -165,6 +170,8 @@ export function buildCaptureDayFromHistory(
       // percentile and would rank an unknown name as definitively low-quality.
       const q = qualityPct?.get(symbol);
       row[idxOf("qualityPct")] = q == null ? null : r4(q);
+      const p = pe?.get(symbol);
+      row[idxOf("peTTM")] = p == null ? null : r4(p);
       rows.push(row);
     }
   }

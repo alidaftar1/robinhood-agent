@@ -20,7 +20,7 @@
 import { parseSp500Csv, buildUniverseIndex, membersAsOfPrecise } from "../lib/sharadar-universe";
 import { buildCaptureDayFromHistory, buildDateIndex, type Bar, type Series } from "../lib/sharadar-features";
 import { runBacktest, DEFAULT_BACKTEST, maxDrawdown, type DayMark } from "../lib/backtest";
-import { LIVE_PROXY } from "../lib/strategy-variant";
+import { LIVE_PROXY, LIVE_PROXY_PE, type StrategyVariant } from "../lib/strategy-variant";
 import { parseFundamentalsCsv, buildFundamentalIndex, qualityAsOf } from "../lib/sharadar-quality";
 
 // NOT hardcoded to one machine. scripts/sharadar-extract.sh already honours SHARADAR_CACHE_DIR and
@@ -112,16 +112,16 @@ console.error(`trading days: ${tradingDays.length}`);
 
 /** LAZY. Each CaptureDay is built on demand and collected after use — see runBacktest's `days`. */
 function* dayStream(): Generator<import("../lib/feature-capture").CaptureDay> {
-  let qCache: Map<string, number> | null = null, qMonth = "";
+  let qCache: Map<string, number> | null = null, peCache: Map<string, number> | null = null, qMonth = "";
   for (const date of tradingDays) {
     const members = membersAsOfPrecise(universe, sp500Rows, date) ?? new Set<string>();
-    let q: Map<string, number> | undefined;
+    let q: Map<string, number> | undefined, pe: Map<string, number> | undefined;
     if (fundIndex) {
       const month = date.slice(0, 7);
-      if (month !== qMonth) { qCache = qualityAsOf(members, fundIndex, date, qualityBasis).quality; qMonth = month; }
-      q = qCache ?? undefined;
+      if (month !== qMonth) { const r = qualityAsOf(members, fundIndex, date, qualityBasis); qCache = r.quality; peCache = r.pe; qMonth = month; }
+      q = qCache ?? undefined; pe = peCache ?? undefined;
     }
-    yield buildCaptureDayFromHistory(date, members, series, dateIdx, spy.get(date) ?? null, q);
+    yield buildCaptureDayFromHistory(date, members, series, dateIdx, spy.get(date) ?? null, q, pe);
   }
 }
 
@@ -144,18 +144,23 @@ const priceOf = (date: string, symbol: string): number | null => {
 //
 // One pass per level: the day stream is lazy on purpose (materialising 28 years is several GB), so
 // each level rebuilds days. The expensive I/O — prices, fundamentals, membership — happens once.
+// --variant live-proxy-pe runs the valuation-gated clone instead of the baseline. Same data, same
+// rebalance, same costs — only the eligibility rule differs, so the two runs are comparable.
+const VARIANT: StrategyVariant = argv.includes("--variant")
+  && argv[argv.indexOf("--variant") + 1] === "live-proxy-pe" ? LIVE_PROXY_PE : LIVE_PROXY;
+
 const sweepArg = argv.indexOf("--positions");
 const sweep = sweepArg !== -1
   ? argv[sweepArg + 1].split(",").map(n => parseInt(n.trim(), 10)).filter(Number.isFinite)
-  : [LIVE_PROXY.config.maxPositions];
+  : [VARIANT.config.maxPositions];
 
 if (sweep.length > 1) {
-  console.log(`\nPOSITION SWEEP — ${LIVE_PROXY.id}, ${sweep.join("/")} positions, same rules otherwise`);
+  console.log(`\nPOSITION SWEEP — ${VARIANT.id}, ${sweep.join("/")} positions, same rules otherwise`);
   console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · stop ${DEFAULT_BACKTEST.stopLossPct}% · cost ${DEFAULT_BACKTEST.costBps}bps\n`);
   console.log(`  ${"positions".padEnd(10)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"trades".padStart(10)}`);
   console.log("  " + "─".repeat(55));
   for (const n of sweep) {
-    const variant = { ...LIVE_PROXY, config: { ...LIVE_PROXY.config, maxPositions: n } };
+    const variant = { ...VARIANT, config: { ...VARIANT.config, maxPositions: n } };
     const rr = runBacktest(variant, dayStream(), priceOf, (d) => spy.get(d) ?? null, DEFAULT_BACKTEST);
     const yrs = (Date.parse(rr.to) - Date.parse(rr.from)) / (365.25 * 86_400_000);
     const e = rr.marks.map(m => m.equity), sps = rr.marks.map(m => m.spy);
@@ -174,7 +179,7 @@ if (sweep.length > 1) {
   process.exit(0);
 }
 
-const r = runBacktest(LIVE_PROXY, dayStream(), priceOf, (d) => spy.get(d) ?? null, DEFAULT_BACKTEST);
+const r = runBacktest(VARIANT, dayStream(), priceOf, (d) => spy.get(d) ?? null, DEFAULT_BACKTEST);
 
 // ── metrics ──────────────────────────────────────────────────────────────────
 const years = (Date.parse(r.to) - Date.parse(r.from)) / (365.25 * 86_400_000);
@@ -205,8 +210,8 @@ const ir = sd(active) > 0 ? (mean(active) / sd(active)) * Math.sqrt(252) : 0;
 const spyFirst = sp.find(v => v != null) as number;
 const spyLast = [...sp].reverse().find(v => v != null) as number;
 
-console.log(`\nFULL-CYCLE BACKTEST — ${LIVE_PROXY.id}`);
-console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF (momentum-only)"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · stop ${DEFAULT_BACKTEST.stopLossPct}% ${DEFAULT_BACKTEST.stopMode} · cost ${DEFAULT_BACKTEST.costBps}bps · ${LIVE_PROXY.config.maxPositions} positions`);
+console.log(`\nFULL-CYCLE BACKTEST — ${VARIANT.id}`);
+console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF (momentum-only)"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · stop ${DEFAULT_BACKTEST.stopLossPct}% ${DEFAULT_BACKTEST.stopMode} · cost ${DEFAULT_BACKTEST.costBps}bps · ${VARIANT.config.maxPositions} positions`);
 console.log(`${r.from} → ${r.to}  (${r.days.toLocaleString()} trading days, ${years.toFixed(1)} years)\n`);
 if (!r.usable) console.log("⛔ NOT A RESULT — see notes below.\n");
 

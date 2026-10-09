@@ -295,6 +295,57 @@ export const LIVE_PROXY: StrategyVariant = {
 };
 
 /**
+ * LIVE_PROXY plus a VALUATION CEILING. Exactly one thing changes: a name must also sit in the
+ * cheaper half of the eligible cohort on point-in-time P/E. Ranking stays 12-1 momentum, quality
+ * stays above-median, sector cap and position count are untouched — so any difference in the
+ * result is attributable to the P/E gate and nothing else.
+ *
+ * THE QUESTION IT ANSWERS. The live screen ranks on momentum and gates on PROFITABILITY (ROE/ROA/
+ * leverage), never on price. P/E is computed and shown to the model as prose, so it may act as an
+ * ad-hoc tiebreaker, but nothing measures whether that helps. The orthodox prior is that it hurts:
+ * momentum and value are opposing factors, and a valuation ceiling removes precisely the names
+ * with the strongest momentum. That is a prior, not a measurement, and this makes it measurable.
+ *
+ * A CROSS-SECTIONAL MEDIAN, not a fixed multiple. A hard "P/E < 20" would be a different strategy
+ * in 1999 than in 2009 — the gate would bind on almost everything in one era and almost nothing in
+ * another, so the backtest would measure regime exposure rather than the rule.
+ *
+ * MISSING P/E EXCLUDES. A loss-maker has no meaningful P/E, and treating absent as "passes the
+ * cheapness test" would admit exactly the names a value gate exists to keep out. It costs real
+ * coverage — including genuine momentum winners that were unprofitable at the time — and that cost
+ * belongs to the rule being tested, not hidden by a default.
+ */
+export const LIVE_PROXY_PE: StrategyVariant = {
+  id: "live-proxy-pe",
+  description: "LIVE_PROXY plus a cross-sectional P/E ceiling: must also be in the cheaper half of the eligible cohort.",
+  registeredAt: "2026-10-09",
+  criteria: { minExcessReturnPct: 0, minSymbolsScored: 20, minHitRatePct: 50 },
+  config: { maxPositions: 6, maxPerSector: 2 },
+  pick(day) {
+    const q = day.rows.map(r => r.get("qualityPct")).filter((n): n is number => n != null).sort((a, b) => a - b);
+    const median = q.length ? q[Math.floor(q.length / 2)] : null;
+    const base = day.rows.filter(r => {
+      const m = r.get("mom12_1");
+      const qp = r.get("qualityPct");
+      if (m == null || m <= 0) return false;
+      if (median == null) return true;
+      return qp != null && qp >= median;
+    });
+    // The P/E median is taken over the ALREADY-ELIGIBLE cohort, not the whole universe: the
+    // question is "among names this screen would buy, does preferring the cheaper half help".
+    const pes = base.map(r => r.get("peTTM")).filter((n): n is number => n != null && n > 0).sort((a, b) => a - b);
+    const peMedian = pes.length ? pes[Math.floor(pes.length / 2)] : null;
+    // No P/E data at all that day → fall through to the baseline rather than buying nothing. A
+    // silent empty book would read as a strategy result instead of a data gap.
+    const eligible = peMedian == null ? base : base.filter(r => {
+      const pe = r.get("peTTM");
+      return pe != null && pe > 0 && pe <= peMedian;
+    });
+    return byDesc(eligible, r => r.get("mom12_1")).map(r => ({ symbol: r.symbol, score: r.get("mom12_1") ?? 0 }));
+  },
+};
+
+/**
  * Momentum with a VOLATILITY brake. Same eligibility as the baseline, but ranks on 12-1 momentum
  * divided by 30-day volatility rather than raw momentum — i.e. it prefers the name that got there
  * steadily over the one that got there violently.
@@ -360,7 +411,7 @@ export const MOM_NOT_EXTENDED: StrategyVariant = {
 };
 
 /** The registry. Adding a variant here is the ONLY thing needed to have it replayed and scored. */
-export const VARIANTS: StrategyVariant[] = [LIVE_PROXY, MOM_PER_VOL, MOM_NOT_EXTENDED];
+export const VARIANTS: StrategyVariant[] = [LIVE_PROXY, LIVE_PROXY_PE, MOM_PER_VOL, MOM_NOT_EXTENDED];
 
 export const BASELINE_VARIANT_ID = LIVE_PROXY.id;
 

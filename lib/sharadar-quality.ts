@@ -43,6 +43,9 @@ export interface FundamentalRow {
   netinc: number | null;
   /** Operating cash flow. The alternative numerator — see QualityBasis. */
   ncfo: number | null;
+  /** Sharadar's P/E for THIS filing — point-in-time by construction, since it rides the same
+   *  row as `filed`. NULL when absent or non-positive. */
+  pe?: number | null;
 }
 
 /**
@@ -66,6 +69,10 @@ export interface QualityAsOf {
   median: number;
   /** How many names had usable fundamentals. A thin cohort makes the percentile meaningless. */
   cohortSize: number;
+  /** symbol → P/E from the same filing the quality score came from, so it carries the identical
+   *  point-in-time guarantee. Absent for a loss-maker or a name with no usable filing — which is
+   *  NOT the same as "cheap", and a consumer must treat missing as unknown. */
+  pe: Map<string, number>;
 }
 
 /** Filing rows per ticker, ASCENDING by filing date. */
@@ -127,9 +134,13 @@ export function qualityAsOf(
   basis: QualityBasis = "netinc",
 ): QualityAsOf {
   const raw = new Map<string, { roe: number | null; roa: number; lev: number | null }>();
+  const pe = new Map<string, number>();
   for (const sym of cohort) {
     const f = latestFilingAsOf(index.get(sym), asOf);
     if (!f) continue;
+    // From the SAME filing as the quality inputs, so it inherits the point-in-time guarantee
+    // rather than needing its own as-of logic to get wrong.
+    if (f.pe != null && f.pe > 0) pe.set(sym, f.pe);
     const a = f.assets, e = f.equity, l = f.liabilities;
     // The ONE substitution under test. Everything downstream — the ROE/leverage exclusions, the
     // percentile composite, the median split — is identical, so any difference in results is
@@ -163,6 +174,7 @@ export function qualityAsOf(
     quality,
     median: sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0.5,
     cohortSize: quality.size,
+    pe,
   };
 }
 
@@ -178,7 +190,7 @@ export function parseFundamentalsCsv(
   const ix = (name: string) => header.indexOf(name);
   const iTicker = ix("ticker"), iDim = ix("dimension"), iDate = ix("date"),
     iCal = ix("calendardate"), iAssets = ix("assets"), iEquity = ix("equity"),
-    iLiab = ix("liabilities"), iNet = ix("netinc"), iNcfo = ix("ncfo");
+    iLiab = ix("liabilities"), iNet = ix("netinc"), iNcfo = ix("ncfo"), iPe = ix("pe");
   // A missing required column means the file is not what we think it is. Returning [] here would
   // read downstream as "no fundamentals", i.e. the screen silently degrades to momentum-only and
   // the whole point of this module evaporates without an error. Fail loudly instead.
@@ -218,6 +230,9 @@ export function parseFundamentalsCsv(
       liabilities: num(f[iLiab]), netinc: num(f[iNet]),
       // Absent column -> null, never 0. Zero operating cash flow is a real and terrible value.
       ncfo: iNcfo >= 0 ? num(f[iNcfo]) : null,
+      // Non-positive P/E -> null, not a number. Ranking cheapest-first on a negative P/E would
+      // put the biggest loss-makers at the top of a value screen.
+      pe: (() => { const v = iPe >= 0 ? num(f[iPe]) : null; return v != null && v > 0 ? v : null; })(),
     });
   }
   return out;

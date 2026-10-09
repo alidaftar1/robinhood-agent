@@ -276,3 +276,87 @@ describe("capture-day pipeline parsing degrades to skipping, never to an empty u
     expect(parseCaptureDaysResponse(null)).toEqual([]);
   });
 });
+
+// ── LIVE_PROXY_PE: the valuation gate ────────────────────────────────────────
+// The live screen ranks on momentum and gates on PROFITABILITY, never on price. This variant
+// changes exactly one thing so a backtest difference is attributable to the P/E rule alone.
+import { LIVE_PROXY_PE } from "../lib/strategy-variant";
+
+const dayWith = (rows: Array<{ symbol: string; mom: number; q: number; pe: number | null }>) => ({
+  date: "2026-10-09",
+  rows: rows.map(r => ({
+    symbol: r.symbol,
+    get: (c: string) => c === "mom12_1" ? r.mom : c === "qualityPct" ? r.q : c === "peTTM" ? r.pe : null,
+  })),
+}) as any;
+
+describe("LIVE_PROXY_PE", () => {
+  test("drops the expensive half and keeps momentum order", () => {
+    // Odd cohort, so the median is unambiguous. RICH is the most expensive and has the BEST
+    // momentum — the whole point of the gate is that it loses anyway.
+    const picks = LIVE_PROXY_PE.pick(dayWith([
+      { symbol: "CHEAP_HI", mom: 100, q: 0.9, pe: 10 },
+      { symbol: "RICH",     mom: 200, q: 0.9, pe: 90 },   // best momentum, too expensive
+      { symbol: "CHEAP_LO", mom: 50,  q: 0.9, pe: 12 },
+    ]));
+    expect(picks.map(p => p.symbol)).toEqual(["CHEAP_HI", "CHEAP_LO"]);
+  });
+
+  test("uses the BASELINE's median convention, not its own", () => {
+    // pes[floor(n/2)] takes the upper-middle on an even cohort, so the cut keeps slightly more
+    // than half. That is exactly what LIVE_PROXY does for quality, and matching it matters more
+    // than being statistically tidy: the variant must differ from the baseline in ONE way, or a
+    // backtest difference is no longer attributable to the P/E rule.
+    const picks = LIVE_PROXY_PE.pick(dayWith([
+      { symbol: "A", mom: 100, q: 0.9, pe: 10 },
+      { symbol: "B", mom: 200, q: 0.9, pe: 90 },
+      { symbol: "C", mom: 50,  q: 0.9, pe: 12 },
+      { symbol: "D", mom: 60,  q: 0.9, pe: 80 },          // == median, so retained
+    ]));
+    expect(picks.map(p => p.symbol)).toEqual(["A", "D", "C"]);
+  });
+
+  test("a MISSING P/E is excluded — absent is not 'cheap'", () => {
+    // A loss-maker has no meaningful P/E. Letting null pass would admit exactly the names a value
+    // gate exists to keep out, and would silently make the variant identical to the baseline.
+    const picks = LIVE_PROXY_PE.pick(dayWith([
+      { symbol: "LOSSMAKER", mom: 500, q: 0.9, pe: null },
+      { symbol: "CHEAP",     mom: 10,  q: 0.9, pe: 8 },
+    ]));
+    expect(picks.map(p => p.symbol)).toEqual(["CHEAP"]);
+  });
+
+  test("a NEGATIVE P/E never counts as cheap", () => {
+    const picks = LIVE_PROXY_PE.pick(dayWith([
+      { symbol: "NEG",   mom: 500, q: 0.9, pe: -5 },
+      { symbol: "CHEAP", mom: 10,  q: 0.9, pe: 8 },
+    ]));
+    expect(picks.map(p => p.symbol)).toEqual(["CHEAP"]);
+  });
+
+  test("the quality gate still applies BEFORE the P/E gate", () => {
+    const picks = LIVE_PROXY_PE.pick(dayWith([
+      { symbol: "CHEAP_JUNK", mom: 300, q: 0.1, pe: 5 },   // cheap but below-median quality
+      { symbol: "GOOD",       mom: 100, q: 0.9, pe: 20 },
+      { symbol: "GOOD2",      mom: 90,  q: 0.8, pe: 25 },
+    ]));
+    expect(picks.map(p => p.symbol)).not.toContain("CHEAP_JUNK");
+  });
+
+  test("no P/E data at all falls through to the BASELINE, not an empty book", () => {
+    // An empty book would read as a strategy result rather than a data gap — and the backtest
+    // would report it as the valuation rule failing.
+    const rows = [{ symbol: "A", mom: 100, q: 0.9, pe: null }, { symbol: "B", mom: 50, q: 0.9, pe: null }];
+    const picks = LIVE_PROXY_PE.pick(dayWith(rows));
+    expect(picks.map(p => p.symbol)).toEqual(["A", "B"]);
+  });
+
+  test("CONTROL — with uniform P/E it matches the baseline exactly", () => {
+    const rows = [
+      { symbol: "A", mom: 100, q: 0.9, pe: 20 },
+      { symbol: "B", mom: 200, q: 0.9, pe: 20 },
+    ];
+    expect(LIVE_PROXY_PE.pick(dayWith(rows)).map(p => p.symbol))
+      .toEqual(LIVE_PROXY.pick(dayWith(rows)).map(p => p.symbol));
+  });
+});
