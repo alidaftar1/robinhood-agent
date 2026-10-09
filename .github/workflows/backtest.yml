@@ -25,6 +25,10 @@ on:
         description: "Reuse cached Sharadar extracts between runs (see LICENSING note): true | false"
         required: false
         default: "false"
+      variant:
+        description: "Strategy variant: live-proxy (the live screen) | live-proxy-pe (adds a cross-sectional P/E ceiling)"
+        required: false
+        default: "live-proxy"
       positions:
         description: "Position-count sweep for the full-period run, e.g. 4,6,8,10,12 (blank = single run at the variant's own config)"
         required: false
@@ -131,7 +135,11 @@ jobs:
             # lazy by design, so each level rebuilds days rather than materialising 28 years.
             POS=""
             if [ -n "${{ inputs.positions }}" ]; then POS="--positions ${{ inputs.positions }}"; fi
-            bun scripts/full-period.ts $FLAG $POS 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+            VAR=""
+            if [ -n "${{ github.event.inputs.variant }}" ] && [ "${{ github.event.inputs.variant }}" != "live-proxy" ]; then
+              VAR="--variant ${{ github.event.inputs.variant }}"
+            fi
+            bun scripts/full-period.ts $FLAG $POS $VAR 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
