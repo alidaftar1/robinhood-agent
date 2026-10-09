@@ -11,7 +11,7 @@ why slippage prints "noise" instead of a number it cannot distinguish from zero.
 |---|---|---|---|
 | `test:fast` (908 tests) | **±0.00** | 2026-10-09, 3 identical runs, all 0 failures | deterministic — any difference is real |
 | registry replay (20 cases) | **±0** | deterministic by construction | 14/20 → 15/20 is a real gain |
-| LLM suite (~190 checks) | **≈±2.6** | 3 identical runs gave 3 / 3 / 1 failures | a 1–2 test move is NOT a result |
+| LLM suite (190 checks) | **≈±2.6** | 3 identical runs gave 3 / 3 / 1 failures | a 1–2 test move is NOT a result |
 
 Re-measure with `bun run eval:noise --suite fast --runs 3`. The floor is a property of the suite as
 it stands, not a constant — it moves when tests are added or a model changes, and a *non-zero*
@@ -30,3 +30,4 @@ readable without opening a run.
 | date | score | pct | not caught |
 |---|---|---|---|
 | 2026-10-09 | 14/20 | 70% | whipsaw-rebuy, cap-never-trims, budget-fit-order, shifted-spy-bar-beta, cost-basis-priced-holdings, earnings-record-invisible |
+| 2026-10-09 | 14/20 | 70% | whipsaw-rebuy, cap-never-trims, budget-fit-order, shifted-spy-bar-beta, cost-basis-priced-holdings, earnings-record-invisible | (first CI run — reproduced the local score exactly) |

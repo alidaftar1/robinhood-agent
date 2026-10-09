@@ -37,5 +37,15 @@ describe("reviewer-recall: live reviewer evaluation (token-gated)", () => {
     // stochastic and N is tiny, so an equality assertion would flake in CI. Just surface a drop.
     const clean = results.find((r) => !r.shouldFlag && !r.skipped);
     if (clean && clean.kPass < clean.kRan) console.warn(`[reviewer-recall] clean control drew a concern on ${clean.kRan - clean.kPass}/${clean.kRan} run(s) — specificity < 100% (stochastic; watch if it persists).`);
-  }, 120_000);
+  // 30 MINUTES, and the number is load-bearing. The harness makes FIXTURES x REVIEWER_RECALL_K
+  // live reviewer calls plus a judge call each — 9 x 5 = ~90 round-trips today. 120s could never
+  // have covered that, and a per-test timeout silently overrides the CLI --timeout, so the
+  // workflow's 180s had no effect either.
+  //
+  // It went unnoticed because the test is token-gated: with EVAL_LLM unset it returns early in
+  // microseconds, which is every local run and every CI run until the scheduled workflow added
+  // 2026-10-08 set EVAL_LLM=1 for the first time. The harness measuring the WATCHER had itself
+  // never completed a single run. Scale this with REVIEWER_RECALL_K rather than trimming
+  // fixtures — K is what makes pass@K meaningful against a stochastic reviewer.
+  }, 1_800_000);
 });

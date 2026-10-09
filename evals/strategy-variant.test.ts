@@ -282,6 +282,9 @@ describe("capture-day pipeline parsing degrades to skipping, never to an empty u
 // changes exactly one thing so a backtest difference is attributable to the P/E rule alone.
 import { LIVE_PROXY_PE } from "../lib/strategy-variant";
 
+// pick() takes (day, config); every call here uses the variant's own config, so a tiny helper
+// keeps the test bodies about the RULE rather than about plumbing.
+const CFG = LIVE_PROXY_PE.config;
 const dayWith = (rows: Array<{ symbol: string; mom: number; q: number; pe: number | null }>) => ({
   date: "2026-10-09",
   rows: rows.map(r => ({
@@ -298,7 +301,7 @@ describe("LIVE_PROXY_PE", () => {
       { symbol: "CHEAP_HI", mom: 100, q: 0.9, pe: 10 },
       { symbol: "RICH",     mom: 200, q: 0.9, pe: 90 },   // best momentum, too expensive
       { symbol: "CHEAP_LO", mom: 50,  q: 0.9, pe: 12 },
-    ]));
+    ]), CFG);
     expect(picks.map(p => p.symbol)).toEqual(["CHEAP_HI", "CHEAP_LO"]);
   });
 
@@ -312,7 +315,7 @@ describe("LIVE_PROXY_PE", () => {
       { symbol: "B", mom: 200, q: 0.9, pe: 90 },
       { symbol: "C", mom: 50,  q: 0.9, pe: 12 },
       { symbol: "D", mom: 60,  q: 0.9, pe: 80 },          // == median, so retained
-    ]));
+    ]), CFG);
     expect(picks.map(p => p.symbol)).toEqual(["A", "D", "C"]);
   });
 
@@ -322,7 +325,7 @@ describe("LIVE_PROXY_PE", () => {
     const picks = LIVE_PROXY_PE.pick(dayWith([
       { symbol: "LOSSMAKER", mom: 500, q: 0.9, pe: null },
       { symbol: "CHEAP",     mom: 10,  q: 0.9, pe: 8 },
-    ]));
+    ]), CFG);
     expect(picks.map(p => p.symbol)).toEqual(["CHEAP"]);
   });
 
@@ -330,7 +333,7 @@ describe("LIVE_PROXY_PE", () => {
     const picks = LIVE_PROXY_PE.pick(dayWith([
       { symbol: "NEG",   mom: 500, q: 0.9, pe: -5 },
       { symbol: "CHEAP", mom: 10,  q: 0.9, pe: 8 },
-    ]));
+    ]), CFG);
     expect(picks.map(p => p.symbol)).toEqual(["CHEAP"]);
   });
 
@@ -339,7 +342,7 @@ describe("LIVE_PROXY_PE", () => {
       { symbol: "CHEAP_JUNK", mom: 300, q: 0.1, pe: 5 },   // cheap but below-median quality
       { symbol: "GOOD",       mom: 100, q: 0.9, pe: 20 },
       { symbol: "GOOD2",      mom: 90,  q: 0.8, pe: 25 },
-    ]));
+    ]), CFG);
     expect(picks.map(p => p.symbol)).not.toContain("CHEAP_JUNK");
   });
 
@@ -347,7 +350,7 @@ describe("LIVE_PROXY_PE", () => {
     // An empty book would read as a strategy result rather than a data gap — and the backtest
     // would report it as the valuation rule failing.
     const rows = [{ symbol: "A", mom: 100, q: 0.9, pe: null }, { symbol: "B", mom: 50, q: 0.9, pe: null }];
-    const picks = LIVE_PROXY_PE.pick(dayWith(rows));
+    const picks = LIVE_PROXY_PE.pick(dayWith(rows), CFG);
     expect(picks.map(p => p.symbol)).toEqual(["A", "B"]);
   });
 
@@ -356,7 +359,7 @@ describe("LIVE_PROXY_PE", () => {
       { symbol: "A", mom: 100, q: 0.9, pe: 20 },
       { symbol: "B", mom: 200, q: 0.9, pe: 20 },
     ];
-    expect(LIVE_PROXY_PE.pick(dayWith(rows)).map(p => p.symbol))
-      .toEqual(LIVE_PROXY.pick(dayWith(rows)).map(p => p.symbol));
+    expect(LIVE_PROXY_PE.pick(dayWith(rows), CFG).map(p => p.symbol))
+      .toEqual(LIVE_PROXY.pick(dayWith(rows), CFG).map(p => p.symbol));
   });
 });
