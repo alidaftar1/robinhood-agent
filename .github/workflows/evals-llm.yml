@@ -1,4 +1,4 @@
-name: LLM evals (slow suite)
+name: Eval health (LLM suite + registry replay)
 
 # THE SLOW HALF OF THE SPLIT. scripts/test-fast.sh is the deterministic gate — ~900 tests in
 # seconds, safe to block a deploy on. These two files are neither fast nor deterministic: they make
@@ -75,4 +75,39 @@ jobs:
             echo ""
             echo "This suite is LLM-stochastic: a 1-3 test spread between identical runs is its noise"
             echo "floor. Treat a single new failure as a lead, not a regression — re-run before acting."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  registry-replay:
+    # Benchmarks the TEST SUITE against bugs we have already had: re-introduce each documented
+    # incident, ask whether anything goes red, report caught/replayable. ~75 seconds, so it could
+    # run per-push — it runs weekly instead because the number only moves when someone works on the
+    # suite, and a score nobody reads is worse than one that arrives with a reason to look.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Replay the registry
+        id: replay
+        run: |
+          set -o pipefail
+          bun scripts/registry-replay.ts 2>&1 | tee /tmp/replay.log || true
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Registry replay — can the suite catch bugs we have already had?"
+            echo ""
+            echo "Commit \`${GITHUB_SHA:0:7}\` · $(date -u '+%Y-%m-%d')"
+            echo ""
+            echo '```'
+            grep -E "^  [✓✗⚠]|SCORE|did not run" /tmp/replay.log || cat /tmp/replay.log
+            echo '```'
+            echo ""
+            echo "A ✗ is a LIVE control with no test behind it. A ⚠ is an anchor that drifted —"
+            echo "fix the anchor, never drop the case: a case that stops replaying is how this"
+            echo "number rots into something nobody questions."
           } >> "$GITHUB_STEP_SUMMARY"

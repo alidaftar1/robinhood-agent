@@ -56,6 +56,13 @@ jobs:
         run: bun run check:secrets
       - name: Typecheck + build (gate)
         run: bunx tsc --noEmit && bun run build
+      # Added 2026-10-08. This workflow deployed to PRODUCTION having run zero tests — secrets,
+      # typecheck and build only. The deterministic suite is ~900 tests in seconds, so there was no
+      # cost argument for leaving it out; it simply was never wired. The slow LLM suite stays out
+      # deliberately (see evals-llm.yml): it is ~55 minutes and stochastic, and a gate that flickers
+      # gets ignored.
+      - name: Deterministic evals (gate)
+        run: bun run test:fast
       - name: Install Vercel CLI
         run: npm i -g vercel
       - name: Deploy to production

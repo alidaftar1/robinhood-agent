@@ -76,6 +76,19 @@ for (const r of rows) {
   else if (!r.caught) console.log(`      NOT CAUGHT — the suite stayed green with this bug re-introduced`);
 }
 console.log(`\n  SCORE: ${caught.length}/${ran.length} replayed incidents caught (${pct.toFixed(0)}%)`);
+
+// --record appends one dated line to docs/eval-scores.md. A score printed and discarded is a
+// point, not a trend, and a benchmark that is not tracked decays quietly — the whole reason this
+// exists is that nothing read the registry. Deliberately NOT written by CI: a workflow committing
+// to main races the deploy flow for no benefit, and the Actions summary already carries the alert.
+if (process.argv.includes("--record")) {
+  const f = `${root}docs/eval-scores.md`;
+  const existing = await Bun.file(f).exists() ? await Bun.file(f).text()
+    : "# Eval scores over time\n\nAppended by `bun scripts/registry-replay.ts --record`. Each row is the\nshare of documented incidents the suite still catches. A fall means a control\nlost its test; a rise means one gained a test. Misses are named so the trend is\nreadable without opening a run.\n\n| date | score | pct | not caught |\n|---|---|---|---|\n";
+  const missed = ran.filter(r => !r.caught).map(r => r.id.split("/")[1]).join(", ") || "—";
+  await Bun.write(f, `${existing}| ${new Date().toISOString().slice(0, 10)} | ${caught.length}/${ran.length} | ${pct.toFixed(0)}% | ${missed} |\n`);
+  console.log(`  recorded to docs/eval-scores.md`);
+}
 if (rows.some(r => r.note)) console.log(`  ${rows.filter(r => r.note).length} case(s) did not run — fix the anchor, do not drop the case.`);
 console.log(`\n  ${skipped.length} incident(s) deliberately NOT replayable:`);
 for (const s of skipped) if (!s.replayable) console.log(`    · ${s.id} — ${s.why}`);
