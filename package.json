@@ -13,7 +13,8 @@
     "eval:integration": "bun test evals/integration.test.ts --timeout 15000",
     "test:unit": "bash scripts/test-fast.sh",
     "test:fast": "bash scripts/test-fast.sh",
-    "test:llm": "EVAL_LLM=1 bun --env-file=.env.local test evals/eval.test.ts evals/reviewer-recall.test.ts --timeout 180000"
+    "test:llm": "EVAL_LLM=1 bun --env-file=.env.local test evals/eval.test.ts evals/reviewer-recall.test.ts --timeout 180000",
+    "eval:replay": "bun scripts/registry-replay.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.55.0",

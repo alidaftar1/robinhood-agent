@@ -47,6 +47,16 @@ describe("wiring: ORDER of operations between components", () => {
     expect(at(s, "await fetchLiveState()")).toBeLessThan(at(s, "runSellSession(sellsToExecute"));
   });
 
+  test("patchTrades recomputes the SLEEVE split from the trades it persists", () => {
+    // 2026-10-06: the repair fixed the headline return and left mainDailyReturn computed against
+    // the UNREPAIRED trade list — -27.65% for the main sleeve beside a correct +1.12% account.
+    // computeSleeveReturns was unit-tested; the route wiring was not, which is why the registry
+    // replay still caught this at 70% after the fix shipped.
+    const s = src("app/api/debug/route.ts");
+    expect(s).toContain("sleevesFor(patchedTrades)");
+    expect(s).toMatch(/influencerDailyReturn: null, mainDailyReturn: null/);   // withheld branch too
+  });
+
   test("the trade route checks the book reconciles BEFORE computing a return", () => {
     // 2026-10-08: published +12.63% account / +23.93% main with a -$316 implied transfer, because
     // an unrecorded manual buy made the agent's own sale look like proceeds from nowhere.
@@ -133,7 +143,10 @@ describe("wiring: contracts a writer must honour", () => {
     // redisCommand encodes the whole blob into the request PATH: past 8KB at ~53 records.
     for (const f of ["lib/exit-ledger.ts", "lib/signal-ledger.ts"]) {
       const s = src(f);
-      expect(s).toContain("/pipeline");
+      // Match the CALL, not prose. `toContain("/pipeline")` passed on the comment that explains
+      // why /pipeline is used, so the assertion survived the code being changed to a GET URL —
+      // found by the registry replay, which is exactly the kind of test it exists to expose.
+      expect(s).toMatch(/fetch\(`\$\{url\}\/pipeline`/);
       expect(s).not.toMatch(/redisCommand\(\s*"set"/);
     }
   });
