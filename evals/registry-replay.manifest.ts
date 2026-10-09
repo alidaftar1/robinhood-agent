@@ -136,10 +136,110 @@ export const REPLAY_CASES: ReplayCase[] = [
     expect: "earnings exits vanish from the measurement with nothing saying so",
   },
 
-  // ── NOT REPLAYABLE as a deterministic code change ──────────────────────────
-  { id: "2026-09-01/bolded-decision-marker", replayable: false,
+  // ── OLDER INCIDENTS (fixes written before this week) ──────────────────────
+  // These are the informative ones: I did not write these fixes, so the tests covering them were
+  // not authored with these mutations in mind. Expect a lower hit rate here than on the 10-06→08
+  // cases above, and treat that gap as the finding.
+  {
+    id: "2026-07-27/re-recorded-sell",
+    incident: "One intraday fill recorded twice → phantom sell proceeds, day's return deleted",
+    replayable: true,
+    file: "lib/run-store.ts",
+    find: "export function findReRecordedSells(",
+    replace: "export function findReRecordedSells_disabled(",
+    expect: "a duplicate fill inflates proceeds (a true -0.08% day read as +13.27%)",
+  },
+  {
+    id: "2026-09-15/trim-deleted-position",
+    incident: "A 50% TRIM deleted the whole position from the MERGED view",
+    replayable: true,
+    file: "lib/run-store.ts",
+    find: "function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun {",
+    replace: "function reconcilePositions(run: TradeRun, flow?: DayFlow): TradeRun { return run;",
+    expect: "a trimmed name vanishes from the merged run instead of being reduced",
+  },
+  {
+    id: "2026-06-22/dedup-kept-thin-run",
+    incident: "Dedup kept the thin intraday run over the canonical daily one",
+    replayable: true,
+    file: "lib/run-store.ts",
+    find: "function sellConfidence(t: TradeSnapshot): number {",
+    replace: "function sellConfidence(t: TradeSnapshot): number { return 1;",
+    expect: "an inferred sell outranks a confirmed fill when merging a day",
+  },
+  {
+    id: "2026-07-24/whipsaw-rebuy",
+    incident: "Whipsaw — re-buying a name just stopped out",
+    replayable: true,
+    file: "lib/rebuy-cooldown.ts",
+    find: "): { buys: T[]; notes: string[] } {",
+    replace: "): { buys: T[]; notes: string[] } { return { buys, notes: [] };",
+    expect: "a name stopped out days ago is re-bought with no fresh catalyst",
+  },
+  {
+    id: "2026-07-14/cap-never-trims",
+    incident: "Per-position cap breach: the buy-time guard never retroactively trims",
+    replayable: true,
+    file: "lib/buy-sizing.ts",
+    find: "): { trims: Array<{ symbol: string; fraction: number; strategy: \"main\" }>; notes: string[] } {",
+    replace: "): { trims: Array<{ symbol: string; fraction: number; strategy: \"main\" }>; notes: string[] } { return { trims: [], notes: [] };",
+    expect: "a winner drifts past the cap (APA reached 28% of the book) and is never trimmed",
+  },
+  {
+    id: "2026-07-01/budget-fit-order",
+    incident: "Decided buy dropped by a T+1 rotation squeeze, leaving cash idle",
+    replayable: true,
+    file: "lib/buy-sizing.ts",
+    // Anchored past the signature: the return shape alone appears twice in this file, and the
+    // runner reports an ambiguous anchor rather than guessing which one to mutate.
+    find: "export function fitNotionalBuysToBudget<T extends { symbol: string; dollarAmount: number }>(",
+    replace: "export function fitNotionalBuysToBudget<T extends { symbol: string; dollarAmount: number }>(\n  ...[buys, _bp, ...rest]: [T[], number, ...unknown[]]\n): { sized: T[]; adjustments: string[] } { return { sized: buys, adjustments: [] }; }\nfunction _unusedFit<T extends { symbol: string; dollarAmount: number }>(",
+    expect: "buys are not fitted to the budget, so one is dropped and cash sits idle",
+  },
+  {
+    id: "2026-09-01/bolded-decision-marker",
     incident: "A markdown-BOLDED TRADE_DECISION marker silently cancelled an entire run",
-    why: "Reproduces only through live model OUTPUT formatting. Belongs in the LLM suite (evals/eval.test.ts), which this gate deliberately excludes." },
+    replayable: true,
+    file: "lib/trade-decision.ts",
+    // The fix was a TOLERANT marker match: only separators may sit between the marker and the
+    // payload. Forbidding them restores the bolded-marker no-op exactly.
+    find: "const gap = rest.match(/^[\\s:*_`]*(?:json[\\s]*)?[\\s`]*/);",
+    replace: "const gap = rest.match(/^:/);",
+    expect: "the tolerant extractor is gone, so a decorated marker no-ops the run",
+  },
+  {
+    id: "2026-09-01/shifted-spy-bar-beta",
+    incident: "Book β read 0.24 instead of ~1.2 — SPY's pre-market bar shifted the pairing",
+    replayable: true,
+    file: "lib/market-data.ts",
+    // The bug was PAIRING, not absence: an unequal tail shifted every day by one.
+    find: "export function computeStockBeta(stock: DatedCloses, spy: DatedCloses): number | null {",
+    replace: "export function computeStockBeta(stock: DatedCloses, spy: DatedCloses): number | null {\n  stock = { ts: stock.ts.slice(1), closes: stock.closes.slice(1) };",
+    expect: "β is computed on unpaired series, so one shifted bar corrupts the whole book",
+  },
+  {
+    id: "2026-07-09/cost-basis-priced-holdings",
+    incident: "Dashboard returns poisoned by cost-basis-priced holdings",
+    replayable: true,
+    file: "lib/market-data.ts",
+    find: "  priceMap: Map<string, number>,\n): Promise<string[]> {",
+    replace: "  priceMap: Map<string, number>,\n): Promise<string[]> { return [];",
+    expect: "held names are valued at avgCost, so the snapshot and every return drift",
+  },
+  {
+    id: "2026-08-04/earnings-record-invisible",
+    incident: "Sold a serial earnings-beater as 'stale' — its beat record was invisible to the model",
+    replayable: true,
+    file: "lib/earnings.ts",
+    find: "export async function fetchEarningsBeatHistory(symbols: string[]): Promise<Map<string, EarningsBeatRecord>",
+    replace: "export async function fetchEarningsBeatHistory(_unused: string[]): Promise<Map<string, EarningsBeatRecord>",
+    expect: "the carve-out the prompt names is unreachable because the data is never fetched",
+  },
+
+  // ── NOT REPLAYABLE as a deterministic code change ──────────────────────────
+  { id: "2026-08-19/earnings-exit-no-cron", replayable: false,
+    incident: "/api/earnings-exit documented as a 12pm mechanical sell had no cron entry",
+    why: "A DEPLOYMENT gap, not a code path: the route was correct and simply never scheduled. vercel.json is the artefact; a test of the code cannot see it." },
   { id: "2026-08-11/reviewer-stale-price-memory", replayable: false,
     incident: "Reviewer flagged a real, verified price as anomalous from stale training-era memory",
     why: "A model-judgment failure. evals/reviewer-recall.ts is the right harness — it already scores recall and specificity against labelled fixtures." },
