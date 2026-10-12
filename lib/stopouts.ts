@@ -84,8 +84,17 @@ export interface RecentSell {
   price: number; // the sell fill (for the "sold at $X" round-trip context)
 }
 
-// Record a discretionary main-book sell. Non-fatal — a missed record degrades to
-// today's blind behavior, never worse.
+/**
+ * Record a discretionary main-book sell, so a re-buy within the cooldown has to justify itself.
+ *
+ * WHOEVER SOLD IT. The exit that matters to a re-buy is the exit, not who placed it: if the owner
+ * sold KO on 2026-10-05, buying it back days later at a worse price is the same whipsaw the
+ * cooldown exists to prevent, and the agent attempted exactly that on 10-12. Until then this was
+ * called only from the trade route's own sell loop, so the registry held one entry — the agent's
+ * own MU exit — while five owner exits (KO, NEM, TGT, EXPD, ILMN) were invisible to it.
+ *
+ * Non-fatal — a missed record degrades to the old blind behaviour, never worse.
+ */
 export async function recordSell(symbol: string, date: string, price: number): Promise<void> {
   try {
     await redisCommand("HSET", SELLS_KEY, symbol, JSON.stringify({ symbol, date, price } satisfies RecentSell));

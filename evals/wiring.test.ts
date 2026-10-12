@@ -110,6 +110,16 @@ describe("wiring: every capability has a CALLER", () => {
 });
 
 describe("wiring: contracts a writer must honour", () => {
+  test("a captured OWNER sell arms the re-buy cooldown", () => {
+    // recordSell was called only from the trade route's own sell loop, so the registry held one
+    // entry — the agent's MU exit — while five owner exits were invisible to the guard built to
+    // stop whipsaw re-buys. On 2026-10-12 the agent decided to re-buy KO, sold by the owner seven
+    // days earlier. The exit that matters to a re-buy is the exit, not who placed it.
+    const s = src("app/api/verify/route.ts");
+    expect(s).toContain("recordSell(");
+    expect(s).toMatch(/plan\.record[\s\S]{0,300}recordSell\(/);   // fed from the CAPTURED fills
+  });
+
   test("every path that places an order stamps actor:\"agent\"", () => {
     // Provenance cannot be recovered afterwards — a human fill and an agent fill are both
     // state:"filled" with no refPrice — so a path that forgets this is unfixable later.

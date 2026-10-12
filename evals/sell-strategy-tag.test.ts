@@ -736,3 +736,46 @@ describe("applyActorTag force", () => {
     expect(run.trades[0].tradedOn).toBe("2026-10-06");   // untouched — not supplied
   });
 });
+
+// ── a captured OWNER sell must arm the re-buy cooldown ───────────────────────
+// recordSell was called only from the trade route's own sell loop, so the registry held one entry
+// (the agent's MU exit) while five owner exits — KO, NEM, TGT, EXPD, ILMN — were invisible to the
+// guard built to stop whipsaw re-buys. On 2026-10-12 the agent decided to re-buy KO, which the
+// owner had sold seven days earlier. The exit that matters to a re-buy is the exit, not who placed it.
+describe("captured sells are exits too", () => {
+  const pos = (symbol: string, quantity: string, price: string): PositionSnapshot =>
+    ({ symbol, quantity, avgCost: price, price } as PositionSnapshot);
+  const ord = (side: string, symbol: string, quantity: string, avgPrice: string): LiveOrder =>
+    ({ side, symbol, quantity, avgPrice, state: "filled", createdAt: "2026-10-05" });
+  const held = {
+    positions: [pos("KO", "0.637741", "85.86"), pos("APA", "6", "44")],
+    influencerPositions: [] as PositionSnapshot[], trades: [] as TradeSnapshot[],
+  };
+
+  test("a captured MAIN sell is a cooldown candidate — tagged main, priced, side sell", () => {
+    // The verify route feeds exactly these to recordSell; the filter it applies is
+    // side === "sell" && strategy !== "influencer" && avgPrice > 0.
+    const p = planCapture(held, { positions: [pos("APA", "6", "44")], trades: [] },
+                          [ord("sell", "KO", "0.637741", "86.42")], { from: "2026-10-04", to: "2026-10-05" });
+    const [t] = p.record;
+    expect(t.side).toBe("sell");
+    expect(t.strategy).toBe("main");
+    expect(parseFloat(t.avgPrice)).toBeGreaterThan(0);
+    expect(t.tradedOn).toBe("2026-10-05");      // the cooldown dates from the real fill, not the run
+  });
+
+  test("a captured SLEEVE sell is NOT a cooldown candidate", () => {
+    // The sleeve has its own rotation rules; the churn concern is the main book, matching the
+    // trade route's own exclusion.
+    const sleeve = { ...held, influencerPositions: [pos("KO", "0.637741", "85.86")] };
+    const p = planCapture(sleeve, { positions: [pos("APA", "6", "44")], trades: [] },
+                          [ord("sell", "KO", "0.637741", "86.42")], { from: "2026-10-04", to: "2026-10-05" });
+    expect(p.record[0].strategy).toBe("influencer");
+  });
+
+  test("a captured BUY is never a cooldown candidate", () => {
+    const p = planCapture(held, { positions: [...held.positions, pos("HWM", "1", "228")], trades: [] },
+                          [ord("buy", "HWM", "1", "227.80")], { from: "2026-10-04", to: "2026-10-05" });
+    expect(p.record.every(t => t.side !== "sell")).toBe(true);
+  });
+});

@@ -41,7 +41,7 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     lesson:
       "The reviewer reported HIGH that today's three decided buys had vanished with 'no buySizingAdjustments note', citing a cap-drop note 'from the previous day's run'. All three notes were present in TODAY's run — 'MU/ROST/GOOGL buy DROPPED — main book at its 6-position cap (8 kept, 0 new slot(s) available)'. It had read 10-05's note, which says '10 kept', and concluded today's was absent. Registry #25 says every drop path must leave a note; the note was there and the cap was working exactly as designed.",
     check:
-      "buySizingAdjustments is PER-RUN. Before reporting a missing drop note, read the notes on the run being reviewed and quote them. The cap note embeds the position count ('N kept'); if that number does not match today's main-book size you are reading another day's run. A buy dropped WITH a matching note is a guard working, never an anomaly.",
+      "buySizingAdjustments is PER-RUN. Before reporting a missing drop note, read the notes on the run being reviewed and quote them. The cap note embeds the position count ('N kept'); if that number does not match today's main-book size you are reading another day's run. A buy dropped WITH a matching note is a guard working, never an anomaly. RECURRED 2026-10-12 in a sharper form: the concern asserted 'buySizingAdjustments contains no KO drop note' and then QUOTED that exact note in the same sentence. Quoting the note is not the test — it was already doing that. THE TEST IS: if you can quote a drop note for the symbol, the note is NOT missing and there is no anomaly to report, however the rest of the sentence reads. Check that your own evidence contradicts your own claim before filing it.",
   },
   {
     date: "2026-10-06",

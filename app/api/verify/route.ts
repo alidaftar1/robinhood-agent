@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { recordSell } from "@/lib/stopouts";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
@@ -288,6 +289,18 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
           mainDailyReturn: clampSleeveReturn(rawSleeves.mainDailyReturn),
           ...(plan.reconciles ? { returnLocked: false } : {}),
         }));
+        // A captured SELL is still an exit: feed it to the re-buy cooldown so the agent cannot buy
+        // back next week what the owner sold this week. recordSell was previously called only from
+        // the trade route's own sell loop, so every owner exit was invisible to the guard built to
+        // stop exactly this — and on 2026-10-12 the agent decided to re-buy KO, sold by the owner
+        // seven days earlier. Influencer-sleeve names are excluded, matching the trade route: the
+        // sleeve has its own rotation rules and the churn concern is the main book.
+        await Promise.all(
+          plan.record
+            .filter(t => t.side === "sell" && t.strategy !== "influencer" && parseFloat(t.avgPrice) > 0)
+            .map(t => recordSell(t.symbol, t.tradedOn ?? storedRun.date, parseFloat(t.avgPrice)).catch(() => {})),
+        );
+
         console.log("CAPTURED_UNCAPTURED_ORDERS", {
           date: storedRun.date, recorded: plan.record.length, superseded: plan.supersede.length,
           reconciles: plan.reconciles, residual: plan.residual,

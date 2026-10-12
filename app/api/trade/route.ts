@@ -994,8 +994,16 @@ export async function GET(request: Request) {
         // Recorded, not just logged — the autopilot's decided-vs-executed check reads an absent buy
         // WITHOUT a note as an unexplained anomaly and dispatches the paid cloud agent at a guard
         // doing its job.
+        // States what was left AT THE DROP, not the batch's starting allowance. Reporting the
+        // opening figure read as a contradiction — on 2026-10-12 the note said "1 new slot(s)
+        // available" on a DROP, because ROST had taken that slot earlier in the same filter. The
+        // numbers were right and the sentence was unreadable; the reviewer raised it, correctly.
+        const openedWith = allowedNewMain === 0
+          ? "no slots were open"
+          : `${allowedNewMain} slot(s) opened this run and ${keptNew} were taken first`;
         buySizingAdjustments.push(...cappedOut.map(sym =>
-          `${sym} buy DROPPED — main book at its ${TARGET_MAIN_POSITIONS}-position cap (${keptMain} kept, ${allowedNewMain} new slot(s) available)`));
+          `${sym} buy DROPPED — main book at its ${TARGET_MAIN_POSITIONS}-position cap `
+          + `(${keptMain} held at the start; ${openedWith}; 0 left for ${sym})`));
         console.log("MAIN_CAP_TRIMMED", { keptMain, allowedNewMain, cappedOut });
       }
     }
