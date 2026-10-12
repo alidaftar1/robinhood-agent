@@ -375,6 +375,37 @@ describe("conviction research is exposed as opinion, never as instruction", () =
     expect(formatConviction(r, "2026-09-22", ctx({ isRebalanceDay: false }))).not.toMatch(/the weakest holding/);
   });
 
+  test("the EXPIRY of the block is itself recorded, and never as 'research shown'", () => {
+    // formatConviction returns "" past the shelf life, which silently changes the prompt on day
+    // 91. The macro's day-46 expiry already got a trace; the pick-level one did not, and cutting
+    // the shelf life 185 -> 90 brought that day inside the live run's reach.
+    const day = (n: number) =>
+      new Date(Date.parse("2026-09-21") + n * 86_400_000).toISOString().slice(0, 10);
+    const expired = day(CONVICTION_SHELF_LIFE_DAYS + 1);
+    expect(formatConviction(run, expired, ctx())).toBe("");
+    const note = convictionAuditNote(run, expired, ctx())!;
+    expect(note).toMatch(/WITHHELD/);
+    expect(note).toContain("momentum + quality ranking alone");
+    // The note must not assert the thing it exists to deny.
+    expect(note).not.toMatch(/conviction research shown to the model/);
+    expect(note).not.toMatch(/macro shown/);
+    // ...and the LAST usable day still renders a real block, so the trace cannot pass by being
+    // emitted always.
+    expect(formatConviction(run, day(CONVICTION_SHELF_LIFE_DAYS), ctx())).not.toBe("");
+    expect(convictionAuditNote(run, day(CONVICTION_SHELF_LIFE_DAYS), ctx())).toMatch(/conviction research shown to the model/);
+  });
+
+  test("an empty render that was never a block stays silent", () => {
+    // Only the EXPIRY is a change in what the model saw. No picks, an unparseable runDate or a
+    // future one mean there was nothing to serve, and inventing a WITHHELD note for those would
+    // claim research exists where none does.
+    const noPicks: ConvictionRun = { ...run, picks: [] };
+    expect(convictionAuditNote(noPicks, "2027-09-21", ctx())).toBeNull();
+    expect(convictionAuditNote({ ...run, runDate: "not-a-date" }, "2026-09-22", ctx())).toBeNull();
+    expect(convictionAuditNote(run, "2026-09-20", ctx())).toBeNull();   // future-dated research
+    expect(convictionAuditNote(null, "2026-09-22", ctx())).toBeNull();
+  });
+
   test("the audit note reports macro from the RENDER, not from a guess", () => {
     // formatMacro returns "" for an array, an all-non-scalar snapshot, or an all-empty one. Each
     // previously logged "macro shown" while the prompt contained none.

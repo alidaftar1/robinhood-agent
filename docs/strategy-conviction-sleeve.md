@@ -205,3 +205,50 @@ $500 before it costs $500.
 3. **Search tool** for world-state, or accept a filings-only v1?
 4. **Overlap with the main book** — forbid, or cap combined exposure?
 5. **Horizon:** fixed 3 months, fixed 6, or per-thesis (model states it at entry)?
+
+---
+
+## 13. Falsifier audit — 2026-10-12 (paper run of 2026-09-21, age 21 days)
+
+Run before deciding whether to refresh or scrap the stale paper run. Date discipline: only
+developments **after 2026-09-21** can falsify a thesis written on 2026-09-21.
+
+**Result: 0 of 20 named falsifiers triggered.** 8 affirmatively NOT triggered on post-thesis
+evidence, 12 CANNOT DETERMINE. No pick comes off a screen on the basis of this check.
+
+| Symbol | Verdict | Note |
+|---|---|---|
+| MRK | undetermined | 2 not triggered, 3 await the 10-29 print |
+| ROST | undetermined | class-action exposure not triggered; 3 await 11-12 |
+| GOOGL | undetermined | antitrust remedy + server-life extension not triggered; 2 await 10-28 |
+| EXPD | **thesis intact** | both macro falsifiers moved FURTHER in the thesis's favour |
+| KO | undetermined | beta still negative on every window; 2 await 10-27 |
+
+### The finding that matters more than the verdicts
+
+**11 of the 12 undetermined falsifiers are unanswerable for one reason: the company has not
+reported since the thesis was written.** KO 10-27, GOOGL 10-28, MRK 10-29, EXPD 11-03, ROST 11-12.
+
+This is a design correction for §8's "monthly thesis review". A monthly clock will usually fire
+in a reporting gap and spend its tokens concluding "cannot determine" — the review cadence should
+be **driven by each holding's earnings calendar**, not by a fixed interval. The event-driven
+trigger in §8 is the real mechanism; the monthly one is mostly decorative.
+
+Second-order: this is also why `CONVICTION_SHELF_LIFE_DAYS` cannot be set from the falsifier
+check. A thesis can sit unfalsifiable for a full quarter by construction, so "no falsifier has
+triggered" is never evidence that a thesis is still *live* — only that it has not been *disproven*.
+The clock and the falsifiers are independent kill switches and both are needed.
+
+### Two post-thesis developments that are risk inputs, NOT triggers
+
+- **2026-10-07** — the Dutch Specialised Patent Court granted Halozyme a cross-border injunction
+  halting subcutaneous Keytruda (QLEX) in 8 EU markets. US unaffected, IV unaffected, under appeal
+  (German appeal heard 11-19). Pressures MRK's QLEX conversion arithmetic; satisfies neither QLEX
+  falsifier, both of which are keyed to reported revenue share.
+- **2026-09-30** — August core PCE printed **3.0%** y/y vs the **3.3%** the ROST thesis is keyed
+  to by name. The macro keystone cooled. September PCE lands 10-29.
+
+Both are the kind of thing a falsifier *should* have named and did not — the theses' falsifiers are
+written in reported-financials terms, which makes them rigorous but slow. Worth noting when writing
+the next thesis schema: pair each financial falsifier with one that a market or regulatory event
+can trip inside a quarter.

@@ -53,10 +53,20 @@ export interface ConvictionRun {
   spyEntry?: number;
 }
 
-/** Past this, the theses were written against a macro picture that has moved on. The paper run's
- *  own horizon is 3-6 months; treat the long end as the shelf life and say so rather than quietly
- *  serving stale conviction. */
-export const CONVICTION_SHELF_LIFE_DAYS = 185;
+/** Past this, the theses were written against a macro picture that has moved on.
+ *
+ *  THE SHORT END of the paper run's own stated 3-6 month horizon, not the long end. It was 185
+ *  (the long end) until 2026-10-12, and the asymmetry was backwards: these theses are KEYED to a
+ *  macro snapshot that expires at MACRO_SHELF_LIFE_DAYS (45), so between day 46 and day 185 the
+ *  picks kept steering selection while the conditions they were explicitly built on had already
+ *  dropped out of the prompt. ROST's thesis reads "keyed directly to verified macro — 3.3% core
+ *  PCE"; four months on, that sentence is steering buys with its own justification removed.
+ *
+ *  Erring short is the cheap direction. Expiring early costs a hint the model can live without —
+ *  every buy still has to pass the code gates. Expiring late keeps nudging a live-money screen
+ *  toward five fixed names long after anyone has re-read the reasoning, which is exactly what the
+ *  owner noticed: the same two names, ROST and KO, surfacing run after run. */
+export const CONVICTION_SHELF_LIFE_DAYS = 90;
 
 /** Per-field cap. These strings reach a live-money system prompt verbatim, and the file is editable
  *  by anything that can open a PR. A bound is not injection DEFENCE — it is a blast radius. */
@@ -68,7 +78,9 @@ const MAX_REJECTED = 8;
 const MAX_MACRO_ROWS = 12;
 /** Macro ages far faster than a company thesis. "The Fed hiked last week" is useful; the same
  *  sentence five months on is a false present tense. Picks outlive it — they have a 3-6 month
- *  horizon — so the macro block drops out on its own while the theses stay. */
+ *  horizon — so the macro block drops out on its own while the theses stay. NOTE the gap this
+ *  leaves: from day 46 the theses are served WITHOUT the macro they cite, which is why the pick
+ *  shelf life was cut to 90 rather than left at the horizon's long end. */
 export const MACRO_SHELF_LIFE_DAYS = 45;
 
 /** Flatten to a single prompt-safe line: no newlines (so a field cannot fake a section break or a
@@ -258,7 +270,19 @@ ${rows.join("\n")}`;
 /** One-line audit trail of what research the model was actually shown. */
 export function convictionAuditNote(run: ConvictionRun | null, today: string, ctx: ConvictionContext): string | null {
   const rendered = run ? formatConviction(run, today, ctx) : "";
-  if (!run || !rendered) return null;
+  if (!run) return null;
+  if (!rendered) {
+    // One empty render deserves a trace rather than silence: the block EXPIRED. Day 91 changes the
+    // prompt with nothing else in the stored run to show it, and cutting the shelf life 185 -> 90
+    // on 2026-10-12 brought that day inside the CURRENT run's reach (2026-12-20). Every other
+    // empty render -- no picks, an unparseable or future runDate -- means there was nothing to
+    // serve in the first place, which is not a change in what the model saw.
+    const expiredAge = daysSince(run.runDate, today);
+    if (run.picks?.length && expiredAge != null && expiredAge > CONVICTION_SHELF_LIFE_DAYS) {
+      return `CONTEXT — conviction research WITHHELD: the ${run.runDate} paper run is ${expiredAge}d old, past its ${CONVICTION_SHELF_LIFE_DAYS}d shelf life, so NO conviction block was shown to the model this run. Selection fell back to momentum + quality ranking alone.`;
+    }
+    return null;
+  }
   // Same sort-then-slice as the renderer: slicing the RAW order would let the note name a
   // different set of picks than the model actually saw.
   const shown = run.picks.slice().sort((a, b) => a.rank - b.rank).slice(0, MAX_PICKS);
