@@ -55,18 +55,29 @@ export interface ConvictionRun {
 
 /** Past this, the theses were written against a macro picture that has moved on.
  *
- *  THE SHORT END of the paper run's own stated 3-6 month horizon, not the long end. It was 185
- *  (the long end) until 2026-10-12, and the asymmetry was backwards: these theses are KEYED to a
- *  macro snapshot that expires at MACRO_SHELF_LIFE_DAYS (45), so between day 46 and day 185 the
- *  picks kept steering selection while the conditions they were explicitly built on had already
- *  dropped out of the prompt. ROST's thesis reads "keyed directly to verified macro — 3.3% core
- *  PCE"; four months on, that sentence is steering buys with its own justification removed.
+ *  SET FROM THE EARNINGS CALENDAR, not from the paper run's own stated 3-6 month horizon. It was
+ *  185 (that horizon's long end) until 2026-10-12, and the asymmetry was backwards: these theses
+ *  are KEYED to a macro snapshot that expires at MACRO_SHELF_LIFE_DAYS (45), so between day 46 and
+ *  day 185 the picks kept steering selection while the conditions they were explicitly built on
+ *  had already dropped out of the prompt. ROST's thesis reads "keyed directly to verified macro —
+ *  3.3% core PCE"; four months on, that sentence steers buys with its own justification removed.
  *
- *  Erring short is the cheap direction. Expiring early costs a hint the model can live without —
- *  every buy still has to pass the code gates. Expiring late keeps nudging a live-money screen
- *  toward five fixed names long after anyone has re-read the reasoning, which is exactly what the
- *  owner noticed: the same two names, ROST and KO, surfacing run after run. */
-export const CONVICTION_SHELF_LIFE_DAYS = 90;
+ *  Why 60 and not 45: the named falsifiers are written in REPORTED-FINANCIALS terms, so a thesis
+ *  has to outlive its holdings' next prints or it expires having never been testable on its own
+ *  stated terms. For the 2026-09-21 run the reports land on days 36 (KO), 37 (GOOGL), 38 (MRK),
+ *  43 (EXPD) and 52 (ROST) — so 45 would kill ROST's thesis 7 days before the only print that
+ *  could judge it, and ROST is both a name the owner flagged as recurring and the one whose macro
+ *  keystone has already moved (August core PCE printed 3.0% vs the 3.3% it cites). 60 covers all
+ *  five with 8 days' margin. Nothing justified the 30 further days to 90.
+ *
+ *  Erring short is the cheap direction otherwise. Expiring early costs a hint the model can live
+ *  without — every buy still has to pass the code gates. Expiring late keeps nudging a live-money
+ *  screen toward five fixed names long after anyone has re-read the reasoning.
+ *
+ *  A LATER RUN NEEDS THIS RE-DERIVED, not inherited: 60 is a fact about this run's distance to its
+ *  holdings' reports, not a universal number. A run dated just after a reporting season needs ~100
+ *  to reach the next one. Check the dates before trusting the constant. */
+export const CONVICTION_SHELF_LIFE_DAYS = 60;
 
 /** Per-field cap. These strings reach a live-money system prompt verbatim, and the file is editable
  *  by anything that can open a PR. A bound is not injection DEFENCE — it is a blast radius. */
@@ -80,7 +91,7 @@ const MAX_MACRO_ROWS = 12;
  *  sentence five months on is a false present tense. Picks outlive it — they have a 3-6 month
  *  horizon — so the macro block drops out on its own while the theses stay. NOTE the gap this
  *  leaves: from day 46 the theses are served WITHOUT the macro they cite, which is why the pick
- *  shelf life was cut to 90 rather than left at the horizon's long end. */
+ *  shelf life was cut to 60 rather than left at the horizon's long end. */
 export const MACRO_SHELF_LIFE_DAYS = 45;
 
 /** Flatten to a single prompt-safe line: no newlines (so a field cannot fake a section break or a
@@ -272,9 +283,9 @@ export function convictionAuditNote(run: ConvictionRun | null, today: string, ct
   const rendered = run ? formatConviction(run, today, ctx) : "";
   if (!run) return null;
   if (!rendered) {
-    // One empty render deserves a trace rather than silence: the block EXPIRED. Day 91 changes the
-    // prompt with nothing else in the stored run to show it, and cutting the shelf life 185 -> 90
-    // on 2026-10-12 brought that day inside the CURRENT run's reach (2026-12-20). Every other
+    // One empty render deserves a trace rather than silence: the block EXPIRED. Day 61 changes the
+    // prompt with nothing else in the stored run to show it, and cutting the shelf life 185 -> 60
+    // on 2026-10-12 brought that day inside the CURRENT run's reach (2026-11-20). Every other
     // empty render -- no picks, an unparseable or future runDate -- means there was nothing to
     // serve in the first place, which is not a change in what the model saw.
     const expiredAge = daysSince(run.runDate, today);

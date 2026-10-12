@@ -235,9 +235,17 @@ be **driven by each holding's earnings calendar**, not by a fixed interval. The 
 trigger in §8 is the real mechanism; the monthly one is mostly decorative.
 
 Second-order: this is also why `CONVICTION_SHELF_LIFE_DAYS` cannot be set from the falsifier
-check. A thesis can sit unfalsifiable for a full quarter by construction, so "no falsifier has
-triggered" is never evidence that a thesis is still *live* — only that it has not been *disproven*.
-The clock and the falsifiers are independent kill switches and both are needed.
+check's *verdicts*. A thesis can sit unfalsifiable for a full quarter by construction, so "no
+falsifier has triggered" is never evidence that a thesis is still *live* — only that it has not
+been *disproven*. The clock and the falsifiers are independent kill switches and both are needed.
+
+But the calendar DOES set the clock. Because every falsifier here is written in reported-financials
+terms, the shelf life has to outlive the holdings' next prints or the research expires having never
+been testable on its own stated terms. That is what fixed `CONVICTION_SHELF_LIFE_DAYS` at **60**
+for this run (185 → 90 → 60 on 2026-10-12): the reports land on days 36/37/38/43/52, so 45 would
+kill ROST's thesis 7 days before the only print that could judge it, and 60 covers all five with 8
+days' margin. **A later run must re-derive this**, not inherit 60 — a run dated just after a
+reporting season needs ~100 days to reach the next one.
 
 ### Two post-thesis developments that are risk inputs, NOT triggers
 

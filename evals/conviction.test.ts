@@ -377,8 +377,8 @@ describe("conviction research is exposed as opinion, never as instruction", () =
 
   test("the EXPIRY of the block is itself recorded, and never as 'research shown'", () => {
     // formatConviction returns "" past the shelf life, which silently changes the prompt on day
-    // 91. The macro's day-46 expiry already got a trace; the pick-level one did not, and cutting
-    // the shelf life 185 -> 90 brought that day inside the live run's reach.
+    // 61. The macro's day-46 expiry already got a trace; the pick-level one did not, and cutting
+    // the shelf life 185 -> 60 brought that day inside the live run's reach.
     const day = (n: number) =>
       new Date(Date.parse("2026-09-21") + n * 86_400_000).toISOString().slice(0, 10);
     const expired = day(CONVICTION_SHELF_LIFE_DAYS + 1);
