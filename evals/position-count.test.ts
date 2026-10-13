@@ -84,6 +84,56 @@ describe("the model can see its position count against target", () => {
     expect(countLine(Array.from({ length: 8 }, (_, i) => `S${i}`))).toContain("2 OVER target");
   });
 
+  test("at the cap it states ZERO new names, because the code enforces 6 absolutely", () => {
+    // 2026-10-13: the line said "6 held vs a target of ~6" and nothing else, so the model read a
+    // satisfied SOFT target and decided a 7th and 8th name ("the target is approximate"), both
+    // dropped by the cap. Seven such buys died this way across four of seven sessions while settled
+    // cash sat idle. The "~" governs what the book may SIT at, never what may be BOUGHT.
+    const line = countLine(["A", "B", "C", "D", "E", "F"]);
+    expect(line).toContain("NEW MAIN NAMES YOU CAN ADD TODAY: 0");
+    expect(line).toMatch(/NOT soft/);
+    expect(line).toMatch(/DROPPED before orders are placed/);
+  });
+
+  test("it names the one main-book buy that still executes at the cap: a TOP-UP", () => {
+    // app/api/trade exempts a top-up from the slot count on purpose, and the prompt never said so —
+    // leaving the model with no stated way to deploy settled cash at the cap.
+    const line = countLine(["A", "B", "C", "D", "E", "F"]);
+    expect(line).toMatch(/TOP-UP of a name you already hold does not consume a slot/);
+    expect(line).toMatch(/per-position dollar cap/);
+  });
+
+  test("the slot count does NOT reintroduce the free-a-slot nudge", () => {
+    // Same invariant as the over-target note above, on the new sentence: T+1 makes a slot-freeing
+    // sell guaranteed unpaired. Checked at the cap AND over it, the two states that would tempt it.
+    for (const n of [6, 8, 12]) {
+      const line = countLine(Array.from({ length: n }, (_, i) => `S${i}`));
+      expect(line).not.toMatch(/free-a-slot|frees? a slot/);
+      expect(line).toMatch(/NOT an instruction to sell/);
+    }
+  });
+
+  test("BELOW the cap it states the real allowance, not zero", () => {
+    // The control: if this said 0 everywhere the book could never be rebuilt after exits.
+    expect(countLine(["A", "B", "C", "D"])).toContain("NEW MAIN NAMES YOU CAN ADD TODAY: 2");
+    expect(countLine([])).toContain(`NEW MAIN NAMES YOU CAN ADD TODAY: ${TARGET_MAIN_POSITIONS}`);
+    expect(countLine(["A", "B", "C", "D"])).not.toMatch(/NOT soft/);
+  });
+
+  test("OFF-window the slot count shows but the top-up guidance does not", () => {
+    // Main buys are CLOSED off-window, so pointing at a top-up there contradicts the cadence gate.
+    const line = countLine(["A", "B", "C", "D"], [], false);
+    expect(line).toContain("NEW MAIN NAMES YOU COULD ADD: 2");
+    expect(line).toMatch(/main-book buys are CLOSED today/);
+    expect(line).not.toMatch(/TOP-UP/);
+  });
+
+  test("an influencer holding does not consume a main slot in the stated count", () => {
+    // Same exclusion the cap itself applies; stating otherwise would tell the model it is full when
+    // it has room.
+    expect(countLine(["A", "B", "C", "D", "E", "F", "G"], ["F", "G"])).toContain("NEW MAIN NAMES YOU CAN ADD TODAY: 1");
+  });
+
   test("an empty book does not render a spurious over-target warning", () => {
     expect(countLine([])).not.toContain("OVER target");
   });

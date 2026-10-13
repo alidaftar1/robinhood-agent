@@ -35,7 +35,10 @@ export const maxDuration = 200;
 // How many of a channel's picks the ledger table lists. Enough to audit a hit rate against the
 // actual names, few enough that one watchlist video (Everything Money named 17 tickers in a single
 // video) does not swamp the email. The overflow is always counted, never silently truncated.
+import { classifyNoTradeState, GUARD_DROP } from "@/lib/no-trade-cause";
+
 const LEDGER_PICKS_SHOWN = 14;
+
 
 function todayPT(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
@@ -384,7 +387,23 @@ export async function GET(request: Request) {
     // 3 weekdays in 5 — pushing it regardless would flip the email to "NEEDS ATTENTION" on most days
     // (softIssues feeds allIssues -> needsAttention -> the stored work list), desensitising the
     // banner for real problems. Logged, not raised.
-    if (isMainRebalanceDay(today, isMarketHoliday)) {
+    // Second gate, same principle as the per-symbol `explained()` below: if a guard DROPPED every
+    // decided buy and recorded why, the empty trade list is explained and "possible analysis issue"
+    // is false — the analysis produced buys, the code refused them. 2026-10-13 is the worked case:
+    // GOOGL and TGT were dropped at the 6-position cap, both notes present, and this soft issue
+    // still flipped the whole report to NEEDS ATTENTION. That is the banner desensitisation the
+    // comment above warns about, caused from inside. Logged with the note so it stays visible.
+    // Which of the three it is lives in lib/no-trade-cause, as a pure function, because the
+    // ORDERING between "a guard decided this" and "an input was missing" is the whole guard and a
+    // source-structure test cannot see a disabled branch. See its comment.
+    const noTrade = classifyNoTradeState(todayRun?.buySizingAdjustments ?? []);
+    if (noTrade.cause === "data-failure") {
+      issues.push(
+        `No trades executed with $${parseFloat(buyingPower).toFixed(2)} on hand, and ${noTrade.unestablished} buy(s) were withheld because an earnings date could NOT be established — that is a DATA failure (Finnhub key/quota/timeouts), not a strategy decision. Check FINNHUB_API_KEY and the earnings lookup.`,
+      );
+    } else if (noTrade.cause === "explained") {
+      console.log("NO_TRADES_EXPLAINED_BY_GUARD — not an issue", { buyingPower, note: noTrade.note });
+    } else if (isMainRebalanceDay(today, isMarketHoliday)) {
       softIssues.push(
         `No trades executed but buying power is $${parseFloat(buyingPower).toFixed(2)} — possible analysis issue (main-book buys were OPEN today).`,
       );
@@ -457,7 +476,6 @@ export async function GET(request: Request) {
       // lowercase prose that merely SPECULATES ("...may be rejected or crowd out later buys") for a
       // buy that was NOT dropped. Matching that case-insensitively would explain away a genuine
       // execution failure.
-      const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED)\b|off-rails/;
       const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const explained = (sym: string) => {
         // `symbol` comes straight from model output and is never validated, so an unescaped `(` or

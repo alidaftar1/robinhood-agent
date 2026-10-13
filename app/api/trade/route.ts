@@ -25,7 +25,7 @@ import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
 import { getValuations, formatValuations } from "@/lib/valuation";
 import { formatConviction, convictionAuditNote, loadConvictionRun } from "@/lib/conviction";
-import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
+import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, screenImminentEarningsBuys, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { inferSellStrategy } from "@/lib/run-store";
 import { fetchAgenticBalance, fetchAgenticPositions } from "@/lib/robinhood-balance";
@@ -427,8 +427,10 @@ export async function GET(request: Request) {
     // shortlist + held + influencer candidates. Influencer candidates were the blind spot: a fresh
     // post-earnings pop read as durable momentum (PLTR +28% 1d bought via the sleeve). Fail-safe.
     const earnSymbols = [...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld, ...influencerCandidateSet];
-    const { upcoming: perSymbolEarnings, upcomingHour: perSymbolEarningsHour, recent: recentEarnings, lastReport: perSymbolLastReport } = await fetchEarningsForSymbols(earnSymbols)
-      .catch(() => ({ upcoming: new Map<string, string>(), upcomingHour: new Map<string, string | undefined>(), recent: new Map<string, RecentEarnings>(), lastReport: new Map<string, { date: string; hour?: string }>() }));
+    const { upcoming: perSymbolEarnings, upcomingHour: perSymbolEarningsHour, recent: recentEarnings, lastReport: perSymbolLastReport, asked: earningsAsked } = await fetchEarningsForSymbols(earnSymbols)
+      // An empty `asked` on the failure path is the POINT: it means we established nothing, and the
+      // imminent-earnings buy gate below withholds rather than buying blind.
+      .catch(() => ({ upcoming: new Map<string, string>(), upcomingHour: new Map<string, string | undefined>(), recent: new Map<string, RecentEarnings>(), lastReport: new Map<string, { date: string; hour?: string }>(), asked: new Set<string>() }));
     for (const s of marketData.stocks) {
       const d = perSymbolEarnings.get(s.symbol);
       if (d && (!s.earningsDate || d < s.earningsDate)) s.earningsDate = d; // nearest upcoming wins
@@ -929,6 +931,40 @@ export async function GET(request: Request) {
         influencerGuardNotes.push(...trimmed.map(sym =>
           `${sym} buy DROPPED — influencer sleeve already at its ${MAX_INFLUENCER_POSITIONS}-position cap (${keptInfluencer} kept, ${allowedNew} new slot(s) available)`));
         console.log("INFLUENCER_CAP_TRIMMED", { keptInfluencer, allowedNew, trimmed });
+      }
+    }
+
+    // ── IMMINENT-EARNINGS BUY GATE (code, not prompt) ────────────────────────────
+    // buildV1AnalysisPrompt has carried "HARD RULE: Never buy a stock marked ⚠⚠ IMMINENT (earnings
+    // ≤3 days away). No exceptions regardless of momentum." since the earnings flags shipped, and
+    // the influencer prompt repeats it — but it lived ONLY in those prompt strings. Nothing in this
+    // route enforced it, so the one guard described as absolute was the one guard a model could
+    // talk itself past. (The sole other dte<=3 test here is inside the zero-capital mean-reversion
+    // shadow logger, which cannot affect an order.) Found 2026-10-13, when the skeptical reviewer
+    // asserted "the imminent-earnings screen should block it" for a screen that did not exist, and
+    // used ≤7 days for a ≤3-day rule. A prompt sentence is not an enforcement point.
+    //
+    // FAILS CLOSED, and the distinction is the whole guard: `earningsAsked` holds the symbols we
+    // actually got an answer for. Absence from the DATE map is ambiguous — "nothing upcoming" and
+    // "the lookup failed" look identical, because fetchEarningsForSymbols swallows !res.ok, a
+    // timeout and a parse error per symbol. Keying on the date map alone would therefore let a buy
+    // through precisely when the data is broken. So: asked + date ≤3d → block as IMMINENT; asked +
+    // no date → allow (we asked, nothing reports inside 30 days); NOT asked → block as UNKNOWN.
+    // The two notes are deliberately different sentences: one asserts a print is imminent, the
+    // other asserts only that we could not establish it, and collapsing them would make the email
+    // claim a fact about the company that we do not have.
+    //
+    // Applies to MAIN and INFLUENCER buys, and to TOP-UPS as well as new names — the gap risk is
+    // identical for added shares, and neither prompt carves out a top-up. Runs BEFORE the position
+    // cap on purpose, so a buy that cannot execute never consumes a slot the next name could use.
+    {
+      const screen = screenImminentEarningsBuys(decision.buys, earningsDatesMap, earningsAsked, today);
+      decision.buys = screen.kept;
+      if (screen.notes.length > 0) {
+        buySizingAdjustments.push(...screen.notes);
+        console.log("EARNINGS_BUY_GATE", {
+          imminent: screen.imminent, unknown: screen.unknown, asked: earningsAsked.size,
+        });
       }
     }
 

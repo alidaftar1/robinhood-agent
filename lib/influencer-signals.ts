@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { SP500_UNIVERSE } from "./strategy";
-import { formatPostEarnings, formatEarningsRecord } from "./earnings";
+import { formatPostEarnings, formatEarningsRecord, IMMINENT_EARNINGS_DAYS } from "./earnings";
 import { formatNewsTag } from "./news-tag";
 
 // ─── Channel registry ──────────────────────────────────────────────────────────
@@ -757,7 +757,7 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     let upEarnStr = "";
     if (ud && today) {
       const dte = Math.round((Date.parse(ud) - Date.parse(today)) / 86_400_000);
-      if (dte >= 0 && dte <= 30) upEarnStr = dte <= 3 ? `  ⚠⚠ IMMINENT EARNINGS ${ud} (${dte}d)` : `  ⚠EARN ${ud} (${dte}d)`;
+      if (dte >= 0 && dte <= 30) upEarnStr = dte <= IMMINENT_EARNINGS_DAYS ? `  ⚠⚠ IMMINENT EARNINGS ${ud} (${dte}d)` : `  ⚠EARN ${ud} (${dte}d)`;
     }
     // Material corporate-event news — a bearish event (lawsuit/cut guidance/deal collapse/regulatory)
     // is a real AVOID reason even on strong influencer consensus. Universal risk flag, same as the shortlist.
@@ -789,7 +789,7 @@ FILL THE SLEEVE ONLY ON A QUALIFYING SIGNAL — an empty sleeve is a valid, corr
 • Same per-position cap as the main strategy, min $50. Size each buy as a DOLLAR AMOUNT ("dollarAmount") — the broker fills fractional shares; do not compute a share count.
 • Prefer the highest NET score; a net-6 pick is a strong, broadly-covered, uncontested signal — do not ignore it. Between two similar nets, prefer the one with NO avoid split (cleaner consensus).
 • POST-EARNINGS SCREEN: a pick marked 📊REPORTED just had earnings — read the REACTION (up, DOWN, or flat), not just the net score. A big UP move = a one-time earnings GAP you'd be chasing LATE (local high, gaps give back), NOT durable trend — high-risk, prefer to skip UNLESS the row carries a strong 📈EARN-RECORD (beat most of its last quarters, solidly positive avg surprise) — a serial beater's beat can PEAD-drift further, which is a real reason to buy the pop; if you skip a high-net pick on this screen, say what its 📈EARN-RECORD was (or that it had none). A big DOWN move = the print DISAPPOINTED; creators may be hyping a fallen name — respect the ⛔DOWNTREND screen, do not catch the knife. Either way a fresh post-earnings reaction is a CONSIDERED decision: say in your thesis how the outcome informs the buy. The sleeve catches durable momentum, not one-day earnings spikes or falling knives.
-• NEWS + EARNINGS (same universal risk flags as the main book, now shown on candidates): a bearish ⚡NEWS↓ (a material event — lawsuit / cut guidance / deal collapse / regulatory) is a real reason to AVOID a pick even on strong consensus — name the event. And NEVER buy a candidate marked ⚠⚠ IMMINENT (≤3 days to earnings) — the same hard no-buy rule as the main book; ⚠EARN (≤30d) means size down / prefer a name without it.
+• NEWS + EARNINGS (same universal risk flags as the main book, now shown on candidates): a bearish ⚡NEWS↓ (a material event — lawsuit / cut guidance / deal collapse / regulatory) is a real reason to AVOID a pick even on strong consensus — name the event. And NEVER buy a candidate marked ⚠⚠ IMMINENT (≤${IMMINENT_EARNINGS_DAYS} days to earnings) — code now drops such a buy, and also drops a buy whose earnings date could not be established — the same hard no-buy rule as the main book; ⚠EARN (≤30d) means size down / prefer a name without it.
 • DOWNTREND SCREEN — THE ⛔DOWNTREND TAG IS THE RULE. It is computed in CODE and already applied to every row. Your ONLY job is to read it: a row WITHOUT ⛔DOWNTREND has PASSED the screen and is buyable. Do NOT re-derive the screen from the numbers and do NOT apply a stricter bar of your own — a pick that looks "a bit weak" to you but carries no tag is ALLOWED, and skipping it wastes a sleeve slot the system wanted filled. (2026-09-15: three qualifying picks were skipped as "failing the downtrend screen" when none was tagged — the bar was mis-stated as ">8% below recent high", conflating the two separate thresholds below.)
   The two thresholds are DIFFERENT METRICS with DIFFERENT numbers — never mix them up:
     · 5-DAY CHANGE (the row's "5d:")  →  tagged only if worse than -${Math.abs(MOMENTUM_FLOOR_PCT)}%

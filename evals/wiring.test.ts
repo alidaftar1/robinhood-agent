@@ -39,6 +39,49 @@ describe("wiring: ORDER of operations between components", () => {
     expect(capture).toBeLessThan(patch);
   });
 
+  test("the imminent-earnings screen is CALLED, and runs BEFORE the position cap", () => {
+    // 2026-10-13: "HARD RULE: Never buy a stock marked ⚠⚠ IMMINENT ... No exceptions regardless of
+    // momentum" had lived only in prompt strings for as long as the earnings flags existed — the one
+    // rule written as absolute was the only one with no enforcement behind it. The skeptical reviewer
+    // then credited the non-existent screen, which is how it surfaced. A library alone would not have
+    // fixed it (see planCapture above), so pin the CALL.
+    //
+    // ORDER matters: a buy that cannot execute must not consume one of the 6 main slots on its way to
+    // being dropped, which would silently cost the next name its slot.
+    const s = src("app/api/trade/route.ts");
+    const screen = at(s, "screenImminentEarningsBuys(decision.buys");
+    const cap = at(s, "MAIN-BOOK POSITION CAP (buy-side)");
+    expect(screen).toBeGreaterThan(-1);
+    expect(cap).toBeGreaterThan(-1);
+    expect(screen).toBeLessThan(cap);
+    // And it must be fed the ASKED set, not just the date map — passing only dates is the fail-open
+    // version that looks identical in a diff.
+    expect(s).toContain("earningsDatesMap, earningsAsked");
+  });
+
+  test("the autopilot asks lib/no-trade-cause rather than re-deriving it inline", () => {
+    // 2026-10-13: GOOGL and TGT were dropped at the position cap with both notes present, and the
+    // "No trades executed but buying power is $..." soft issue still flipped the whole report to
+    // NEEDS ATTENTION — the banner desensitisation its own comment warns about, caused from inside.
+    // The per-SYMBOL check already had this logic; the whole-LIST check did not.
+    //
+    // The ORDERING inside it (a missing input outranks a guard decision) is pinned BEHAVIOURALLY in
+    // evals/no-trade-cause.test.ts, not here: a structural assertion cannot see an `if (false && ...)`,
+    // which is exactly how a first draft of this test passed a disabled branch.
+    const s = src("app/api/autopilot/route.ts");
+    expect(s).toContain('classifyNoTradeState(todayRun?.buySizingAdjustments ?? [])');
+    const call = at(s, "const noTrade = classifyNoTradeState");
+    const issue = at(s, "possible analysis issue (main-book buys were OPEN today)");
+    expect(call).toBeGreaterThan(-1);
+    expect(call).toBeLessThan(issue);
+    // The inline copy must be GONE — two definitions of "a guard dropped this" drift apart, and the
+    // case-sensitivity rules that keep "may be rejected" from matching are the kind lost in a re-type.
+    expect(s).not.toMatch(/const unestablished = notes\.filter/);
+    // Both checks — per symbol and whole list — share ONE pattern, imported, defined nowhere here.
+    expect(s).toContain('classifyNoTradeState, GUARD_DROP } from "@/lib/no-trade-cause"');
+    expect(s).not.toMatch(/const GUARD_DROP(_RE)? = \//);
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.

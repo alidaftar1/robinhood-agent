@@ -3,7 +3,7 @@ import { formatNewsTag } from "./news-tag";
 import { formatAnalystTag, ANALYST_LOOKBACK_DAYS } from "./analyst-tag";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
 import { getAnalystRatings, type AnalystRating } from "./analyst";
-import { fetchUpcomingEarnings, formatPostEarnings, formatEarningsRecord } from "./earnings";
+import { fetchUpcomingEarnings, formatPostEarnings, formatEarningsRecord, IMMINENT_EARNINGS_DAYS } from "./earnings";
 import { INFLUENCER_BUY_FLOOR } from "./influencer-signals";
 
 export type { InsiderBuy, AnalystRating };
@@ -998,7 +998,7 @@ export function formatMarketDataForPrompt(data: MarketData): string {
     ? `\nUPCOMING EARNINGS (next 30 days):\n` +
       earningsWarnings.map((s) => {
         const daysOut = Math.round((new Date(s.earningsDate!).getTime() - Date.now()) / 86_400_000);
-        const urgency = daysOut <= 3 ? "⚠⚠ IMMINENT" : daysOut <= 7 ? "⚠ THIS WEEK" : "  upcoming";
+        const urgency = daysOut <= IMMINENT_EARNINGS_DAYS ? "⚠⚠ IMMINENT" : daysOut <= 7 ? "⚠ THIS WEEK" : "  upcoming";
         return `  ${urgency} ${s.symbol} ${s.earningsDate} (${daysOut}d)`;
       }).join("\n")
     : "";

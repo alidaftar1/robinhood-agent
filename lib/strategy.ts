@@ -1,4 +1,4 @@
-import { formatPostEarnings, formatEarningsRecord } from "./earnings";
+import { formatPostEarnings, formatEarningsRecord, IMMINENT_EARNINGS_DAYS } from "./earnings";
 import { TARGET_MAIN_POSITIONS } from "./position-target";
 import { formatNewsTag } from "./news-tag";
 import { formatAnalystTag } from "./analyst-tag";
@@ -249,7 +249,7 @@ READING THE MARKET DATA TABLE:
 - sect = the sector ETF this stock belongs to (XLK=Tech, XLF=Financials, XLV=Health, XLI=Industrials, XLY=Cons.Discret, XLP=Cons.Staples, XLE=Energy, XLC=Comm.Svcs, XLB=Materials, XLRE=Real Estate, XLU=Utilities). Cross-reference with the SECTOR ROTATION table: a stock in a 🔥 HOT sector has a macro tailwind — sector momentum compounds individual stock momentum. A stock in a ❄ COLD sector fights a headwind even if its own momentum looks decent.
 - ★INS = recent insider buying — an officer or director made an open-market purchase in the last 30 days. This is one of the strongest conviction signals: insiders only buy with their own money when they believe the stock is undervalued. Weight this heavily alongside momentum.
 - ↑FIRM$PT(upside%) / ↓FIRM$PT = analyst action in the last 7 days. ↑ = upgrade or price target raise; ↓ = downgrade or PT cut. FIRM is abbreviated (GS=Goldman Sachs, JPM=JPMorgan, MS=Morgan Stanley, BofA=BofA, Barc=Barclays, etc). $PT is the new price target and the % is implied upside vs price at time of rating. ⚡↑FIRM = impactful upgrade: a full grade upgrade with ≥15% implied upside — treat this as a high-conviction buy signal, similar weight to ★INS. A plain ↑ without ⚡ is a minor PT raise — acknowledge but don't overweight. Downgrades and PT cuts are headwinds even on high-momentum stocks.
-- ⚠EARN = earnings announcement within 30 days. This is binary risk: the stock can gap ±10%+ in one day. Size down significantly or avoid ADDING. ⚠⚠ IMMINENT means ≤3 days away — **do NOT buy under any circumstances.** If already holding through ⚠⚠ IMMINENT: this is a judgment call, not an automatic sell — a high-conviction momentum name can ride through (post-earnings drift tends to favor established winners), but TRIM or exit if the position is oversized or its thesis is weak. State your call and reasoning either way.
+- ⚠EARN = earnings announcement within 30 days. This is binary risk: the stock can gap ±10%+ in one day. Size down significantly or avoid ADDING. ⚠⚠ IMMINENT means ≤${IMMINENT_EARNINGS_DAYS} days away — **do NOT buy under any circumstances.** If already holding through ⚠⚠ IMMINENT: this is a judgment call, not an automatic sell — a high-conviction momentum name can ride through (post-earnings drift tends to favor established winners), but TRIM or exit if the position is oversized or its thesis is weak. State your call and reasoning either way.
 - vs52wHigh = how far below the 52-week high. A stock near its high (-5%) with strong momentum is in a healthy uptrend. A stock far from its high (-40%) needs a specific recovery thesis.
 - β = beta vs SPY (~1mo daily). >1 swings harder than the market, <1 cushions, "—" = insufficient history. Higher β = more market risk; weigh it against the stock's alpha before adding it.
 
@@ -265,7 +265,7 @@ CONSTRAINTS:
 - Min position size: $50 (skip a stock if 1 share costs less than $50).
 - Only trade symbols shown in the market data table above — all are S&P 500 constituents.
 - Whole shares only for BUYS — no fractional BUY orders. (SELLS may be fractional: to exit a position, sell the EXACT quantity held, including any fractional shares — never round a sell down to whole shares, that leaves a dangling fraction.)
-- HARD RULE: Never buy a stock marked ⚠⚠ IMMINENT (earnings ≤3 days away). No exceptions regardless of momentum.
+- HARD RULE: Never buy a stock marked ⚠⚠ IMMINENT (earnings ≤${IMMINENT_EARNINGS_DAYS} days away). No exceptions regardless of momentum. This is now enforced in CODE as well: such a buy is DROPPED before any order is placed, as is a buy in a name whose earnings date could not be established at all — so deciding one spends your budget on nothing.
 
 REASONING: Your written thesis (step 3 above) must appear in your response before any orders are placed. Do not start your response with an execution table — start with your thesis.
 
@@ -353,6 +353,27 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
   // forbidden, so an over-target note there is pressure with no legitimate outlet — and the only
   // available path is to reframe a rotation as a loss-discipline exit, which in a book that is
   // down would find candidates. The COUNT still shows every day; the interpretation does not.
+  // NEW-NAME SLOTS. The count alone was not enough: the prompt said "a target of ~6" and the code
+  // enforced 6 as an absolute BUY limit, so at exactly 6 the model read a soft, satisfied target and
+  // decided a 7th name — on 2026-10-13 it reasoned verbatim that "the target is approximate" and
+  // put GOOGL and TGT in TRADE_DECISION.buys, both then dropped. Seven such buys were dropped across
+  // four of seven sessions (10-05 .. 10-13) while settled cash sat idle through whole open windows.
+  // The model was not misbehaving; it was reading the prompt correctly. State the HARD number, and
+  // name the one main-book buy that still executes at the cap — a TOP-UP of a held name, which the
+  // cap deliberately exempts (app/api/trade: `if (heldMainQty.has(b.symbol) ...) return true`) and
+  // which nothing in the prompt previously mentioned. DELIBERATELY NOT SAID: that a full exit in the
+  // same run frees a slot. It is true (the cap reads mainSoldSet), but evals/position-count pins the
+  // prompt against naming it — under T+1 a slot-freeing sell cannot fund a buy the same day, so it is
+  // guaranteed unpaired and ends in cash with nothing bought. That test caught this exact sentence in
+  // the first draft of this note; leave it out. Guidance is gated on the rebalance day because
+  // off-window main buys are closed, so pointing at a top-up there would contradict the cadence gate;
+  // the NUMBER shows every day, same convention as the count itself.
+  const newMainSlots = Math.max(0, TARGET_MAIN_POSITIONS - mainHeldCount);
+  const slotNote = !isRebalanceDay
+    ? ` NEW MAIN NAMES YOU COULD ADD: ${newMainSlots} (main-book buys are CLOSED today regardless — see the cadence rule).`
+    : newMainSlots === 0
+    ? ` NEW MAIN NAMES YOU CAN ADD TODAY: 0. The "~" means the book may SIT above ${TARGET_MAIN_POSITIONS}; as a BUY limit it is NOT soft — it is enforced in code, and any new main-book name you decide beyond it is DROPPED before orders are placed, so deciding one spends that part of your budget on nothing. What IS still available: a TOP-UP of a name you already hold does not consume a slot and executes normally (subject to the per-position dollar cap), so with settled cash on hand that is the main-book buy to weigh. Under T+1 a sell does not fund a buy today, so exiting to make room would leave the book in cash with nothing bought; this is NOT an instruction to sell.`
+    : ` NEW MAIN NAMES YOU CAN ADD TODAY: ${newMainSlots} — beyond that a new main-book name is DROPPED in code. A top-up of a name you already hold does not consume a slot.`;
   const mainCountNote = materiallyOver && isRebalanceDay
     ? ` You are ${overBy} OVER target, so each position is roughly ${(TARGET_MAIN_POSITIONS / mainHeldCount * 100).toFixed(0)}% of the size the strategy assumes — a longer, thinner tail than the design intends. Treat this as a reason to BUY FEWER, LARGER names today, not as a reason to sell: under T+1 a sell does not fund a buy today, so exiting to "make room" leaves the book in cash with nothing bought. It is NOT an instruction to sell, and the loss-discipline, time-stop and hysteresis rules below are unchanged.`
     : "";
@@ -385,7 +406,7 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
         const tag = isInfl ? (isStale ? "  [INFLUENCER SLEEVE — ⏳STALE, NOT protected → ROTATE per the time-stop]" : "  [INFLUENCER SLEEVE — do not sell here]") : "";
         const dte = daysToEarnings(p.symbol);
         const earnTag = dte == null || dte < 0 || dte > 10 ? ""
-          : dte <= 3 ? `  ⚠⚠ IMMINENT EARNINGS ${earningsDates[p.symbol]} (${dte}d)`
+          : dte <= IMMINENT_EARNINGS_DAYS ? `  ⚠⚠ IMMINENT EARNINGS ${earningsDates[p.symbol]} (${dte}d)`
           : `  ⚠EARN ${earningsDates[p.symbol]} (${dte}d)`;
         // Earnings-BEAT track record — only when a name is approaching earnings (has an earnTag). This
         // is the base rate that turns "earnings coming = risk" into a real judgment: a serial beater
@@ -440,7 +461,7 @@ The BUYABLE names already passed three screens: (1) strong 12-MONTH momentum ("1
 PORTFOLIO STATE (live from Robinhood):
 - Settled buying power: ${portfolio.buyingPower} — this is your ENTIRE budget for buys today.
 - Total value: ${portfolio.totalValue ?? "unknown"}
-- MAIN-BOOK POSITIONS: ${mainHeldCount} held vs a target of ~${TARGET_MAIN_POSITIONS}.${mainCountNote}
+- MAIN-BOOK POSITIONS: ${mainHeldCount} held vs a target of ~${TARGET_MAIN_POSITIONS}.${slotNote}${mainCountNote}
 - Current positions:
 ${positionsLines}
 ${sectorSection ?? ""}
@@ -482,8 +503,8 @@ CONSTRAINTS:
 - Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
 - Size each buy as a DOLLAR AMOUNT ("dollarAmount"), NOT a share count: min $50, max $${maxPos} per position. The $50 minimum is a HARD FLOOR — if your settled buying power is itself below $50, you CANNOT make a valid buy, so buy NOTHING ("buys":[]); never shrink a buy below $50 just to deploy a smaller balance. Buys are NOTIONAL — the broker fills fractional shares from your dollar amount, so you never compute a share count, and there is no whole-share remainder or stranded cash.
 - MAIN-book buys ONLY from the shortlist above; INFLUENCER buys ONLY from the INFLUENCER SIGNALS section.
-- Never buy a name flagged with earnings ≤3 days away (⚠EARN with a date within 3 days).
-- EARNINGS ON A HELD NAME (judgment call, NOT an automatic exit): if a name you HOLD shows ⚠EARN within ~3 days, decide whether to trim/exit or ride through. A high-conviction momentum winner can ride through — post-earnings drift tends to favor established winners — but TRIM or exit if the position is oversized (near the per-position cap) or its thesis is weak. State your call and reason for any held name with imminent earnings. Do NOT blanket-sell before earnings; the point is a considered decision, not a reflex.
+- Never buy a name flagged with earnings ≤${IMMINENT_EARNINGS_DAYS} days away (⚠⚠ IMMINENT, or ⚠EARN with a date within ${IMMINENT_EARNINGS_DAYS} days). ENFORCED IN CODE since 2026-10-13: such a buy is DROPPED before any order is placed, and so is a buy in a name whose earnings date could not be established at all — so deciding one spends that part of your budget on nothing. It applies to a TOP-UP of a name you already hold as well as to a new name.
+- EARNINGS ON A HELD NAME (judgment call, NOT an automatic exit): if a name you HOLD shows ⚠EARN within ~${IMMINENT_EARNINGS_DAYS} days, decide whether to trim/exit or ride through. A high-conviction momentum winner can ride through — post-earnings drift tends to favor established winners — but TRIM or exit if the position is oversized (near the per-position cap) or its thesis is weak. State your call and reason for any held name with imminent earnings. Do NOT blanket-sell before earnings; the point is a considered decision, not a reflex.
   - 📊REPORTED (a name — on the shortlist, in the influencer signals, OR held — that JUST reported earnings, with its 1d/5d reaction WHATEVER it was: up, DOWN, or flat) is the BACKWARD-looking companion to ⚠EARN. READ THE OUTCOME and use it by decision type: (BUY) a big UP move is a LATE, RISKY momentum entry — a fresh post-earnings pop is often a one-time gap that gives back, NOT durable trend; do not chase it on price alone (the one exception: a serial beater with a strong 📈EARN-RECORD whose beat can PEAD-drift further — name the record). A big DOWN move means the market PUNISHED the print — treat it as a falling knife by DEFAULT (a broken thesis; do not buy the dip on hope); enter only with a specific reason the sell-off is an overreaction. A muted move = the print was a non-event; decide on the usual signals. (HOLD/SELL) the print RESOLVED the ⚠EARN uncertainty — a large pop is a take-profit/trim candidate (lock some gain, esp. in the influencer sleeve), a large drop is a reassess/exit (decide whether the thesis broke or it's an overreaction). CRITICAL: a big multi-day move (e.g. "5d +26%") shown NEXT TO 📊REPORTED IS the one-time earnings gap — it is NOT durable "re-acceleration", so do NOT cite that 5d% as a re-accelerating keep-reason. That move already happened; post-earnings gaps often fade (watch the "since entry" %: if you're already flat or DOWN since entry, you bought into the pop and it's giving back → lean trim/exit, not hold). State how the reaction informs your call.
   - USE THE 📈EARN-RECORD when present (the name's last-8-quarter surprise history). It is the base rate that separates a serial beater from a coin flip: a name that has beaten MOST quarters with a solidly positive avg surprise (e.g. beat ≥3/4, avg ≥ +5%) is a genuine RIDE-THROUGH candidate — the odds favor another beat + upward drift, so lean HOLD even if it's flat/⏳STALE (a serial beater into its print is exactly the case where "flat" is about to resolve UP). A mixed or negative record (beats ~half, avg near/below 0) is a true coin flip → trim if oversized. This is a tilt on the odds, NOT a guarantee: a beat can still sell off and even serial beaters eventually miss, so it argues for size/hold, never for ignoring a weak thesis. If a ⏳STALE-into-earnings name has a strong 📈EARN-RECORD, that record can OVERRIDE the stale-rotation default — name it in your thesis.
 - INFLUENCER CROSS-SIGNAL on a MAIN-book candidate (🎬INFL in the shortlist): the YouTube creators are an INDEPENDENT, momentum-oriented crowd, so their read is a SECONDARY signal on a name your quality-momentum screen already surfaced (net = weighted-buy − avoid). 🎬INFL✓ (net ≥ the sleeve bar — recommending it) STRENGTHENS the buy thesis — a second, uncorrelated source agreeing; lean toward it over an equally-ranked name with no such corroboration. BUT it's creator CONVICTION, not price-timing: still apply your own momentum/entry discipline (a name they love can still be a falling knife), and if it shows an avoid count, weigh that dissent. 🎬INFL⚠ (net < 0 — avoids outweigh buys) WARRANTS CAUTION — an independent bearish take on a name you like: size it down, prefer a comparable un-warned name, or if you still buy it your thesis MUST address why the creators' caution is wrong. 🎬INFL~ (net-flat, creators split) is CONTESTED — treat it as NO corroboration, not as endorsement; the dissent means don't lean on the influencer read here. None of these change what's eligible (a name must still clear momentum+quality) or override the caps — it's a tiebreaker/conviction input like ★INS/↓FIRM. Cite it in your thesis when it tips a decision.

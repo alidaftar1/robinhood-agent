@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { normalizeReportDate } from "@/lib/earnings";
+import { normalizeReportDate, screenImminentEarningsBuys, IMMINENT_EARNINGS_DAYS } from "@/lib/earnings";
 import { pointsIncludeReport, getValuations, type XbrlPoint } from "@/lib/valuation";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,5 +83,84 @@ describe("degraded inputs withhold the P/E rather than publish one", () => {
     const sym = `${SYM}CTRL`;
     const { valuations } = await getValuations([sym], priceOf, ctrl.signal, { fetchPoints: async () => good });
     expect(valuations.has(sym)).toBe(true);
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMMINENT-EARNINGS BUY GATE — same direction rule, on the buy side.
+//
+// Added 2026-10-13, when the skeptical reviewer asserted that "the imminent-
+// earnings screen should block it" for a screen that did not exist: the rule had
+// lived only in prompt text. The trap here is identical to normalizeReportDate's
+// — a symbol missing from the DATE map means EITHER "nothing reports inside the
+// window" OR "the lookup failed", and treating those alike buys blind exactly
+// when the data is broken.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("the imminent-earnings buy gate withholds rather than buying blind", () => {
+  const TODAY = "2026-10-14";
+  const buys = [{ symbol: "AAA" }];
+  const plus = (n: number) =>
+    new Date(Date.parse(`${TODAY}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+
+  test("a print inside the window is DROPPED, and the note names it as imminent", () => {
+    for (let d = 0; d <= IMMINENT_EARNINGS_DAYS; d++) {
+      const r = screenImminentEarningsBuys(buys, { AAA: plus(d) }, new Set(["AAA"]), TODAY);
+      expect(r.kept).toHaveLength(0);
+      expect(r.imminent).toEqual(["AAA"]);
+      expect(r.notes[0]).toContain("IMMINENT EARNINGS");
+      expect(r.notes[0]).toContain("DROPPED");
+    }
+  });
+
+  test("a symbol we could NOT ask about is DROPPED — absence of a date is not absence of risk", () => {
+    // The fail-OPEN branch: `dates` has no entry, so a screen keyed on dates alone keeps the buy.
+    const r = screenImminentEarningsBuys(buys, {}, new Set(), TODAY);
+    expect(r.kept).toHaveLength(0);
+    expect(r.unknown).toEqual(["AAA"]);
+  });
+
+  test("an UNPARSEABLE date is withheld too, not read as 'far away'", () => {
+    const r = screenImminentEarningsBuys(buys, { AAA: "not-a-date" }, new Set(["AAA"]), TODAY);
+    expect(r.kept).toHaveLength(0);
+    expect(r.unknown).toEqual(["AAA"]);
+  });
+
+  test("the two notes make DIFFERENT claims — one about the company, one about us", () => {
+    const imm = screenImminentEarningsBuys(buys, { AAA: plus(1) }, new Set(["AAA"]), TODAY).notes[0];
+    const unk = screenImminentEarningsBuys(buys, {}, new Set(), TODAY).notes[0];
+    expect(imm).not.toBe(unk);
+    // The unknown note must NOT assert a print; it asserts only that we could not establish one.
+    expect(unk).toMatch(/could NOT establish|not be parsed/);
+    expect(unk).toContain("NOT that AAA is reporting");
+    expect(unk).not.toContain("IMMINENT EARNINGS");
+  });
+
+  test("CONTROLS: undegraded input still BUYS, so the gate cannot pass by rejecting everything", () => {
+    // (a) asked, and the print is beyond the window.
+    const far = screenImminentEarningsBuys(buys, { AAA: plus(IMMINENT_EARNINGS_DAYS + 1) }, new Set(["AAA"]), TODAY);
+    expect(far.kept).toHaveLength(1);
+    expect(far.notes).toHaveLength(0);
+    // (b) asked, and nothing reports inside the 30-day window at all — the ordinary case for most
+    //     names. This is the one "no date" that is an ANSWER, and it must not be withheld.
+    const none = screenImminentEarningsBuys(buys, {}, new Set(["AAA"]), TODAY);
+    expect(none.kept).toHaveLength(1);
+    expect(none.notes).toHaveLength(0);
+    // (c) a PAST date is not imminent — it already happened.
+    const past = screenImminentEarningsBuys(buys, { AAA: plus(-1) }, new Set(["AAA"]), TODAY);
+    expect(past.kept).toHaveLength(1);
+  });
+
+  test("the screen is per-symbol: one blocked name does not take the others down", () => {
+    const many = [{ symbol: "AAA" }, { symbol: "BBB" }, { symbol: "CCC" }];
+    const r = screenImminentEarningsBuys(
+      many,
+      { AAA: plus(1), BBB: plus(20) },
+      new Set(["AAA", "BBB"]),        // CCC was never answered for
+      TODAY,
+    );
+    expect(r.kept.map(b => b.symbol)).toEqual(["BBB"]);
+    expect(r.imminent).toEqual(["AAA"]);
+    expect(r.unknown).toEqual(["CCC"]);
   });
 });

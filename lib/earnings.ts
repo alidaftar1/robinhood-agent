@@ -151,8 +151,94 @@ export function selectPastReport(
   return out;
 }
 
-export async function fetchEarningsForSymbols(symbols: string[], days = 30, lookbackDays = 60): Promise<{ upcoming: Map<string, string>; upcomingHour: Map<string, string | undefined>; recent: Map<string, RecentEarnings>; lastReport: Map<string, { date: string; hour?: string }> }> {
+/** "⚠⚠ IMMINENT" — earnings this close are a hard no-buy, enforced in app/api/trade's earnings buy
+ *  gate. ONE constant because the threshold is consumed by BOTH a machine decision (the gate) and
+ *  a human-facing claim (the ⚠⚠ tag on the shortlist, the position lines and the influencer
+ *  candidates). If those drift apart the prompt shows a flag the code ignores, or the code drops a
+ *  buy the prompt never warned about — and the model is then being judged against a rule it was
+ *  shown a different version of. */
+export const IMMINENT_EARNINGS_DAYS = 3;
+
+export interface ImminentScreenResult<T> {
+  /** Buys that may proceed. */
+  kept: T[];
+  /** One note per dropped buy, ready for buySizingAdjustments. */
+  notes: string[];
+  imminent: string[];
+  unknown: string[];
+}
+
+/**
+ * The imminent-earnings no-buy rule, as CODE. The prompt has stated it since the earnings flags
+ * shipped ("HARD RULE: Never buy a stock marked ⚠⚠ IMMINENT ... No exceptions regardless of
+ * momentum"), but nothing enforced it, so the one rule written as absolute was the one a model
+ * could talk itself past.
+ *
+ * FAILS CLOSED, and that is the entire design. `asked` is the set of symbols the lookup actually
+ * answered for. Absence from `dates` is ambiguous — "nothing reports inside the window" and "the
+ * lookup failed" are indistinguishable there, because fetchEarningsForSymbols swallows !res.ok, a
+ * timeout and a parse error per symbol. A screen keyed on `dates` alone would therefore pass a buy
+ * through PRECISELY when the data is broken, which is the fail-OPEN branch: dropping an unreadable
+ * input must not be the same as having no constraint.
+ *
+ *   asked + date ≤ N   → DROP (imminent)
+ *   asked + no date    → KEEP (we asked; nothing reports inside the window)
+ *   not asked          → DROP (unknown — we could not establish it)
+ *
+ * The two note texts are deliberately different claims: one asserts a print IS imminent, the other
+ * asserts only that WE could not establish a date. Collapsing them would make the email state a
+ * fact about the company that we do not have.
+ */
+export function screenImminentEarningsBuys<T extends { symbol: string }>(
+  buys: T[],
+  dates: Record<string, string>,
+  asked: Set<string>,
+  today: string,
+  maxDays = IMMINENT_EARNINGS_DAYS,
+): ImminentScreenResult<T> {
+  const notes: string[] = [];
+  const imminent: string[] = [];
+  const unknown: string[] = [];
+  const todayMs = Date.parse(`${today}T00:00:00Z`);
+  const kept = buys.filter(b => {
+    const sym = String(b.symbol);
+    const ed = dates[sym];
+    const edMs = ed ? Date.parse(`${ed}T00:00:00Z`) : NaN;
+    // An unparseable date is NOT a missing one: we have a value and cannot read it, so it is
+    // withheld like any other unestablished number rather than silently treated as "far away".
+    if (ed && !Number.isFinite(edMs)) {
+      unknown.push(sym);
+      notes.push(`${sym} buy DROPPED — its earnings date "${ed}" could not be parsed, so we could not establish how far away the print is. Withheld rather than buying blind; this says our data is unreadable, NOT that ${sym} is reporting.`);
+      return false;
+    }
+    if (Number.isFinite(edMs)) {
+      const dte = Math.floor((edMs - todayMs) / 86_400_000);
+      if (dte >= 0 && dte <= maxDays) {
+        imminent.push(sym);
+        notes.push(`${sym} buy DROPPED — ⚠⚠ IMMINENT EARNINGS ${ed} (${dte}d away; the rule is ≤${maxDays}d). Hard no-buy rule, enforced in code.`);
+        return false;
+      }
+      return true;
+    }
+    if (!asked.has(sym)) {
+      unknown.push(sym);
+      notes.push(`${sym} buy DROPPED — could NOT establish an earnings date (the per-symbol lookup returned no answer for it). Withheld rather than buying into an unknown print; this says our lookup failed, NOT that ${sym} is reporting.`);
+      return false;
+    }
+    return true;
+  });
+  return { kept, notes, imminent, unknown };
+}
+
+export async function fetchEarningsForSymbols(symbols: string[], days = 30, lookbackDays = 60): Promise<{ upcoming: Map<string, string>; upcomingHour: Map<string, string | undefined>; recent: Map<string, RecentEarnings>; lastReport: Map<string, { date: string; hour?: string }>; asked: Set<string> }> {
   const upcoming = new Map<string, string>();
+  // Which symbols we actually got an ANSWER for. Absence from `upcoming` is otherwise ambiguous —
+  // it means EITHER "nothing reports in the next 30 days" OR "we could not ask" (missing key, !res.ok,
+  // timeout, parse failure), and every one of those paths is silent per symbol below. A no-buy gate
+  // keyed on `upcoming` alone therefore fails OPEN exactly when the data is broken: no date looks
+  // identical to no earnings, so the buy proceeds into an unknown print. This is the non-falsy
+  // sentinel the data-integrity rule asks for — `asked` lets a caller withhold instead of publish.
+  const asked = new Set<string>();
   // Session timing for the nearest upcoming date. A name printing TODAY has only gapped if it
   // printed BEFORE the open — an "amc" name has not reported yet when the 10:30 ET cron runs, so
   // its pre-print EPS still matches its pre-print price. Same amc convention as earningsDaysAgo.
@@ -165,7 +251,7 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30, look
   const recent = new Map<string, RecentEarnings>();
   const key = process.env.FINNHUB_API_KEY;
   const uniq = [...new Set(symbols)].filter(Boolean);
-  if (!key || uniq.length === 0) return { upcoming, upcomingHour, recent, lastReport };
+  if (!key || uniq.length === 0) return { upcoming, upcomingHour, recent, lastReport, asked };
   const today = new Date().toISOString().split("T")[0];
   const from = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().split("T")[0];
   const to = new Date(Date.now() + days * 86_400_000).toISOString().split("T")[0];
@@ -180,6 +266,8 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30, look
         );
         if (!res.ok) return;
         const data = await res.json() as { earningsCalendar?: FinnhubEarningsRow[] };
+        // AFTER the parse, never before: a thrown json() must not count as an answer.
+        asked.add(sym);
         for (const row of data.earningsCalendar ?? []) {
           if (row.symbol !== sym || !row.date) continue;
           addNearest(upcoming, row.symbol, row.date, today, upcomingHour, row.hour); // nearest date >= today
@@ -190,7 +278,7 @@ export async function fetchEarningsForSymbols(symbols: string[], days = 30, look
       } catch { /* fail-safe per symbol */ }
     }));
   }
-  return { upcoming, upcomingHour, recent, lastReport };
+  return { upcoming, upcomingHour, recent, lastReport, asked };
 }
 
 // Shared render for the "just reported" flag, used on the shortlist, influencer, and held surfaces.
