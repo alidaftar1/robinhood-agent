@@ -1,9 +1,20 @@
 name: Eval health (LLM suite + registry replay)
 
-# THE SLOW HALF OF THE SPLIT. scripts/test-fast.sh is the deterministic gate — ~900 tests in
+# THE SLOW HALF OF THE SPLIT. scripts/test-fast.sh is the deterministic gate — ~950 tests in
 # seconds, safe to block a deploy on. These two files are neither fast nor deterministic: they make
-# live model calls and grade the output with an LLM judge, take ~55 minutes, and three identical
-# runs produced 3 / 3 / 1 failures. That 1-3 spread is the suite's NOISE FLOOR, not a signal.
+# live model calls and grade the output with an LLM judge, and three identical runs produced
+# 3 / 3 / 1 failures. That 1-3 spread is the suite's NOISE FLOOR, not a signal.
+#
+# RUNTIME, measured rather than estimated: 641s on 2026-10-09 and 872s on 2026-10-13, i.e. 11-15
+# minutes, not the ~55 this comment claimed until 2026-10-14. The 90-minute timeout below is now
+# generous rather than tight; left as-is because an LLM suite's tail is long and a killed run tells
+# you nothing.
+#
+# OBSERVED SCHEDULE DRIFT: the cron below asks for 11:00 UTC. The two runs to date actually started
+# at 17:15 and 17:52 UTC — GitHub defers scheduled jobs on a quiet repo, here by about seven hours.
+# So "well clear of the 07:30 trade cron" is NOT what happens; in practice this lands mid-session,
+# after the trade run. That is harmless because nothing here touches the live account (see below),
+# but do not rely on the stated hour for anything that would matter.
 #
 # So they run HERE, on a schedule, rather than in front of a deploy. A gate that flickers gets
 # ignored, and then nothing gates. The trade-off is explicit: a real regression in model BEHAVIOUR
@@ -15,7 +26,7 @@ name: Eval health (LLM suite + registry replay)
 
 on:
   schedule:
-    - cron: "0 11 * * 1-5"      # 04:00 PT weekdays — well clear of the 07:30 trade cron
+    - cron: "0 11 * * 1-5"      # asks for 04:00 PT weekdays; actually fires ~7h late (see above)
   workflow_dispatch:
     inputs:
       max_calls:
@@ -30,7 +41,7 @@ concurrency:
 jobs:
   llm-evals:
     runs-on: ubuntu-latest
-    timeout-minutes: 90          # the suite runs ~55; headroom without hanging a runner all day
+    timeout-minutes: 90          # measured 11-15 min; headroom without hanging a runner all day
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

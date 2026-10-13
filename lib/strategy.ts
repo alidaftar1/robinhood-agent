@@ -183,6 +183,14 @@ export function maxPositionDollars(totalValueText?: string | null): number {
   return Math.max(400, Math.floor(0.2 * totalVal));
 }
 
+/** The EXECUTION-session prompt — /api/drop-check, and the execution half of evals/eval.test.ts.
+ *  NOT the main analysis prompt; that is buildV1AnalysisPrompt below.
+ *
+ *  Do NOT claim here that the imminent-earnings rule is "enforced in code". It is, but only in
+ *  /api/trade (screenImminentEarningsBuys); drop-check runs no such gate and places no buys at all.
+ *  A sentence true of one caller was added here on 2026-10-13 and was false for this one — the same
+ *  widening-a-claim-by-moving-it mistake the data-integrity rules in CLAUDE.md describe. Say what is
+ *  true of THIS path. */
 export function buildSystemPrompt(today: string, marketData?: string, portfolio?: PortfolioContext): string {
   const maxPos = maxPositionDollars(portfolio?.totalValue);
   const positionsLines = portfolio?.positions?.length
@@ -265,7 +273,7 @@ CONSTRAINTS:
 - Min position size: $50 (skip a stock if 1 share costs less than $50).
 - Only trade symbols shown in the market data table above — all are S&P 500 constituents.
 - Whole shares only for BUYS — no fractional BUY orders. (SELLS may be fractional: to exit a position, sell the EXACT quantity held, including any fractional shares — never round a sell down to whole shares, that leaves a dangling fraction.)
-- HARD RULE: Never buy a stock marked ⚠⚠ IMMINENT (earnings ≤${IMMINENT_EARNINGS_DAYS} days away). No exceptions regardless of momentum. This is now enforced in CODE as well: such a buy is DROPPED before any order is placed, as is a buy in a name whose earnings date could not be established at all — so deciding one spends your budget on nothing.
+- HARD RULE: Never buy a stock marked ⚠⚠ IMMINENT (earnings ≤${IMMINENT_EARNINGS_DAYS} days away). No exceptions regardless of momentum.
 
 REASONING: Your written thesis (step 3 above) must appear in your response before any orders are placed. Do not start your response with an execution table — start with your thesis.
 
