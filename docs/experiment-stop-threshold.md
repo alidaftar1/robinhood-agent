@@ -94,3 +94,66 @@ to be TIGHTER than the sleeve's own rule (−5 same-day vs −10 from-buy); it i
 because a −10% single session is much less common than a −10% cumulative drawdown. So this path was
 loosened as a side effect, not by intent. Recorded here rather than inherited silently — if it
 proves to matter it needs its own constant instead of borrowing the main book's.
+
+
+---
+
+# Follow-up — should the main book also get a from-entry stop, like the sleeve?
+
+**Asked** 2026-10-14, after the sleeve was restricted to S&P-500 names (2026-10-04,
+`lib/market-data.ts:888`): if both sleeves now draw from the same universe, should they share stop
+rules? **Answer: no. Every cumulative bar tested makes the main book worse.**
+
+## Framing: main already HAS a from-entry rule
+
+`LOSS_DISCIPLINE_PCT = -10` exists. It is *advisory* — a justification the reasoning pass must
+answer at the weekly rebalance (`sell-rail.ts:73` uses it to decide whether a proposed exit is
+code-verifiable), never a trigger. The question was whether to make it automatic and intraday.
+
+The live design leaves each sleeve blind on one axis:
+
+| | cumulative from entry | same-day crash |
+|---|---|---|
+| main | −10%, advisory, weekly | −10%, AUTOMATIC |
+| sleeve | −10%, AUTOMATIC | none |
+
+## Result
+
+```
+FROM-ENTRY (replace the axis)          DUAL (live same-day -10 + a cumulative bar)
+  -5%     +8.65%  IR 0.11  -79.7%       -10d + -15e   +9.40%  IR 0.15  -81.3%
+  -10%    +9.52%  IR 0.16  -79.1%       -10d + -20e  +10.92%  IR 0.21  -79.9%
+  -15%    +9.43%  IR 0.16  -81.2%       -10d + -25e  +11.44%  IR 0.23  -79.2%
+  -20%   +11.04%  IR 0.22  -79.9%       -10d + -40e  +11.41%  IR 0.23  -79.0%
+  -25%   +11.58%  IR 0.25  -79.4%       -10d only    +11.51%  IR 0.24  -79.0%
+  none   +12.18%  IR 0.27  -78.8%
+```
+
+Monotonic and one-directional: **no cumulative bar at any level beats having none.** The tighter
+it is the worse it gets, and −15e deepens maxDD as well as cutting return. −40% from entry fires
+twice more in 28 years and is still fractionally worse. The `BacktestConfig` warning that
+from-entry "manufactures churn" on this book was correct, not folklore.
+
+Symmetry with the sleeve would have been a mistake. −10-from-buy suits 2 scarce slots on a 10-day
+clock; on a 6-name momentum book with hysteresis the same rule just churns.
+
+## The finding that outlives the question
+
+**Across all 23 configurations tested over the two sessions, `maxDD` never leaves −78% to −82%** —
+any axis, any level, including no stop at all. Stops do not control drawdown in this book.
+Concentration does. If the ~−78% worst case is the target, the levers are position count or a
+hedge; stop placement will not substitute for either.
+
+## Noted, not acted on
+
+`none` beats the live `-10% same-day` by 0.67pp CAGR (IR 0.27 vs 0.24) at identical drawdown, so
+the data leans toward removing the automatic crash stop. NOT proposed, for three reasons: the
+backtest evaluates on closes and so structurally understates what an intraday stop catches; it has
+no model of the sympathy-hold gate in front of the live stop; and a crash bar earns its keep in
+tail events one path can underrepresent. Removing the last automatic circuit-breaker on live money
+needs better evidence than this.
+
+## Harness note
+
+All three sweeps' `none` rows are identical (+12.18%, Sharpe 0.52, IR 0.27, −78.8%, 9,968 trades),
+which confirms the runs are deterministic and mutually comparable.

@@ -207,3 +207,45 @@ describe("stopMode: same-day vs from-entry are provably different", () => {
     expect(r.stopOuts).toBe(0);
   });
 });
+
+
+// ── The optional SECOND bar (cumulative from entry, alongside the same-day one) ──────────────
+// Added 2026-10-14 to price the gap the live design leaves: the main book automates only the
+// same-day axis and the sleeve only the cumulative one, so each is blind where the other guards.
+// These are behaviour tests, not a sweep — the sweep lives in scripts/full-period.ts.
+describe("the second, from-entry stop bar", () => {
+  // A name that bleeds steadily: never a -10% DAY, but far below entry after a few sessions.
+  const BLEED = [100, 96, 92, 88, 84, 80];
+  const dates = BLEED.map((_, i) => `2026-01-${String(i + 1).padStart(2, "0")}`);
+  const days = BLEED.map((px, i) => mkDay(dates[i], [{ s: "AAA", px }]));
+  const priceOf = (d: string, _s: string) => { const i = dates.indexOf(d); return i === -1 ? null : BLEED[i]; };
+  const run = (cfg: Partial<BacktestConfig>) => runBacktest(
+    fixedVariant(["AAA"]), days, priceOf, () => null,
+    { rebalanceEveryDays: 1000, stopLossPct: null, stopMode: "same-day", costBps: 0, startingCapital: 1000, ...cfg },
+  );
+
+  test("a -4%/day bleed never trips the SAME-DAY bar", () => {
+    // -20% from entry by the last bar, and not one -10% session. This is the main book's blind
+    // spot in one fixture.
+    expect(run({ stopLossPct: -10, stopMode: "same-day" }).stopOuts).toBe(0);
+  });
+
+  test("...but the from-entry bar catches it", () => {
+    expect(run({ entryStopPct: -10 }).stopOuts).toBe(1);
+  });
+
+  test("both bars together still fire ONCE — the position is gone after the first hit", () => {
+    expect(run({ stopLossPct: -10, stopMode: "same-day", entryStopPct: -10 }).stopOuts).toBe(1);
+  });
+
+  test("CONTROL: omitting it changes nothing, so every pre-existing config is unaffected", () => {
+    const a = run({ stopLossPct: -10, stopMode: "same-day" });
+    const b = run({ stopLossPct: -10, stopMode: "same-day", entryStopPct: null });
+    expect(a.stopOuts).toBe(b.stopOuts);
+    expect(a.marks.at(-1)!.equity).toBeCloseTo(b.marks.at(-1)!.equity, 6);
+  });
+
+  test("CONTROL: a bar set below the whole path never fires", () => {
+    expect(run({ entryStopPct: -90 }).stopOuts).toBe(0);
+  });
+});

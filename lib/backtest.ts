@@ -43,6 +43,20 @@ export interface BacktestConfig {
    * drawdown materially worse than the live rules would produce.
    */
   stopMode: "same-day" | "from-entry";
+  /**
+   * OPTIONAL SECOND BAR, always measured cumulatively from entry, applied ALONGSIDE the one above.
+   *
+   * The live system has exactly one automatic bar per sleeve and they sit on different axes: the
+   * main book stops on a same-day crash and has no automatic cumulative stop (LOSS_DISCIPLINE_PCT
+   * is a justification the reasoning pass must answer at the weekly rebalance, never a trigger),
+   * while the influencer sleeve stops cumulatively from buy and has no crash bar at all. So each
+   * sleeve is blind on the axis the other automates, and a main-book name can sit 25% underwater
+   * for a week with nothing automatic touching it.
+   *
+   * This exists to price that gap: set it with stopMode "same-day" to run BOTH bars at once.
+   * null (the default, and every pre-2026-10-14 config) means one bar, exactly as before.
+   */
+  entryStopPct?: number | null;
   /** Round-trip cost in basis points, applied on every buy and every sell. */
   costBps: number;
   /** Starting capital. Scale-invariant — reported results are percentages. */
@@ -146,7 +160,7 @@ export function runBacktest(
     let equity = cash + holdings.reduce((a, h) => a + h.shares * markPrice(h), 0);
 
     // ── 2. stops, on today's close ──
-    if (cfg.stopLossPct != null) {
+    if (cfg.stopLossPct != null || cfg.entryStopPct != null) {
       const survivors: Holding[] = [];
       for (const h of holdings) {
         const p = priceOf(date, h.symbol);
@@ -160,7 +174,11 @@ export function runBacktest(
         // NOT fall back to entry — that silently converts the stop into the tighter cumulative one.
         if (basis == null || basis <= 0) { survivors.push(h); continue; }
         const ret = ((p - basis) / basis) * 100;
-        if (ret <= cfg.stopLossPct) {
+        // The second bar, when configured, is ALWAYS from entry regardless of stopMode — that is
+        // the whole point of it, and reading it off `basis` would make it a duplicate of the first.
+        const entryRet = h.entry > 0 ? ((p - h.entry) / h.entry) * 100 : null;
+        const hitEntryBar = cfg.entryStopPct != null && entryRet != null && entryRet <= cfg.entryStopPct;
+        if ((cfg.stopLossPct != null && ret <= cfg.stopLossPct) || hitEntryBar) {
           cash += h.shares * p - cost(h.shares * p);
           stopOuts++; trades++;
         } else survivors.push(h);

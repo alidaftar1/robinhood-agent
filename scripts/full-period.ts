@@ -22,6 +22,7 @@ import { buildCaptureDayFromHistory, buildDateIndex, type Bar, type Series } fro
 import { runBacktest, DEFAULT_BACKTEST, maxDrawdown, type DayMark } from "../lib/backtest";
 import { LIVE_PROXY, LIVE_PROXY_PE, type StrategyVariant } from "../lib/strategy-variant";
 import { parseFundamentalsCsv, buildFundamentalIndex, qualityAsOf } from "../lib/sharadar-quality";
+import { MAIN_DROP_THRESHOLD_PCT } from "../lib/stopouts";
 
 // NOT hardcoded to one machine. scripts/sharadar-extract.sh already honours SHARADAR_CACHE_DIR and
 // falls back to $HOME, but these runners did not — so on GitHub Actions the extract wrote to
@@ -33,6 +34,7 @@ const TEST_FROM = "1999-01-04";   // ~253 bars later, so 12-1 momentum is define
 const TEST_TO = "2026-09-29";
 
 const argv = process.argv.slice(2);
+const MAIN_BAR = MAIN_DROP_THRESHOLD_PCT;   // the live main-book same-day bar
 const useQuality = !argv.includes("--no-quality");
 const dimension = argv.includes("--ttm") ? "ART" : "ARY";
 // The numerator under test: net income (production) vs operating cash flow.
@@ -160,6 +162,21 @@ const VARIANT: StrategyVariant = argv.includes("--variant")
 // every level, and understates them MORE at tighter levels. And the live system puts a
 // sympathy-hold judgment between the trigger and the order, which this has no model of. So these
 // rows bound the mechanical bar, not the live behaviour.
+// --stop-mode from-entry  sweeps the CUMULATIVE bar instead of the same-day one.
+// --entry-stops -15,-20   keeps the live same-day bar AND adds a cumulative one, to price running
+//                         both. Asked 2026-10-14: the main book automates only the same-day axis
+//                         and the sleeve only the cumulative one, so each is blind where the other
+//                         guards — a main name can sit 25% under entry for a week untouched.
+const stopModeArg = argv.indexOf("--stop-mode");
+const STOP_MODE: "same-day" | "from-entry" =
+  stopModeArg !== -1 && argv[stopModeArg + 1] === "from-entry" ? "from-entry" : "same-day";
+
+const entryStopsArg = argv.indexOf("--entry-stops");
+const entryStopSweep: Array<number | null> | null = entryStopsArg !== -1
+  ? argv[entryStopsArg + 1].split(",").map(t => t.trim()).map(t => t === "off" ? null : parseFloat(t))
+      .filter(v => v === null || Number.isFinite(v))
+  : null;
+
 const stopsArg = argv.indexOf("--stops");
 const stopSweep: Array<number | null> | null = stopsArg !== -1
   ? argv[stopsArg + 1].split(",").map(t => t.trim()).map(t => t === "off" ? null : parseFloat(t))
@@ -171,15 +188,29 @@ const sweep = sweepArg !== -1
   ? argv[sweepArg + 1].split(",").map(n => parseInt(n.trim(), 10)).filter(Number.isFinite)
   : [VARIANT.config.maxPositions];
 
-if (stopSweep && stopSweep.length > 0) {
-  console.log(`\nSTOP SWEEP — ${VARIANT.id}, same-day bar, ${VARIANT.config.maxPositions} positions, same rules otherwise`);
+type StopRow = { label: string; cfg: Parameters<typeof runBacktest>[4] };
+const stopRows: StopRow[] | null =
+  entryStopSweep
+    ? entryStopSweep.map(e => ({
+        label: e === null ? `${MAIN_BAR}% only` : `${MAIN_BAR}%d + ${e}%e`,
+        cfg: { ...DEFAULT_BACKTEST, stopLossPct: MAIN_BAR, stopMode: "same-day" as const, entryStopPct: e },
+      }))
+    : stopSweep
+    ? stopSweep.map(v => ({
+        label: v === null ? "none" : `${v}%`,
+        cfg: { ...DEFAULT_BACKTEST, stopLossPct: v, stopMode: STOP_MODE },
+      }))
+    : null;
+
+if (stopRows && stopRows.length > 0) {
+  const what = entryStopSweep ? `live same-day ${MAIN_BAR}% PLUS a cumulative bar` : `${STOP_MODE} bar`;
+  console.log(`\nSTOP SWEEP — ${VARIANT.id}, ${what}, ${VARIANT.config.maxPositions} positions, same rules otherwise`);
   console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · cost ${DEFAULT_BACKTEST.costBps}bps`);
   console.log(`Stops evaluated on CLOSES — intraday round-trips never fire, so every stopOut count below is a FLOOR.\n`);
-  console.log(`  ${"stop".padEnd(8)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"trades".padStart(9)}${"stopOuts".padStart(10)}${"flat days".padStart(11)}`);
-  console.log("  " + "─".repeat(73));
-  for (const stop of stopSweep) {
-    const cfg = { ...DEFAULT_BACKTEST, stopLossPct: stop };
-    const rr = runBacktest(VARIANT, dayStream(), priceOf, (d) => spy.get(d) ?? null, cfg);
+  console.log(`  ${"stop".padEnd(16)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"trades".padStart(9)}${"stopOuts".padStart(10)}${"flat days".padStart(11)}`);
+  console.log("  " + "─".repeat(81));
+  for (const row of stopRows) {
+    const rr = runBacktest(VARIANT, dayStream(), priceOf, (d) => spy.get(d) ?? null, row.cfg);
     const yrs = (Date.parse(rr.to) - Date.parse(rr.from)) / (365.25 * 86_400_000);
     const e = rr.marks.map(m => m.equity), sps = rr.marks.map(m => m.spy);
     const dr = (v: Array<number | null>) => { const o: number[] = []; for (let i=1;i<v.length;i++){const a=v[i-1],b=v[i]; if(a!=null&&b!=null&&a>0)o.push(b/a-1);} return o; };
@@ -190,9 +221,9 @@ if (stopSweep && stopSweep.length > 0) {
     const cg = (Math.pow(e[e.length-1]/e[0], 1/yrs) - 1) * 100;
     const sh = sdv(rsv) > 0 ? (mn(rsv)/sdv(rsv))*Math.sqrt(252) : 0;
     const irv = sdv(act) > 0 ? (mn(act)/sdv(act))*Math.sqrt(252) : 0;
-    const label = stop === null ? "none" : `${stop}%`;
+    const label = row.label;
     const flag = rr.usable ? "" : "  ⛔ NOT USABLE";
-    console.log(`  ${label.padEnd(8)}${pct(cg,2).padStart(9)}${sh.toFixed(2).padStart(9)}${irv.toFixed(2).padStart(8)}${pct(rr.maxDrawdownPct,1).padStart(9)}${String(rr.trades ?? "—").padStart(9)}${String(rr.stopOuts ?? "—").padStart(10)}${String(rr.daysFlat ?? "—").padStart(11)}${flag}`);
+    console.log(`  ${label.padEnd(16)}${pct(cg,2).padStart(9)}${sh.toFixed(2).padStart(9)}${irv.toFixed(2).padStart(8)}${pct(rr.maxDrawdownPct,1).padStart(9)}${String(rr.trades ?? "—").padStart(9)}${String(rr.stopOuts ?? "—").padStart(10)}${String(rr.daysFlat ?? "—").padStart(11)}${flag}`);
   }
   console.log(`\n  The live main book uses -5%. A LOOSER bar that wins here is evidence the crash stop is`);
   console.log(`  too tight; a tighter one winning would mean the opposite. Neither is a tuning licence —`);
