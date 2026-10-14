@@ -215,7 +215,7 @@ export function checkSellsImminent(calls: ToolCall[], scenario: Scenario): Check
 }
 
 /**
- * If a scenario marks positions as severely dropped (≥5% intraday), Claude must sell them.
+ * If a scenario marks positions as severely dropped (past MAIN_DROP_THRESHOLD_PCT intraday), Claude must sell them.
  * Only checks positions that are both dropped AND currently held.
  */
 export function checkSellsDropped(calls: ToolCall[], scenario: Scenario): CheckResult {
@@ -224,7 +224,7 @@ export function checkSellsDropped(calls: ToolCall[], scenario: Scenario): CheckR
   );
 
   if (droppedHeld.length === 0) {
-    return { name: "exits severely dropped holdings (≥5% intraday)", passed: true, detail: "no dropped positions in scenario" };
+    return { name: "exits severely dropped holdings (past the same-day bar)", passed: true, detail: "no dropped positions in scenario" };
   }
 
   const sold = calls
@@ -233,10 +233,10 @@ export function checkSellsDropped(calls: ToolCall[], scenario: Scenario): CheckR
 
   const notSold = droppedHeld.filter((s) => !sold.includes(s));
   return {
-    name: "exits severely dropped holdings (≥5% intraday)",
+    name: "exits severely dropped holdings (past the same-day bar)",
     passed: notSold.length === 0,
     detail: notSold.length > 0
-      ? `still holding ${notSold.join(", ")} despite ≥5% drop — should exit`
+      ? `still holding ${notSold.join(", ")} despite a severe same-day drop — should exit`
       : `correctly exited: ${droppedHeld.join(", ")}`,
   };
 }

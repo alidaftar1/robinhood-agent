@@ -18,6 +18,7 @@
 //     result. Stated rather than silently absorbed.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { MAIN_DROP_THRESHOLD_PCT } from "./stopouts";
 import { runVariantDay, type StrategyVariant } from "./strategy-variant";
 import type { CaptureDay } from "./feature-capture";
 
@@ -50,7 +51,13 @@ export interface BacktestConfig {
 
 export const DEFAULT_BACKTEST: BacktestConfig = {
   rebalanceEveryDays: 5,
-  stopLossPct: -5,
+  // IMPORTED, not re-typed: this default exists to mirror production, and a second literal would
+  // let the two drift silently — which is exactly what makes a backtest quietly stop describing
+  // the thing it is supposed to describe. Was a hardcoded -5 until 2026-10-14; figures quoted in
+  // comments elsewhere that predate that date (the position sweep in app/api/trade, the CAGR
+  // +10.60%/IR 0.18 baseline) were produced at -5 and will not reproduce at this default. Pass an
+  // explicit cfg to reproduce them.
+  stopLossPct: MAIN_DROP_THRESHOLD_PCT,
   // Matches the live main book. See stopMode's doc comment for why this is load-bearing.
   stopMode: "same-day",
   costBps: 5,

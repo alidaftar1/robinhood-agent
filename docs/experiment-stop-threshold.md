@@ -44,9 +44,9 @@ crash and is absent for the rebound. −5% is a milder case of the same mechanis
 
 1,194 stop-outs ≈ 43/year on a 6-name book: a position is ejected roughly every 6 trading days.
 
-## Recommendation (owner's call — it changes when real positions are sold)
+## Decision — APPLIED 2026-10-14 (owner approved)
 
-Move `MAIN_DROP_THRESHOLD_PCT` from **−5% to −10%**. Worth ~0.6pp CAGR and IR 0.19 → 0.24, still
+`MAIN_DROP_THRESHOLD_PCT` moved from **−5% to −10%**. Worth ~0.6pp CAGR and IR 0.19 → 0.24, still
 catches genuine single-day collapses (186 in 28 years), and makes **−10 one number across the
 book**: −10% from entry (loss discipline), −10% from buy (sleeve), −10% in a day (crash). Today the
 main book carries the tightest leash in the system on the day-move axis, which is backwards.
@@ -66,3 +66,31 @@ main book carries the tightest leash in the system on the day-move axis, which i
   to tune.
 - **~−78% drawdown at every level** is the strategy's character (concentrated, unhedged,
   long-only), not something a stop was ever going to fix.
+
+
+## What moved with it
+
+Changing the constant touched four things that had encoded −5 independently:
+
+1. **`lib/backtest.ts`** now IMPORTS `MAIN_DROP_THRESHOLD_PCT` instead of hardcoding `-5`. The
+   default exists to mirror production and a second literal lets the two drift silently. Figures
+   quoted in older comments (the position sweep, the +10.60% / IR 0.18 baseline) were produced at
+   −5 and will not reproduce at this default; pass an explicit cfg for those.
+2. **`evals/fixtures.ts`** — the `drop-check` scenario had IBM falling **6.2%** and expected a sell.
+   Under a −10% bar that day never reaches the drop-check's sell session, so the eval would have
+   been grading behaviour production cannot produce. Deepened to −12.4%.
+3. **`evals/checks.ts`** — "exits severely dropped holdings (≥5% intraday)" renamed; the number
+   lived in a check NAME, which would have gone stale silently.
+4. **`lib/stopouts.ts`** gained `stopBarFor(ctx): "main" | "sleeve"`. This one matters: with both
+   bars now at −10, every routing test asserting `stopThresholdFor(mixed) === -5` would have become
+   VACUOUS — reading −10 whichever bar was selected. Eight tests protecting which-bar-applies would
+   have passed while testing nothing. They assert the bar NAME now, and a mutation that routes
+   everything to the sleeve bar fails four of them.
+
+## Known consequence, accepted
+
+An influencer row whose **cost basis is unreadable** falls back to the main bar. That fallback used
+to be TIGHTER than the sleeve's own rule (−5 same-day vs −10 from-buy); it is now the RARER trigger,
+because a −10% single session is much less common than a −10% cumulative drawdown. So this path was
+loosened as a side effect, not by intent. Recorded here rather than inherited silently — if it
+proves to matter it needs its own constant instead of borrowing the main book's.

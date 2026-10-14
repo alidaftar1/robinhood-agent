@@ -150,7 +150,28 @@ export function resolveDropCheckExits<T extends { position: { symbol: string }; 
 // Which bar a held position is judged against, and whether it trips. Extracted from
 // app/api/drop-check so the thresholds are unit-testable — this decides real sells on
 // live money, and the two bars measure different things (see the constants there).
-export const MAIN_DROP_THRESHOLD_PCT = -5;        // same-day move, from prev close
+/** Same-day move, from prev close. NOT a stop-loss from entry — a main name can sit well
+ *  underwater indefinitely without tripping this; `LOSS_DISCIPLINE_PCT` (-10 from entry) is the
+ *  rule for that.
+ *
+ *  -5 -> -10 on 2026-10-14, on the 1999-2026 survivorship-free sweep
+ *  (`bun scripts/full-period.ts --stops -3,-5,-7,-10,-15,off`, written up in
+ *  docs/experiment-stop-threshold.md):
+ *
+ *      stop      CAGR   Sharpe     IR    maxDD   stopOuts
+ *      -3%     +7.94%     0.43   0.04   -82.5%       2964
+ *      -5%    +10.89%     0.51   0.19   -77.8%       1194   <- was here
+ *      -10%   +11.51%     0.51   0.24   -79.0%        186
+ *      none   +12.18%     0.52   0.27   -78.8%          0
+ *
+ *  maxDD is the column that decided it: it does not move across ANY setting, so the tight bar was
+ *  costing ~1.3-1.5pp CAGR a year and buying no drawdown protection. -3% has the WORST drawdown of
+ *  the six despite stopping out 2,964 times — it sells into every crash and is absent for the
+ *  rebound, and -5% was a milder case of the same mechanism (43 ejections/year on a 6-name book).
+ *  Stopped at -10 rather than -15 deliberately: -15 beats `none` by +0.18pp, which is noise, and a
+ *  bar firing 43 times in 28 years is not a guard. -10 also makes ONE number across the book —
+ *  -10 from entry (loss discipline), -10 from buy (sleeve), -10 in a day (crash). */
+export const MAIN_DROP_THRESHOLD_PCT = -10;       // same-day move, from prev close
 export const INFLUENCER_DROP_THRESHOLD_PCT = -10; // cumulative, from buy price
 export const TAKE_PROFIT_PCT = 40;                // influencer winners only
 
@@ -231,12 +252,31 @@ export function buildExitContext(args: {
   };
 }
 
-/** The stop bar for a position. The sleeve's LOOSER bar applies only to capital that is genuinely
- *  pure-sleeve AND measured the way that bar is defined; every other case falls back to the main
- *  book's tighter bar, which is the conservative direction. */
-export function stopThresholdFor(ctx: ExitContext): number {
+/** The stop bar for a position.
+ *
+ *  The two bars are now the SAME NUMBER on DIFFERENT BASELINES (-10 in a day vs -10 from buy), so
+ *  the old framing — "the sleeve's looser bar, with everything else falling back to the main book's
+ *  tighter one" — no longer describes this. Since 2026-10-14 the fallback is the RARER trigger: a
+ *  -10% single session happens far less often than a -10% cumulative drawdown. Two consequences,
+ *  both deliberate and both a loosening:
+ *    · a MIXED lot (sleeve name that also holds main shares) is judged on the main book's same-day
+ *      bar, which is the point — main-book capital follows the main book's rule.
+ *    · an influencer row whose cost basis is UNREADABLE falls back to the same-day bar too, and
+ *      that fallback used to be tighter than the sleeve's own rule. It no longer is. If that path
+ *      turns out to matter, it needs its own constant rather than borrowing this one.
+ *
+ *  `stopBarFor` names the ROUTING separately from the number, and that separation is load-bearing
+ *  now that the two numbers coincide: a test asserting `stopThresholdFor(mixed) === -10` no longer
+ *  proves the mixed lot took the MAIN bar, because it would read -10 either way. Eight routing
+ *  tests in evals/stop-thresholds would have silently gone vacuous on the -5 -> -10 change. They
+ *  assert the bar NAME instead, so they still fail if the routing inverts. */
+export function stopBarFor(ctx: ExitContext): "main" | "sleeve" {
   const pureSleeve = ctx.isInfluencer && ctx.measuredFromBuy && !ctx.mixedWithMain;
-  return pureSleeve ? INFLUENCER_DROP_THRESHOLD_PCT : MAIN_DROP_THRESHOLD_PCT;
+  return pureSleeve ? "sleeve" : "main";
+}
+
+export function stopThresholdFor(ctx: ExitContext): number {
+  return stopBarFor(ctx) === "sleeve" ? INFLUENCER_DROP_THRESHOLD_PCT : MAIN_DROP_THRESHOLD_PCT;
 }
 
 export function classifyExit(change1d: number, ctx: ExitContext): "stop" | "profit" | null {

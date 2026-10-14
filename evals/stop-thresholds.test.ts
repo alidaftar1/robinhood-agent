@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  classifyExit, stopThresholdFor, buildExitContext, symbolsWithMainOwnership, type ExitContext,
+  classifyExit, stopThresholdFor, stopBarFor, buildExitContext, symbolsWithMainOwnership, type ExitContext,
   MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT, TAKE_PROFIT_PCT,
 } from "@/lib/stopouts";
 
@@ -10,16 +10,31 @@ const MAIN = ctx();
 const INFL = ctx({ isInfluencer: true, measuredFromBuy: true });
 
 describe("stop thresholds", () => {
-  test("the two sleeves are on different bars", () => {
-    expect(MAIN_DROP_THRESHOLD_PCT).toBe(-5);
+  test("both bars are -10, on DIFFERENT baselines", () => {
+    // -5 -> -10 on 2026-10-14 (docs/experiment-stop-threshold.md). The two numbers now coincide,
+    // so the number alone no longer identifies which bar was applied — that is why every routing
+    // assertion below reads stopBarFor, not stopThresholdFor. The baselines still differ: main is
+    // a SAME-DAY move from prev close, sleeve is CUMULATIVE from buy.
+    expect(MAIN_DROP_THRESHOLD_PCT).toBe(-10);
     expect(INFLUENCER_DROP_THRESHOLD_PCT).toBe(-10);
-    expect(stopThresholdFor(MAIN)).toBe(-5);
-    expect(stopThresholdFor(INFL)).toBe(-10);
+    expect(stopBarFor(MAIN)).toBe("main");
+    expect(stopBarFor(INFL)).toBe("sleeve");
+  });
+
+  test("GUARD: if the two numbers ever diverge again, routing is still asserted by NAME", () => {
+    // A tripwire for the reverse of the 2026-10-14 mistake. Were these tests to go back to
+    // asserting raw numbers, equal constants would make them pass regardless of routing. This
+    // states the dependency out loud so the next person changing a constant sees it.
+    expect(stopThresholdFor(MAIN)).toBe(MAIN_DROP_THRESHOLD_PCT);
+    expect(stopThresholdFor(INFL)).toBe(INFLUENCER_DROP_THRESHOLD_PCT);
   });
 
   test("the influencer range that USED to stop on noise no longer does", () => {
     // The 3 observed stop-outs were -5.17% (CRM), -5.62% (CAKE), -5.66% (IMAX); 2 of 3 recovered.
     for (const pct of [-5.17, -5.62, -5.66, -6, -8, -9.99]) expect(classifyExit(pct, INFL)).toBeNull();
+    // Since 2026-10-14 the MAIN book holds through that range too — on a same-day basis, which is
+    // a different and much rarer event than the same number measured from cost.
+    for (const pct of [-5.17, -6, -9.99]) expect(classifyExit(pct, MAIN)).toBeNull();
   });
 
   test("the influencer stop still fires past -10%", () => {
@@ -27,25 +42,33 @@ describe("stop thresholds", () => {
     expect(classifyExit(-12.7, INFL)).toBe("stop");  // the PYPL-style overnight gap
   });
 
-  test("the main book is UNCHANGED at -5% — widening the sleeve must not leak", () => {
-    expect(classifyExit(-5, MAIN)).toBe("stop");     // inclusive boundary
-    expect(classifyExit(-4.99, MAIN)).toBeNull();
-    expect(classifyExit(-9, MAIN)).toBe("stop");     // would NOT stop on the sleeve's bar
+  test("the main book fires at -10% in a DAY, and no longer at -5%", () => {
+    // The 28-year sweep: -5% cost ~1.3-1.5pp CAGR/yr and moved maxDD not at all (-77.8% vs -79.0%
+    // at -10%), i.e. it was paid for in returns and bought no drawdown protection. 1,194 stop-outs
+    // over the path, ~43/yr on a 6-name book.
+    expect(classifyExit(-10, MAIN)).toBe("stop");    // inclusive boundary
+    expect(classifyExit(-9.99, MAIN)).toBeNull();
+    expect(classifyExit(-5, MAIN)).toBeNull();       // the whole point of the change
+    expect(classifyExit(-30, MAIN)).toBe("stop");    // a genuine collapse still exits
   });
 
-  test("a MIXED lot (influencer tag + main-book shares) keeps the TIGHTER main bar", () => {
+  test("a MIXED lot (influencer tag + main-book shares) is routed to the MAIN bar", () => {
+    // Main-book capital follows the main book's rule. Asserted by NAME: both numbers are -10, so
+    // a value check here would pass even if the sleeve bar were wrongly applied.
     const mixed = ctx({ isInfluencer: true, measuredFromBuy: true, mixedWithMain: true });
-    expect(stopThresholdFor(mixed)).toBe(-5);
-    expect(classifyExit(-7, mixed)).toBe("stop");
-    expect(classifyExit(-7, INFL)).toBeNull();       // same move, pure sleeve: held
+    expect(stopBarFor(mixed)).toBe("main");
+    expect(stopBarFor(INFL)).toBe("sleeve");
   });
 
-  test("an influencer row with an unusable cost basis falls back to the tighter bar", () => {
+  test("an influencer row with an unusable cost basis is routed to the MAIN bar", () => {
     // change1d is then an intraday move from prev close, which the from-cost bar doesn't describe.
+    // NOTE what changed on 2026-10-14: this fallback used to be TIGHTER than the sleeve's own rule
+    // (-5 same-day vs -10 from buy) and is now the RARER trigger, i.e. a loosening of this path.
+    // Recorded rather than silently inherited — if it matters it needs its own constant.
     const noBasis = ctx({ isInfluencer: true, measuredFromBuy: false });
-    expect(stopThresholdFor(noBasis)).toBe(-5);
-    expect(classifyExit(-8, noBasis)).toBe("stop");
-    expect(classifyExit(-8, INFL)).toBeNull();
+    expect(stopBarFor(noBasis)).toBe("main");
+    expect(classifyExit(-8, noBasis)).toBeNull();    // was "stop" under the -5 bar
+    expect(classifyExit(-11, noBasis)).toBe("stop");
   });
 
   test("take-profit is influencer-only, from-buy-only, and unchanged", () => {
@@ -110,7 +133,7 @@ describe("main-ownership detection", () => {
 
   test("a run with NO sleeve tracking is ignored, not read as all-main", () => {
     // influencerPositions === undefined predates tracking. Treating its positions as main would
-    // mark every symbol and silently collapse the sleeve back to -5% forever.
+    // mark every symbol and silently collapse the sleeve onto the main bar forever.
     const m = symbolsWithMainOwnership([{ positions: [pos("SPCX"), pos("NVDA")] } as any]);
     expect(m.size).toBe(0);
     // An empty ARRAY is real evidence: the sleeve held nothing, so those positions are main.
@@ -126,10 +149,10 @@ describe("main-ownership detection", () => {
     ]);
     const c = buildExitContext({ isInfluencer: true, mainOwned: m.has("CAKE"), boughtToday: false, canMeasureFromBuy: true });
     expect(c.mixedWithMain).toBe(true);
-    expect(stopThresholdFor(c)).toBe(-5);
+    expect(stopBarFor(c)).toBe("main");
   });
 
-  test("a repeat sleeve pick the main book never bought stays on -10%", () => {
+  test("a repeat sleeve pick the main book never bought stays on the SLEEVE bar", () => {
     const m = symbolsWithMainOwnership([
       run({ trades: [buy("IMAX", "influencer")] as any, positions: [pos("IMAX")] as any, influencerPositions: [pos("IMAX")] as any }),
       run({ trades: [sell("IMAX")] as any }),
@@ -141,7 +164,7 @@ describe("main-ownership detection", () => {
   test("an influencer buy that LOST its tag tightens the stop, never loosens it", () => {
     const m = symbolsWithMainOwnership([run({ trades: [buy("NVDA")] as any })]);
     const c = buildExitContext({ isInfluencer: true, mainOwned: m.has("NVDA"), boughtToday: false, canMeasureFromBuy: true });
-    expect(stopThresholdFor(c)).toBe(-5);
+    expect(stopBarFor(c)).toBe("main");
   });
 
   test("empty / malformed runs are handled", () => {
@@ -155,33 +178,33 @@ describe("merged lots are judged exactly like a main-book hold", () => {
     const c = buildExitContext({ isInfluencer: true, mainOwned: true, boughtToday: false, canMeasureFromBuy: true });
     expect(c.measuredFromBuy).toBe(false);   // would otherwise apply a cumulative reading to a same-day bar
     expect(c.mixedWithMain).toBe(true);
-    expect(stopThresholdFor(c)).toBe(-5);
+    expect(stopBarFor(c)).toBe("main");
     expect(classifyExit(60, c)).toBeNull();  // sleeve-only TP must not liquidate the merged lot
   });
 
   test("a pure sleeve position IS measured from buy", () => {
     const c = buildExitContext({ isInfluencer: true, mainOwned: false, boughtToday: false, canMeasureFromBuy: true });
     expect(c.measuredFromBuy).toBe(true);
-    expect(stopThresholdFor(c)).toBe(-10);
+    expect(stopBarFor(c)).toBe("sleeve");
   });
 
   test("a same-day BUY still measures from buy price even when merged", () => {
     // The pre-purchase-decline guard is not a sleeve rule and must survive.
     const c = buildExitContext({ isInfluencer: true, mainOwned: true, boughtToday: true, canMeasureFromBuy: true });
     expect(c.measuredFromBuy).toBe(true);
-    expect(stopThresholdFor(c)).toBe(-5);
+    expect(stopBarFor(c)).toBe("main");
   });
 
-  test("an unusable cost basis forces the intraday reading and the tighter bar", () => {
+  test("an unusable cost basis forces the intraday reading and the MAIN bar", () => {
     const c = buildExitContext({ isInfluencer: true, mainOwned: false, boughtToday: false, canMeasureFromBuy: false });
     expect(c.measuredFromBuy).toBe(false);
-    expect(stopThresholdFor(c)).toBe(-5);
+    expect(stopBarFor(c)).toBe("main");
   });
 
   test("a plain main-book hold is unaffected", () => {
     const c = buildExitContext({ isInfluencer: false, mainOwned: true, boughtToday: false, canMeasureFromBuy: true });
     expect(c.mixedWithMain).toBe(false);
     expect(c.measuredFromBuy).toBe(false);
-    expect(stopThresholdFor(c)).toBe(-5);
+    expect(stopBarFor(c)).toBe("main");
   });
 });

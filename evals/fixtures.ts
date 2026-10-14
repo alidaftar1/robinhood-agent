@@ -329,7 +329,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     name: "drop-check",
-    description: "IBM held position drops 6.2% intraday — should be sold, WFC kept unchanged, proceeds optionally redeployed",
+    description: "IBM held position drops 12.4% intraday — should be sold, WFC kept unchanged, proceeds optionally redeployed",
     buyingPower: "$100.00",
     totalValue: "$982.00",
     positions: [
@@ -337,7 +337,11 @@ export const SCENARIOS: Scenario[] = [
       { symbol: "WFC", quantity: "3", average_buy_price: "78.00"  }, // fine, keep unchanged
     ],
     stockOverrides: {
-      IBM: { change1d: -6.2 },
+      // -6.2% until 2026-10-14, when MAIN_DROP_THRESHOLD_PCT moved -5 -> -10. A 6.2% day no longer
+      // reaches the drop-check's sell session at all, so the scenario was asking the model to act
+      // on a trigger production would never hand it — the eval would have been grading behaviour
+      // that cannot occur. Deepened past the live bar so the case still describes the real system.
+      IBM: { change1d: -12.4 },
     },
     droppedPositions: ["IBM"],
   },
