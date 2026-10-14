@@ -149,10 +149,56 @@ const priceOf = (date: string, symbol: string): number | null => {
 const VARIANT: StrategyVariant = argv.includes("--variant")
   && argv[argv.indexOf("--variant") + 1] === "live-proxy-pe" ? LIVE_PROXY_PE : LIVE_PROXY;
 
+// --stops -5,-7,-10,off — sweep the SAME-DAY crash bar (lib/stopouts MAIN_DROP_THRESHOLD_PCT).
+// Asked 2026-10-14: is -5% in a single session too tight for the main book? The bar is not a
+// stop-loss from entry — it fires on a -5% DAY — so the question is empirical: does a one-day
+// crater of that size predict further decline, or mean-revert? Reports stopOuts alongside the
+// return metrics, because "how often does it fire" is half the answer.
+//
+// CAVEATS, unchanged from the header and load-bearing here: stops are evaluated on CLOSES, so a
+// day that dipped through the bar and recovered never triggers — this UNDERSTATES stop-outs at
+// every level, and understates them MORE at tighter levels. And the live system puts a
+// sympathy-hold judgment between the trigger and the order, which this has no model of. So these
+// rows bound the mechanical bar, not the live behaviour.
+const stopsArg = argv.indexOf("--stops");
+const stopSweep: Array<number | null> | null = stopsArg !== -1
+  ? argv[stopsArg + 1].split(",").map(t => t.trim()).map(t => t === "off" ? null : parseFloat(t))
+      .filter(v => v === null || Number.isFinite(v))
+  : null;
+
 const sweepArg = argv.indexOf("--positions");
 const sweep = sweepArg !== -1
   ? argv[sweepArg + 1].split(",").map(n => parseInt(n.trim(), 10)).filter(Number.isFinite)
   : [VARIANT.config.maxPositions];
+
+if (stopSweep && stopSweep.length > 0) {
+  console.log(`\nSTOP SWEEP — ${VARIANT.id}, same-day bar, ${VARIANT.config.maxPositions} positions, same rules otherwise`);
+  console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · cost ${DEFAULT_BACKTEST.costBps}bps`);
+  console.log(`Stops evaluated on CLOSES — intraday round-trips never fire, so every stopOut count below is a FLOOR.\n`);
+  console.log(`  ${"stop".padEnd(8)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"trades".padStart(9)}${"stopOuts".padStart(10)}${"flat days".padStart(11)}`);
+  console.log("  " + "─".repeat(73));
+  for (const stop of stopSweep) {
+    const cfg = { ...DEFAULT_BACKTEST, stopLossPct: stop };
+    const rr = runBacktest(VARIANT, dayStream(), priceOf, (d) => spy.get(d) ?? null, cfg);
+    const yrs = (Date.parse(rr.to) - Date.parse(rr.from)) / (365.25 * 86_400_000);
+    const e = rr.marks.map(m => m.equity), sps = rr.marks.map(m => m.spy);
+    const dr = (v: Array<number | null>) => { const o: number[] = []; for (let i=1;i<v.length;i++){const a=v[i-1],b=v[i]; if(a!=null&&b!=null&&a>0)o.push(b/a-1);} return o; };
+    const mn = (x: number[]) => x.reduce((a,b)=>a+b,0)/(x.length||1);
+    const sdv = (x: number[]) => { const m=mn(x); return Math.sqrt(x.reduce((a,b)=>a+(b-m)**2,0)/(x.length||1)); };
+    const rsv = dr(e), rbv = dr(sps);
+    const act: number[] = []; for (let i=0;i<Math.min(rsv.length,rbv.length);i++) act.push(rsv[i]-rbv[i]);
+    const cg = (Math.pow(e[e.length-1]/e[0], 1/yrs) - 1) * 100;
+    const sh = sdv(rsv) > 0 ? (mn(rsv)/sdv(rsv))*Math.sqrt(252) : 0;
+    const irv = sdv(act) > 0 ? (mn(act)/sdv(act))*Math.sqrt(252) : 0;
+    const label = stop === null ? "none" : `${stop}%`;
+    const flag = rr.usable ? "" : "  ⛔ NOT USABLE";
+    console.log(`  ${label.padEnd(8)}${pct(cg,2).padStart(9)}${sh.toFixed(2).padStart(9)}${irv.toFixed(2).padStart(8)}${pct(rr.maxDrawdownPct,1).padStart(9)}${String(rr.trades ?? "—").padStart(9)}${String(rr.stopOuts ?? "—").padStart(10)}${String(rr.daysFlat ?? "—").padStart(11)}${flag}`);
+  }
+  console.log(`\n  The live main book uses -5%. A LOOSER bar that wins here is evidence the crash stop is`);
+  console.log(`  too tight; a tighter one winning would mean the opposite. Neither is a tuning licence —`);
+  console.log(`  this is one sweep over one 28-year path, and the whole curve matters more than its best row.`);
+  process.exit(0);
+}
 
 if (sweep.length > 1) {
   console.log(`\nPOSITION SWEEP — ${VARIANT.id}, ${sweep.join("/")} positions, same rules otherwise`);
