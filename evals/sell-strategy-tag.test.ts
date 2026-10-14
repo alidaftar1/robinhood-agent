@@ -779,3 +779,77 @@ describe("captured sells are exits too", () => {
     expect(p.record.every(t => t.side !== "sell")).toBe(true);
   });
 });
+
+// ── planCapture: SEVERAL fills on one symbol in one window ───────────────────
+// 2026-10-14. The owner bought 0.69 MRVL, then trimmed 0.33 and 0.28, netting +0.079. `matches`
+// pairs ONE order with ONE gap, so nothing equalled 0.079: MRVL fell to residual, patchTrades
+// would have refused a shares-appeared gap, and the day's return would have been withheld and
+// LOCKED with four good broker fills sitting right there. Simulated against the real orders before
+// the fix: residual [MRVL 0.0788], reconciles false.
+describe("planCapture across multiple fills of one symbol", () => {
+  const pos2 = (symbol: string, quantity: string, price: string): PositionSnapshot =>
+    ({ symbol, quantity, avgCost: price, price } as PositionSnapshot);
+  const ord = (side: string, symbol: string, quantity: string, avgPrice: string, createdAt = "2026-10-14"): LiveOrder =>
+    ({ side, symbol, quantity, avgPrice, state: "filled", createdAt });
+  const W = { from: "2026-10-14", to: "2026-10-15" };
+  const heldOf = (trades: TradeSnapshot[] = []) => ({
+    positions: [pos2("MRVL", "1.111172", "253.66")],
+    influencerPositions: [] as PositionSnapshot[], trades,
+  });
+
+  test("the live 2026-10-14 shape: buy + two trims netting up, all four recorded", () => {
+    const latest = { positions: [pos2("MRVL", "1.191172", "252.09")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(heldOf(), latest, [
+      ord("buy", "MRVL", "0.69", "253.66"), ord("sell", "MRVL", "0.33", "252.09"), ord("sell", "MRVL", "0.28", "253.22"),
+    ], W);
+    expect(p.record.map(t => [t.side, t.quantity, t.avgPrice])).toEqual([
+      ["buy", "0.690000", "253.66"], ["sell", "0.330000", "252.09"], ["sell", "0.280000", "253.22"],
+    ]);
+    expect(p.residual).toEqual([]);
+    expect(p.reconciles).toBe(true);     // each fill at its OWN price — true cost basis, true P&L
+  });
+
+  test("a fill already captured on an EARLIER day is not recorded twice", () => {
+    // Found in simulation, not by reasoning: the 10-14 dust buy was inside the 10-14 baseline
+    // QUANTITY, and its order is still in the 10-15 window. Without the heldRun arm of the
+    // already-recorded check it was counted again and the book overshot by 0.000269.
+    const dust: TradeSnapshot = { symbol: "MRVL", side: "buy", quantity: "0.000269", avgPrice: "260.12",
+                                  state: "filled", actor: "human", tradedOn: "2026-10-14" } as TradeSnapshot;
+    const latest = { positions: [pos2("MRVL", "1.191172", "252.09")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(heldOf([dust]), latest, [
+      ord("buy", "MRVL", "0.69", "253.66"), ord("sell", "MRVL", "0.33", "252.09"),
+      ord("sell", "MRVL", "0.28", "253.22"), ord("buy", "MRVL", "0.000269", "260.12"),
+    ], W);
+    expect(p.record.some(t => t.quantity === "0.000269")).toBe(false);
+    expect(p.reconciles).toBe(true);
+  });
+
+  test("a NET DECREASE from several fills is reconstructed too, not just an increase", () => {
+    const latest = { positions: [pos2("MRVL", "0.911172", "252.09")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(heldOf(), latest, [
+      ord("buy", "MRVL", "0.10", "253.66"), ord("sell", "MRVL", "0.30", "252.09"),
+    ], W);
+    expect(p.record.map(t => t.side).sort()).toEqual(["buy", "sell"]);
+    expect(p.reconciles).toBe(true);
+  });
+
+  test("fills that do NOT net to the change are refused, not forced to fit", () => {
+    // The guard on the whole mechanism: wrong reconstruction is worse than none, because it writes
+    // a cost basis that never happened. Position moved +0.08 but the orders net +0.40.
+    const latest = { positions: [pos2("MRVL", "1.191172", "252.09")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(heldOf(), latest, [
+      ord("buy", "MRVL", "0.70", "253.66"), ord("buy", "MRVL", "0.30", "253.00"), ord("sell", "MRVL", "0.60", "252.09"),
+    ], W);
+    expect(p.record).toEqual([]);
+    expect(p.residual.length).toBeGreaterThan(0);
+    expect(p.reconciles).toBe(false);
+  });
+
+  test("CONTROL: a single fill still takes the single-order path, priced from the broker", () => {
+    const latest = { positions: [pos2("MRVL", "0.811172", "252.09")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(heldOf(), latest, [ord("sell", "MRVL", "0.30", "252.09")], W);
+    expect(p.record).toHaveLength(1);
+    expect(p.record[0].quantity).toBe("0.300000");
+    expect(p.reconciles).toBe(true);
+  });
+});

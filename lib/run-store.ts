@@ -1315,12 +1315,83 @@ export function planCapture(
   const supersede: TradeSnapshot[] = [];
   const residual: InferredSellPlan["unreconstructable"] = [];
 
+  /**
+   * SEVERAL FILLS ON ONE SYMBOL, netting to the gap.
+   *
+   * `matches` pairs ONE order with ONE gap, which fails the moment a symbol is traded more than
+   * once in a window: the gap is the NET change and no individual order equals it. 2026-10-14 is
+   * the worked case — the owner bought 0.69 MRVL, then trimmed 0.33 and 0.28, netting +0.079.
+   * Nothing matched, MRVL fell to residual, and the day would have had its return withheld and
+   * locked with four perfectly good broker fills sitting right there.
+   *
+   * Recording ALL the fills is also strictly more faithful than matching one: four real trades
+   * give the true cost basis and the true realised P&L, where a single synthesised net trade
+   * gives neither.
+   *
+   * SAFETY. Only fires when the fills net to the gap within the same tolerance a single match
+   * uses, so a symbol whose orders do NOT explain the change still falls through to residual
+   * rather than being papered over. Orders already represented by a stored trade are excluded
+   * first — otherwise a previously captured fill (this morning's MRVL dust buy) would be counted
+   * twice. And the caller does not have to trust any of this: `reconciles` below re-runs the
+   * identity over what would be persisted, so a wrong reconstruction reports itself.
+   */
+  // Checks BOTH trade lists, and the held run's is the one that matters most: a fill captured
+  // YESTERDAY is already inside today's baseline QUANTITY, so re-recording it from the same
+  // still-in-window order double-counts it. Caught in simulation against the real 2026-10-14
+  // orders — this morning's MRVL dust buy was captured into the 10-14 run, and without the
+  // heldRun arm it would have been recorded a second time on 10-15.
+  //
+  // Dates compared when BOTH sides carry one, so two genuinely separate fills of identical size on
+  // different days are not conflated. Where a date is missing the quantity match stands alone; the
+  // error direction is then "do not record", which under-records and leaves `reconciles` false
+  // rather than inventing a trade.
+  const sameFill = (t: TradeSnapshot, o: LiveOrder) =>
+    t.symbol === o.symbol && t.side === o.side
+    && Math.abs((parseFloat(t.quantity) || 0) - (parseFloat(o.quantity) || 0)) < 1e-9
+    && (!t.tradedOn || !o.createdAt || t.tradedOn === o.createdAt);
+  const alreadyRecorded = (o: LiveOrder) =>
+    realTrades.some(t => sameFill(t, o)) || (heldRun.trades ?? []).some(t => sameFill(t, o));
+  const netMultiFill = (symbol: string, signedGap: number): LiveOrder[] | null => {
+    const fills = candidates.filter(o => o.symbol === symbol && !used.has(o) && !alreadyRecorded(o));
+    // Defensive only, and mutation-checked as INERT: the single-order path runs first and takes
+    // every case a lone fill can explain, so this never sees one. Kept because that is a property
+    // of the CALLER's ordering rather than of this helper — do not write a test for it, and do not
+    // mistake it for a live guard. (Same status as `used` above.)
+    if (fills.length < 2) return null;
+    const net = fills.reduce((a, o) => {
+      const q = parseFloat(o.quantity);
+      return a + (Number.isFinite(q) ? (o.side === "buy" ? q : -q) : 0);
+    }, 0);
+    const tol = Math.max(0.01, Math.abs(signedGap) * 0.02);
+    return Math.abs(net - signedGap) <= tol ? fills : null;
+  };
+  const recordFills = (fills: LiveOrder[], symbol: string) => {
+    for (const o of fills) {
+      used.add(o);
+      record.push({
+        symbol, side: o.side as "buy" | "sell", quantity: (parseFloat(o.quantity) || 0).toFixed(6),
+        avgPrice: parseFloat(o.avgPrice).toFixed(2), state: "filled", actor: "human",
+        ...(o.createdAt ? { tradedOn: o.createdAt } : {}),
+        strategy: inferSellStrategy(symbol, heldRun.influencerPositions, heldRun.trades ?? []),
+      });
+    }
+  };
+
   // SELLS the records are missing — buildInferredSells already priced them at the held run's mark;
   // a real fill replaces that estimate.
   for (const est of gaps.sells) {
     const qty = parseFloat(est.quantity);
     const hit = candidates.find(o => matches(o, "sell", est.symbol, qty));
-    if (!hit) continue; // no evidence — leave it to patchTrades to estimate as before
+    if (!hit) {
+      // A NET decrease can also be several fills (a buy and two larger trims). Signed negative:
+      // the position went down.
+      const fills = netMultiFill(est.symbol, -qty);
+      if (fills) {
+        recordFills(fills, est.symbol);
+        supersede.push(...inferredSells.filter(t => t.symbol === est.symbol));
+      }
+      continue; // no evidence — leave it to patchTrades to estimate as before
+    }
     used.add(hit);
     record.push({
       ...est, avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled", actor: "human",
@@ -1334,7 +1405,12 @@ export function planCapture(
   for (const u of gaps.unreconstructable) {
     if (u.reason !== "shares-appeared" || u.excessQty == null) { residual.push(u); continue; }
     const hit = candidates.find(o => matches(o, "buy", u.symbol, u.excessQty!));
-    if (!hit) { residual.push(u); continue; }
+    if (!hit) {
+      const fills = netMultiFill(u.symbol, u.excessQty);
+      if (!fills) { residual.push(u); continue; }
+      recordFills(fills, u.symbol);
+      continue;
+    }
     used.add(hit);
     record.push({
       symbol: u.symbol, side: "buy", quantity: u.excessQty.toFixed(6),
