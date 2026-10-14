@@ -101,6 +101,22 @@ describe("wiring: ORDER of operations between components", () => {
     expect(s).toContain("if (written && plan.record.length > 0) {");
   });
 
+  test("a capture that recorded NOTHING does not claim the book matches the broker", () => {
+    // 2026-10-14: the owner bought 0.69 and sold 0.28 MRVL after the 07:30 snapshot. /api/verify
+    // returned status "discrepancy" with "MRVL: quantity mismatch - live 1.523460 vs stored
+    // 1.111172" AND capture.reconciles true in the same payload. `reconciles` asks only whether the
+    // STORED records are self-consistent (planCapture compares two snapshots; live never enters the
+    // identity), which is the meaning the withholding lock needs — so the SEMANTICS stay and the
+    // CLAIM gets bounded. Third instance of the same shape in three days: a response contradicting
+    // itself because two parts answer different questions in the same words.
+    const s = src("app/api/verify/route.ts");
+    expect(s).toContain('scope: "stored-records-only"');
+    expect(s).toContain("liveVsStoredDiscrepancies");
+    expect(s).toMatch(/does NOT mean the book matches the broker/);
+    // The lock must still key on the UNCHANGED flag, not on the new bounded wording.
+    expect(s).toMatch(/plan\.reconciles/);
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.

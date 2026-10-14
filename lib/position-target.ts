@@ -12,7 +12,28 @@
  *  positions against a ~$402 design, which at beta 0.83 across seven sectors is an index clone.
  *
  *  Named and exported so the shortlist, the prompt and the dashboard cannot disagree about what the
- *  target IS. It is NOT a cap — nothing enforces it. Whether it should be is deliberately still
- *  open; see docs/experiment-main-book-position-cap.md for why concentrating a strategy whose
- *  selection edge is unproven could make things worse rather than better. */
-export const TARGET_MAIN_POSITIONS = 6;
+ *  target IS. Since 2026-09-29 it IS enforced on buys (app/api/trade's main-book cap); see
+ *  docs/experiment-main-book-position-cap.md for the original caution about concentrating a
+ *  strategy whose selection edge is unproven.
+ *
+ *  6 -> 7 on 2026-10-14, from the position sweep at the current -10% stop bar
+ *  (`bun scripts/full-period.ts --positions 4,5,6,7,8,10,12`, docs/experiment-stop-threshold.md):
+ *
+ *      positions     CAGR   Sharpe     IR    maxDD
+ *      4          +11.75%     0.49   0.26   -90.9%
+ *      6          +11.51%     0.51   0.24   -79.0%   <- was here
+ *      7          +11.60%     0.52   0.24   -73.8%
+ *      8           +9.77%     0.47   0.15   -72.3%
+ *      12          +8.35%     0.45   0.06   -69.1%
+ *
+ *  Return is flat from 4 to 7 and falls off a cliff at 8+; drawdown improves MONOTONICALLY with
+ *  count, across a 22pp range. So 7 buys ~5pp of drawdown for a return difference of 0.09pp, which
+ *  is inside the noise — the honest claim is "drawdown improves at no measurable return cost", not
+ *  "7 is optimal". 6 vs 7 is not a distinguishable return result and must not be quoted as one.
+ *
+ *  WHY THIS LEVER AND NOT THE STOP: 23 stop configurations moved maxDD by ~1-5pp unsystematically;
+ *  position count moves it 22pp monotonically. Concentration is where this book's risk lives.
+ *
+ *  The sector cap is DERIVED (floor(0.4 x N) in buildV1Shortlist), so it stays at 2/sector — which
+ *  at N=7 is 29% of the book rather than 33%, i.e. marginally tighter, not looser. */
+export const TARGET_MAIN_POSITIONS = 7;

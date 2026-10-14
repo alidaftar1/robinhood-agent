@@ -276,7 +276,12 @@ const byDesc = (rows: readonly FeatureRow[], key: (r: FeatureRow) => number | nu
  */
 export const LIVE_PROXY: StrategyVariant = {
   id: "live-proxy",
-  description: "Faithful proxy of the live main-book screen: mom12_1 > 0, above-median quality, ranked by 12-1 momentum, 2/sector.",
+  // FROZEN AT ITS REGISTERED CONFIG, deliberately. It mirrored the live book exactly when
+  // registered; on 2026-10-14 live TARGET_MAIN_POSITIONS moved 6 -> 7 and this stayed at 6. A
+  // registered variant whose parameters move retroactively invalidates every comparison ever made
+  // against it, which is the whole point of `registeredAt` — so the fix for wanting a 7-position
+  // baseline is to REGISTER one, not to edit this. Do not "sync" it to the live constant.
+  description: "Main-book screen as registered 2026-09-30 (live book moved to 7 positions on 2026-10-14; this stays at 6): mom12_1 > 0, above-median quality, ranked by 12-1 momentum, 2/sector.",
   registeredAt: "2026-09-30",
   criteria: { minExcessReturnPct: 0, minSymbolsScored: 20, minHitRatePct: 50 },
   config: { maxPositions: 6, maxPerSector: 2 },

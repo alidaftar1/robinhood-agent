@@ -7,6 +7,10 @@ import { TARGET_MAIN_POSITIONS } from "@/lib/position-target";
 // So the model had no way to know it was holding 12 against a 6-name design, which is how the
 // count ratcheted to $201 positions against a ~$402 target. This surfaces the missing input.
 const pos = (symbol: string) => ({ symbol, quantity: "1", avgCost: "100", price: 101, heldDays: 5 });
+/** N distinct symbols — derived from the target so these tests survive the next change to it.
+ *  They hardcoded 6 until 2026-10-14 and ten of them broke on 6 -> 7. */
+const nNames = (n: number) => Array.from({ length: n }, (_, i) => `S${i}`);
+const AT_CAP = nNames(TARGET_MAIN_POSITIONS);
 const promptFor = (symbols: string[], influencerHeld: string[] = [], isRebalanceDay = true) =>
   buildV1AnalysisPrompt(
     "2026-09-29", "",
@@ -28,7 +32,7 @@ describe("the model can see its position count against target", () => {
     );
     expect(line).toContain("11 held");
     expect(line).toContain(`target of ~${TARGET_MAIN_POSITIONS}`);
-    expect(line).toContain("5 OVER target");
+    expect(line).toContain(`${11 - TARGET_MAIN_POSITIONS} OVER target`);
   });
 
   test("influencer holdings are EXCLUDED — the sleeve has its own 2-slot cap", () => {
@@ -38,8 +42,8 @@ describe("the model can see its position count against target", () => {
   });
 
   test("at or under target it says so without a lecture", () => {
-    const line = countLine(["A", "B", "C", "D", "E", "F"]);
-    expect(line).toContain("6 held");
+    const line = countLine(AT_CAP);
+    expect(line).toContain(`${TARGET_MAIN_POSITIONS} held`);
     expect(line).not.toContain("OVER target");
   });
 
@@ -54,15 +58,15 @@ describe("the model can see its position count against target", () => {
   test("it states the DILUTION, which is the part that matters", () => {
     // 12 main names means each position is ~50% of designed size. The count alone is abstract;
     // the size consequence is the thing that explains an index-clone book.
-    const line = countLine(Array.from({ length: 12 }, (_, i) => `S${i}`));
-    expect(line).toMatch(/roughly 50% of the size/);
+    const line = countLine(nNames(12));
+    expect(line).toMatch(new RegExp(`roughly ${Math.round(TARGET_MAIN_POSITIONS / 12 * 100)}% of the size`));
   });
 
   test("it points at BUYING FEWER, never at freeing a slot", () => {
     // The original wording invited the free-a-slot judgment — the prompt's ONE authorised
     // discretionary exit. Under T+1 a slot-freeing sell cannot fund a buy the same day, so it is
     // guaranteed unpaired: the book ends in cash with nothing bought. Say the constraint out loud.
-    const line = countLine(Array.from({ length: 12 }, (_, i) => `S${i}`));
+    const line = countLine(nNames(12));
     expect(line).toMatch(/BUY FEWER, LARGER names/);
     expect(line).toMatch(/T\+1 a sell does not fund a buy today/);
     expect(line).not.toMatch(/free-a-slot|free a slot/);
@@ -72,7 +76,7 @@ describe("the model can see its position count against target", () => {
   test("OFF the rebalance window the note is silent — pressure with no outlet", () => {
     // Off-window, main buys are CLOSED and rotation sells are forbidden. An over-target nudge there
     // can only be acted on by reframing a rotation as a loss-discipline exit.
-    const over = Array.from({ length: 12 }, (_, i) => `S${i}`);
+    const over = nNames(12);
     expect(countLine(over, [], false)).toContain("12 held");
     expect(countLine(over, [], false)).not.toContain("OVER target");
     expect(countLine(over, [], true)).toContain("OVER target");
@@ -80,8 +84,8 @@ describe("the model can see its position count against target", () => {
 
   test("one over target is NOT flagged — '~6' is a soft number", () => {
     // Firing at 7 would invite a rotation whose whole benefit is 86% -> 100% of designed size.
-    expect(countLine(Array.from({ length: 7 }, (_, i) => `S${i}`))).not.toContain("OVER target");
-    expect(countLine(Array.from({ length: 8 }, (_, i) => `S${i}`))).toContain("2 OVER target");
+    expect(countLine(nNames(TARGET_MAIN_POSITIONS + 1))).not.toContain("OVER target");
+    expect(countLine(nNames(TARGET_MAIN_POSITIONS + 2))).toContain("2 OVER target");
   });
 
   test("at the cap it states ZERO new names, because the code enforces 6 absolutely", () => {
@@ -89,7 +93,7 @@ describe("the model can see its position count against target", () => {
     // satisfied SOFT target and decided a 7th and 8th name ("the target is approximate"), both
     // dropped by the cap. Seven such buys died this way across four of seven sessions while settled
     // cash sat idle. The "~" governs what the book may SIT at, never what may be BOUGHT.
-    const line = countLine(["A", "B", "C", "D", "E", "F"]);
+    const line = countLine(AT_CAP);
     expect(line).toContain("NEW MAIN NAMES YOU CAN ADD TODAY: 0");
     expect(line).toMatch(/NOT soft/);
     expect(line).toMatch(/DROPPED before orders are placed/);
@@ -98,7 +102,7 @@ describe("the model can see its position count against target", () => {
   test("it names the one main-book buy that still executes at the cap: a TOP-UP", () => {
     // app/api/trade exempts a top-up from the slot count on purpose, and the prompt never said so —
     // leaving the model with no stated way to deploy settled cash at the cap.
-    const line = countLine(["A", "B", "C", "D", "E", "F"]);
+    const line = countLine(AT_CAP);
     expect(line).toMatch(/TOP-UP of a name you already hold does not consume a slot/);
     expect(line).toMatch(/per-position dollar cap/);
   });
@@ -106,7 +110,7 @@ describe("the model can see its position count against target", () => {
   test("the slot count does NOT reintroduce the free-a-slot nudge", () => {
     // Same invariant as the over-target note above, on the new sentence: T+1 makes a slot-freeing
     // sell guaranteed unpaired. Checked at the cap AND over it, the two states that would tempt it.
-    for (const n of [6, 8, 12]) {
+    for (const n of [TARGET_MAIN_POSITIONS, TARGET_MAIN_POSITIONS + 1, 12]) {
       const line = countLine(Array.from({ length: n }, (_, i) => `S${i}`));
       expect(line).not.toMatch(/free-a-slot|frees? a slot/);
       expect(line).toMatch(/NOT an instruction to sell/);
@@ -115,15 +119,15 @@ describe("the model can see its position count against target", () => {
 
   test("BELOW the cap it states the real allowance, not zero", () => {
     // The control: if this said 0 everywhere the book could never be rebuilt after exits.
-    expect(countLine(["A", "B", "C", "D"])).toContain("NEW MAIN NAMES YOU CAN ADD TODAY: 2");
+    expect(countLine(nNames(4))).toContain(`NEW MAIN NAMES YOU CAN ADD TODAY: ${TARGET_MAIN_POSITIONS - 4}`);
     expect(countLine([])).toContain(`NEW MAIN NAMES YOU CAN ADD TODAY: ${TARGET_MAIN_POSITIONS}`);
-    expect(countLine(["A", "B", "C", "D"])).not.toMatch(/NOT soft/);
+    expect(countLine(nNames(4))).not.toMatch(/NOT soft/);
   });
 
   test("OFF-window the slot count shows but the top-up guidance does not", () => {
     // Main buys are CLOSED off-window, so pointing at a top-up there contradicts the cadence gate.
-    const line = countLine(["A", "B", "C", "D"], [], false);
-    expect(line).toContain("NEW MAIN NAMES YOU COULD ADD: 2");
+    const line = countLine(nNames(4), [], false);
+    expect(line).toContain(`NEW MAIN NAMES YOU COULD ADD: ${TARGET_MAIN_POSITIONS - 4}`);
     expect(line).toMatch(/main-book buys are CLOSED today/);
     expect(line).not.toMatch(/TOP-UP/);
   });
@@ -131,7 +135,10 @@ describe("the model can see its position count against target", () => {
   test("an influencer holding does not consume a main slot in the stated count", () => {
     // Same exclusion the cap itself applies; stating otherwise would tell the model it is full when
     // it has room.
-    expect(countLine(["A", "B", "C", "D", "E", "F", "G"], ["F", "G"])).toContain("NEW MAIN NAMES YOU CAN ADD TODAY: 1");
+    // 2 of the held names are sleeve, so main holds N-2 and has 2 slots left.
+    const held = nNames(TARGET_MAIN_POSITIONS);
+    const sleeve = held.slice(-2);
+    expect(countLine(held, sleeve)).toContain("NEW MAIN NAMES YOU CAN ADD TODAY: 2");
   });
 
   test("an empty book does not render a spurious over-target warning", () => {

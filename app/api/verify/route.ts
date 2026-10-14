@@ -254,7 +254,29 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     } else {
       const plan = planCapture(prevRun, storedRun, liveOrders, { from: prevRun.date, to: storedRun.date });
       if (plan.record.length === 0) {
-        capture = { ok: true, recorded: 0, reconciles: plan.reconciles, note: "no live order matched an unexplained position change" };
+        // SCOPE, stated because the bare flag misleads. `reconciles` asks only whether the STORED
+        // records are internally consistent — planCapture compares prevRun to storedRun, both
+        // snapshots. Live positions never enter that identity. So on a day the owner trades AFTER
+        // the 07:30 snapshot, this reports true while `discrepancies` above simultaneously reports
+        // live != stored, and a reader sees the response claim both. 2026-10-14: the owner bought
+        // 0.69 and sold 0.28 MRVL intraday; capture said "reconciles: true, recorded: 0" next to
+        // "MRVL: quantity mismatch - live 1.523460 vs stored 1.111172".
+        //
+        // The one-day lag itself is accepted design (the fills are captured tomorrow, when today's
+        // run becomes the baseline and carries the new quantity). What was NOT acceptable is a
+        // field that reads as "the book matches the broker" when it means something narrower.
+        // Semantics deliberately UNCHANGED — the withholding lock depends on this exact meaning,
+        // and tightening it to include live drift would strand a day's return every time the owner
+        // trades after the snapshot. Only the claim is bounded.
+        const liveVsStored = discrepancies.filter(d => !d.startsWith("Uncaptured order:")).length;
+        capture = {
+          ok: true, recorded: 0, reconciles: plan.reconciles,
+          scope: "stored-records-only",
+          liveVsStoredDiscrepancies: liveVsStored,
+          note: liveVsStored > 0 || uncapturedOrders.length > 0
+            ? `no live order matched an unexplained change in the STORED records. This does NOT mean the book matches the broker: ${uncapturedOrders.length} uncaptured order(s) and ${liveVsStored} live-vs-stored difference(s) are listed in discrepancies. Fills made after today's snapshot are captured on the NEXT run, when today's run becomes the baseline.`
+            : "no live order matched an unexplained position change",
+        };
       } else {
         const trades = [...(storedRun.trades ?? []).filter(t => !plan.supersede.includes(t)), ...plan.record];
         const agentic = storedRun.portfolioAfter && prevRun.portfolioAfter
