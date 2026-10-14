@@ -1205,6 +1205,37 @@ export type LiveOrder = {
   symbol: string; side: string; quantity: string; avgPrice: string; state: string; createdAt?: string;
 };
 
+/**
+ * Filled broker orders from `today` that no stored trade accounts for.
+ *
+ * Pulled out of /api/verify so it can be asked TWICE in one request: once to report, and again
+ * after ?capture=1 has written records, so the answer reflects what is now on file. Before this,
+ * the discrepancy list was built before the capture ran and `status` was computed from it
+ * afterwards — so an order the SAME request had just recorded was still reported as uncaptured.
+ * 2026-10-14 is the worked case: the email said "Recorded 1 of your own fill(s): buy MRVL
+ * x0.000269" in autoFixed and "Uncaptured order: buy MRVL x0.000269" in issues, and the second one
+ * set the banner to NEEDS ATTENTION.
+ *
+ * The 0.01-share tolerance is inherited from the original check and kept deliberately: capture
+ * takes its QUANTITY from position arithmetic and only its PRICE from the broker, so a recorded
+ * trade need not equal the order share-for-share. Where the two disagree beyond the tolerance this
+ * keeps REPORTING the order — the safe direction. Nothing here suppresses on symbol alone.
+ */
+export function findUncapturedOrders(
+  liveOrders: LiveOrder[] | null,
+  storedTrades: readonly TradeSnapshot[],
+  today: string,
+): LiveOrder[] {
+  if (!liveOrders) return [];
+  // Only orders placed today; an order with no createdAt cannot be dated, so it is checked rather
+  // than skipped.
+  const todayFilled = liveOrders.filter(o => o.state === "filled" && (!o.createdAt || o.createdAt === today));
+  return todayFilled.filter(order => !storedTrades.some(
+    t => t.symbol === order.symbol && t.side === order.side &&
+         Math.abs(parseFloat(t.quantity) - parseFloat(order.quantity)) < 0.01,
+  ));
+}
+
 export type CapturePlan = {
   /** Trades to append, at the broker's OBSERVED price and state "filled". */
   record: TradeSnapshot[];

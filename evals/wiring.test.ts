@@ -82,6 +82,25 @@ describe("wiring: ORDER of operations between components", () => {
     expect(s).not.toMatch(/const GUARD_DROP(_RE)? = \//);
   });
 
+  test("verify re-asks for uncaptured orders AFTER the capture writes", () => {
+    // 2026-10-14: discrepancies were built before ?capture=1 ran and `status` was computed after
+    // it, so the same email reported a fill as recorded (autoFixed) and as uncaptured (issues), and
+    // the stale one set the banner. Pin the second call and its position: before the capture block
+    // it is the pre-state, after it is the answer.
+    const s = src("app/api/verify/route.ts");
+    const first = at(s, "let uncapturedOrders: LiveOrder[] = storedRun");
+    const capture = at(s, "const plan = planCapture(");
+    const reask = at(s, "const after = findUncapturedOrders(liveOrders, [...(storedRun.trades ?? []), ...plan.record], today)");
+    const status = at(s, 'const status = discrepancies.length === 0 ? "ok"');
+    expect(first).toBeGreaterThan(-1);
+    expect(reask).toBeGreaterThan(-1);
+    expect(first).toBeLessThan(capture);
+    expect(capture).toBeLessThan(reask);
+    expect(reask).toBeLessThan(status);
+    // Only when something was actually WRITTEN — a planned-but-unwritten capture must keep reporting.
+    expect(s).toContain("if (written && plan.record.length > 0) {");
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.

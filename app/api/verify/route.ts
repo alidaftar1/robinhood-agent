@@ -3,7 +3,7 @@ import { recordSell } from "@/lib/stopouts";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { getRuns, mergeRunsByDate, planCapture, updateRunByDate, computeDailyReturn, computeSleeveReturns, clampSleeveReturn } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate, planCapture, findUncapturedOrders, type LiveOrder, updateRunByDate, computeDailyReturn, computeSleeveReturns, clampSleeveReturn } from "@/lib/run-store";
 
 export const maxDuration = 90;
 
@@ -227,25 +227,15 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     }
   }
 
-  // Order reconciliation: filled orders from today that aren't in stored trades
-  const uncapturedOrders: typeof liveOrders = [];
-  if (liveOrders && storedRun) {
-    const storedTrades = storedRun.trades ?? [];
-    // Only check orders placed today (filter by createdAt if present, otherwise skip date check)
-    const todayFilled = liveOrders.filter(o =>
-      o.state === "filled" && (!o.createdAt || o.createdAt === today)
-    );
-    for (const order of todayFilled) {
-      const matched = storedTrades.some(
-        t => t.symbol === order.symbol && t.side === order.side &&
-             Math.abs(parseFloat(t.quantity) - parseFloat(order.quantity)) < 0.01
-      );
-      if (!matched) {
-        uncapturedOrders.push(order);
-        discrepancies.push(`Uncaptured order: ${order.side} ${order.symbol} ×${order.quantity} @$${order.avgPrice} (${order.state})`);
-      }
-    }
-  }
+  // Order reconciliation: filled orders from today that aren't in stored trades.
+  // ASKED AGAIN after ?capture=1 writes (see below) — this list is only final if nothing is
+  // captured in this same request.
+  const uncapturedLine = (o: LiveOrder) =>
+    `Uncaptured order: ${o.side} ${o.symbol} ×${o.quantity} @$${o.avgPrice} (${o.state})`;
+  let uncapturedOrders: LiveOrder[] = storedRun
+    ? findUncapturedOrders(liveOrders, storedRun.trades ?? [], today)
+    : [];
+  for (const order of uncapturedOrders) discrepancies.push(uncapturedLine(order));
 
   // ── ?capture=1 — record the owner's own trades ─────────────────────────────
   // Read-only by DEFAULT. This endpoint is an audit, and an audit that writes on every call cannot
@@ -305,6 +295,21 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
           date: storedRun.date, recorded: plan.record.length, superseded: plan.supersede.length,
           reconciles: plan.reconciles, residual: plan.residual,
         });
+        // RE-ASK, now that records exist. `discrepancies` was built before this block and `status`
+        // is computed after it, so without this an order captured by THIS request is still reported
+        // as uncaptured and still sets the banner — which is what happened on 2026-10-14, with
+        // "Recorded 1 of your own fill(s)" and "Uncaptured order:" naming the same MRVL fill in one
+        // email. Only recompute when something was actually WRITTEN: a planned-but-unwritten capture
+        // must keep reporting.
+        if (written && plan.record.length > 0) {
+          const after = findUncapturedOrders(liveOrders, [...(storedRun.trades ?? []), ...plan.record], today);
+          const stillOpen = new Set(after.map(uncapturedLine));
+          for (let i = discrepancies.length - 1; i >= 0; i--) {
+            const d = discrepancies[i];
+            if (d.startsWith("Uncaptured order:") && !stillOpen.has(d)) discrepancies.splice(i, 1);
+          }
+          uncapturedOrders = after;
+        }
         capture = {
           ok: written, recorded: plan.record.length, superseded: plan.supersede.length,
           // reconciles=false means something is STILL unexplained — the day is not clean just

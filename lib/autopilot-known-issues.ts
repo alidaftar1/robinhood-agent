@@ -316,6 +316,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
       "If TRADE_DECISION.buys were dropped by the position cap AND the main book was at or above TARGET_MAIN_POSITIONS before the run, this is the known prompt/code mismatch, not a model error, a broken guard or a new anomaly. Report it ONCE, with the idle settled cash as a dollar figure and a percentage of total value, and do not re-raise it as a fresh medium every session while the decision is open. Escalate only if the idle cash has gone undeployed across more than one full rebalance window, or if a cap-dropped buy has NO matching buySizingAdjustments note (that would be the real registry-#25 defect). Do not propose selling to free a slot as a fix — under T+1 a sell does not fund a buy the same day.",
   },
   {
+    date: "2026-10-14",
+    title: "The report asserted a fill was BOTH recorded and uncaptured, in the same email",
+    lesson:
+      "autoFixed read 'Recorded 1 of your own fill(s) from the broker: buy MRVL x0.000269 @$260.12' and issues read 'Live verify: Uncaptured order: buy MRVL x0.000269 @$260.12 (filled)' — the same fill, described as fixed and as missing, and the second one set the banner to NEEDS ATTENTION on a day when every mechanism worked. Nothing was broken in the capture: /api/verify builds its `discrepancies` list BEFORE the ?capture=1 block and computes `status` AFTER it, so anything captured within the same request was reported from a stale snapshot of itself. The reviewer read the MRVL fill correctly (dust, owner's own, reconciled) and still did not notice that the two sections of the report disagreed. FIXED 2026-10-14: findUncapturedOrders is asked a second time against the written records, and only when something was actually written, so a planned-but-unwritten capture keeps reporting.",
+    check:
+      "Read autoFixed and issues AGAINST EACH OTHER before reporting, not just each on its own. If the same symbol, side and quantity appears in both — one saying it was recorded, the other that it is missing — that is a reporting contradiction and the report is wrong whichever half is stale; say so explicitly rather than grading the underlying event. The general form: any claim in the email that is falsified by another claim in the SAME email is a defect in the report, and is worth more attention than a correctly-reported minor event.",
+  },
+  {
     date: "2026-09-17",
     title: "Verification gated on a success flag — real fills went unrecorded",
     lesson:
