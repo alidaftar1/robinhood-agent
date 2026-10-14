@@ -324,6 +324,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
       "Read autoFixed and issues AGAINST EACH OTHER before reporting, not just each on its own. If the same symbol, side and quantity appears in both — one saying it was recorded, the other that it is missing — that is a reporting contradiction and the report is wrong whichever half is stale; say so explicitly rather than grading the underlying event. The general form: any claim in the email that is falsified by another claim in the SAME email is a defect in the report, and is worth more attention than a correctly-reported minor event.",
   },
   {
+    date: "2026-10-14",
+    title: "Sector concentration called 'influencer-locked' when the largest contributor was a MAIN position",
+    lesson:
+      "The reviewer reported Tech ~43% and attributed it to 'influencer-sleeve names (NVDA, AVGO) that cannot be sold', concluding no main-book sell was warranted. It had listed MRVL in the sum and then dropped it from the conclusion. MRVL was $386 — the single LARGEST position in the book, main-book, fully trimmable, and 36% of the semiconductor block. Describing the whole exposure as locked turns a CHOICE into a CONSTRAINT and removes the one action actually available. Two further things the framing hid: XLK and SEMICONDUCTORS were the same 44.5% — there was no non-semi tech, so 'Tech 43%' read as diversified sector exposure when it was a single-industry bet in three names; and the exposure was built by three independent compliant paths (main bought MRVL, the sleeve bought NVDA and AVGO on its own 2 slots with NO sector awareness, the owner topped up MRVL four times), so no single guard was breached and none would catch it.",
+    check:
+      "When reporting a sector or industry concentration, SPLIT it by sleeve and name the trimmable share in dollars before drawing any conclusion about what can be done. A position is sleeve-locked only if it appears in that run's influencerPositions — check, do not infer it from the name being a well-known sleeve pick. Also report the narrowest grouping that is true: if every holding in a sector is one industry, say the industry, because the sector label understates it. And remember the sleeve's 2 slots carry NO sector budget, so two individually-compliant sleeves can stack one industry past the 40% cap with nothing breached.",
+  },
+  {
     date: "2026-09-17",
     title: "Verification gated on a success flag — real fills went unrecorded",
     lesson:
