@@ -117,6 +117,28 @@ describe("wiring: ORDER of operations between components", () => {
     expect(s).toMatch(/plan\.reconciles/);
   });
 
+  test("the sector budget is CALLED, sees both sleeves, and runs after the per-position cap", () => {
+    // 2026-10-14: XLK hit 44.5% with no guard breached — the only sector control was a NAME count
+    // inside the MAIN shortlist, blind to held value and to the sleeve. A library alone would not
+    // have fixed it (see planCapture above), so pin the call and the inputs that make it
+    // cross-sleeve: it iterates portfolioCtx.positions, which is EVERY holding, not a main subset.
+    const s = src("app/api/trade/route.ts");
+    const perPos = at(s, "applyPerPositionCap(decision.buys");
+    const sector = at(s, "applySectorBudget(decision.buys");
+    const mainCap = at(s, "MAIN-BOOK POSITION CAP (buy-side)");
+    expect(sector).toBeGreaterThan(-1);
+    // After the per-position cap, so it budgets the dollars that will actually be spent.
+    expect(perPos).toBeLessThan(sector);
+    // Before the slot cap, so a sector-blocked buy never consumes a position slot.
+    expect(sector).toBeLessThan(mainCap);
+    // Built from EVERY held position — a main-only subset would reinstate the original blind spot.
+    expect(s).toContain("for (const p of portfolioCtx?.positions ?? []) {");
+    // ONE definition of where the line is: the soft-cap warning in risk-metrics and this hard gate
+    // must not disagree, so the percentage is imported, never re-typed.
+    expect(s).toContain("capPct: SECTOR_CAP_PCT / 100");
+    expect(s).not.toMatch(/capPct: 0\.4\b/);
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.

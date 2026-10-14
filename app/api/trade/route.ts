@@ -3,16 +3,16 @@ import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
-import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext } from "@/lib/market-data";
+import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
-import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
+import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta, SECTOR_CAP_PCT } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
 import { parseTradeDecision, isFullExit, type TradeDecision } from "@/lib/trade-decision";
 import { isMarketHoliday, holidayTableCovers } from "@/lib/holidays";
-import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
+import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applySectorBudget, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { recordExits, triggerFromReason, type ExitRecord } from "@/lib/exit-ledger";
@@ -894,6 +894,49 @@ export async function GET(request: Request) {
       if (capNotes.length > 0) {
         console.log("V1_POSITION_CAP_GUARD", { maxPos, notes: capNotes });
         buySizingAdjustments.push(...capNotes); // surface in the run/email like other sizing adjustments
+      }
+
+      // ── SECTOR BUDGET, counting BOTH sleeves ────────────────────────────────
+      // Until 2026-10-14 the only sector control on buys was <=floor(0.4*N) buyable NAMES inside
+      // buildV1Shortlist: a count standing in for a value cap, blind to what is already held, and
+      // scoped to the MAIN shortlist. The sleeve picks on a YouTube signal with no sector awareness
+      // and its own 2 slots, so XLK reached 44.5% of the book (NVDA + AVGO in the sleeve, MRVL in
+      // main, every dollar of it semiconductors) with no guard breached by any single path.
+      //
+      // Runs AFTER the per-position cap so it budgets the dollars that will actually be spent, and
+      // applies to sleeve buys and top-ups alike — a top-up adds no NAME but it adds DOLLARS, and
+      // repeated top-ups are exactly how the largest XLK position got there.
+      const heldValueBySector = new Map<string, number>();
+      let unsectored = 0;
+      for (const p of portfolioCtx?.positions ?? []) {
+        const price = priceMap.get(p.symbol) ?? (parseFloat(p.avgCost) || 0);
+        const value = (parseFloat(p.quantity) || 0) * price;
+        const sec = STOCK_SECTOR[p.symbol];
+        if (!sec) { unsectored += value; continue; }   // grandfathered off-index sleeve holds
+        heldValueBySector.set(sec, (heldValueBySector.get(sec) ?? 0) + value);
+      }
+      // agenticBalance.totalValue is a NUMBER (live broker read); portfolioCtx.totalValue is a
+      // FORMATTED STRING ("$2,399.87"). Prefer the broker. A 0 or NaN flows through on purpose —
+      // applySectorBudget withholds the whole batch when it cannot establish a budget.
+      const totalForSector = agenticBalance?.totalValue
+        ?? parseFloat((portfolioCtx?.totalValue ?? "0").replace(/[$,]/g, ""));
+      if (unsectored > 0) {
+        // Stated, not swallowed: value we cannot attribute makes every sector share an UNDERSTATEMENT,
+        // so the guard is weaker than it looks and the reader should know by how much.
+        buySizingAdjustments.push(
+          `CONTEXT — $${unsectored.toFixed(0)} of holdings have no sector mapping (off-index names predating the S&P-only sleeve rule). They are excluded from the sector budget, so every sector share below is an UNDERSTATEMENT by up to that amount.`);
+      }
+      const { buys: sectorBuys, notes: sectorNotes } = applySectorBudget(decision.buys, {
+        heldValueBySector, sectorOf: (sym) => STOCK_SECTOR[sym] ?? null,
+        // SECTOR_CAP_PCT is a PERCENT (40) and this takes a FRACTION. Reusing the existing constant
+        // rather than a second literal is the point — the soft-cap WARNING in risk-metrics and this
+        // hard gate must never disagree about where the line is.
+        totalValue: totalForSector, capPct: SECTOR_CAP_PCT / 100,
+      });
+      decision.buys = sectorBuys;
+      if (sectorNotes.length > 0) {
+        console.log("V1_SECTOR_BUDGET_GUARD", { totalForSector, notes: sectorNotes });
+        buySizingAdjustments.push(...sectorNotes);
       }
     }
 

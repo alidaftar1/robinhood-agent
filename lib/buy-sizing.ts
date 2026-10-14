@@ -159,6 +159,86 @@ export function applyPerPositionCap<T extends { symbol: string; dollarAmount: nu
   return { buys: capped, notes };
 }
 
+// ── Sector budget, across BOTH sleeves (risk control) ─────────────────────────────────────────
+// THE GAP THIS CLOSES. "40% sector cap" was enforced as <=floor(0.4*N) BUYABLE NAMES per sector
+// inside buildV1Shortlist, which has three holes: it is a name COUNT standing in for a value cap,
+// it ignores what is already HELD ("◆HELD rows may sit outside the sector cap because they're
+// already in the book"), and it only sees the MAIN shortlist. The influencer sleeve picks on a
+// YouTube signal with no sector awareness and has its own 2 slots, so two individually-compliant
+// sleeves can stack one industry without any guard registering a breach.
+//
+// 2026-10-14 is the worked case: XLK reached 44.5% of the book — NVDA $356 and AVGO $329 in the
+// sleeve, MRVL $386 in the main book — and every XLK dollar was a semiconductor. Nothing was
+// broken. Main bought MRVL, the sleeve bought NVDA and AVGO, the owner topped MRVL up four times,
+// and no single path exceeded its own budget.
+//
+// So this is a VALUE gate (the rule as actually stated) over positions from BOTH sleeves, applied
+// at buy time. BUY-SIDE ONLY — it can never force a sale, matching every other cap here; a sector
+// already over budget from price appreciation simply stops receiving new money.
+//
+// Top-ups are NOT exempt, unlike the position-slot cap. A slot cap counts NAMES, so a top-up adds
+// none; this counts DOLLARS, and a top-up adds those. Exempting them would leave the largest
+// single route to concentration open — on 2026-10-14 the biggest XLK position got there precisely
+// by repeated top-ups.
+export interface SectorBudgetOpts {
+  /** Current value per sector, counting EVERY held position, main and sleeve alike. */
+  heldValueBySector: Map<string, number>;
+  /** Sector for a symbol, or null when it cannot be established. */
+  sectorOf: (symbol: string) => string | null;
+  /** Denominator for the cap — the whole book, cash included. */
+  totalValue: number;
+  /** Fraction, e.g. 0.40. */
+  capPct: number;
+  minBuy?: number;
+}
+
+export function applySectorBudget<T extends { symbol: string; dollarAmount: number }>(
+  buys: T[],
+  opts: SectorBudgetOpts,
+): { buys: T[]; notes: string[] } {
+  const notes: string[] = [];
+  const minBuy = opts.minBuy ?? MIN_BUY_DOLLARS;
+  const budget = opts.totalValue * opts.capPct;
+  // Mutable running total so two buys in the SAME sector in one decision cannot each pass against
+  // the same headroom — the classic way a per-item check lets a batch through.
+  const running = new Map(opts.heldValueBySector);
+  if (!(budget > 0)) {
+    // No usable denominator means no budget can be established. WITHHOLD rather than wave the
+    // batch through: an unestablished limit is not an absent one.
+    return {
+      buys: [],
+      notes: buys.map(b => `${b.symbol} buy DROPPED — could NOT establish the sector budget (total value unreadable). Withheld rather than buying against an unknown limit.`),
+    };
+  }
+  const kept = buys.flatMap((b): T[] => {
+    const sector = opts.sectorOf(b.symbol);
+    if (sector == null) {
+      // Same direction as the earnings gate: a name whose sector we cannot establish cannot be
+      // budgeted, and dropping the CHECK rather than the BUY is the fail-open branch.
+      notes.push(`${b.symbol} buy DROPPED — could NOT establish its sector, so it cannot be counted against the ${(opts.capPct * 100).toFixed(0)}% sector budget. This says our sector data is missing, NOT that ${b.symbol} is over-concentrated.`);
+      return [];
+    }
+    const held = running.get(sector) ?? 0;
+    const room = budget - held;
+    if (room <= 0) {
+      notes.push(`${b.symbol} buy DROPPED — ${sector} is already $${held.toFixed(0)} of a $${budget.toFixed(0)} budget (${(held / opts.totalValue * 100).toFixed(1)}% vs a ${(opts.capPct * 100).toFixed(0)}% cap), counting BOTH sleeves. No new money into this sector until it falls back under.`);
+      return [];
+    }
+    if (b.dollarAmount <= room) {
+      running.set(sector, held + b.dollarAmount);
+      return [b];
+    }
+    if (room < minBuy) {
+      notes.push(`${b.symbol} buy DROPPED — only $${room.toFixed(0)} of ${sector} budget remains, below the $${minBuy} minimum buy.`);
+      return [];
+    }
+    notes.push(`${b.symbol} buy trimmed $${b.dollarAmount.toFixed(0)}→$${room.toFixed(0)} — would take ${sector} past its ${(opts.capPct * 100).toFixed(0)}% budget, counting BOTH sleeves.`);
+    running.set(sector, held + room);
+    return [{ ...b, dollarAmount: Number(room.toFixed(2)) }];
+  });
+  return { buys: kept, notes };
+}
+
 // ── Concentration trim-on-drift (risk control) ────────────────────────────────────────────────
 // The per-position cap (applyPerPositionCap) only bounds NEW BUYS — a winner can still APPRECIATE
 // past it (APA drifted to 28% of the book with the 20% cap never trimming it; when Energy sold off
