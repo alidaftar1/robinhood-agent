@@ -41,6 +41,47 @@ export type ReplayCase = {
 );
 
 export const REPLAY_CASES: ReplayCase[] = [
+  // ── 2026-10-13 .. 15: four instances of ONE class, added together on purpose ──────────────
+  // A null or a flag with SEVERAL possible causes, narrated by a branch that assumes one, with the
+  // honest explanation two lines away in the same output. Registry #40 records the class. They are
+  // replayed as a group because the question worth asking is not "is each fixed" but "would the
+  // suite notice the FIFTH".
+  {
+    id: "2026-10-13/no-trades-banner",
+    incident: "'No trades — possible analysis issue' fired on a day whose cap-drop notes explained why",
+    replayable: true,
+    file: "lib/no-trade-cause.ts",
+    find: "  const unestablished = notes.filter(n => UNESTABLISHED.test(n));",
+    replace: "  const unestablished: string[] = [];",
+    expect: "a wholesale earnings-lookup failure reads as 'guards working' and the report goes quiet",
+  },
+  {
+    id: "2026-10-14/uncaptured-after-capture",
+    incident: "A fill was reported as recorded AND as uncaptured in the same email",
+    replayable: true,
+    file: "app/api/verify/route.ts",
+    find: "        if (written && plan.record.length > 0) {",
+    replace: "        if (false) {",
+    expect: "discrepancies keep naming an order the same request just captured; status stays 'discrepancy'",
+  },
+  {
+    id: "2026-10-15/withheld-read-as-uncomputable",
+    incident: "A deliberately WITHHELD return was alerted as an uncomputable one, advising a manual repair",
+    replayable: true,
+    file: "app/api/trade/route.ts",
+    find: "    if (unreconciled) {\n      // Already explained by the withholding note",
+    replace: "    if (false) {\n      // Already explained by the withholding note",
+    expect: "the withholding case falls through and emails 'permanent gap … fix the prior run's stored total value'",
+  },
+  {
+    id: "2026-10-15/broker-rounding-hides-own-trade",
+    incident: "The broker's 2dp rounding stopped capture recognising a trade it had already recorded",
+    replayable: true,
+    file: "lib/run-store.ts",
+    find: "    return Math.abs(tq - oq) <= Math.max(0.01, Math.abs(tq) * 0.02);",
+    replace: "    return Math.abs(tq - oq) < 1e-9;",
+    expect: "the agent's own sell is counted into the multi-fill net; the day is withheld and locked with every fill available",
+  },
   {
     id: "2026-10-06/sleeve-split-unrepaired",
     incident: "A repaired whole-account return left the SLEEVE split computed from the unrepaired trades",
