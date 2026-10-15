@@ -2016,9 +2016,32 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // Make it loud at the moment it happens, while the prices are still recoverable.
     // The SAME predicate computeDailyReturn uses, so the alert names the trades that actually
     // blocked it — a looser filter also lists buys and partial sells it priced successfully.
+    //
+    // GATED ON !unreconciled, and that gate is the whole correctness of this block. `agenticResult`
+    // is null for TWO unrelated reasons: computeDailyReturn could not compute one, or the code
+    // above DELIBERATELY WITHHELD it because the book does not add up. Both alerts below describe
+    // the first and prescribe a manual repair ("fix the prior run's stored total value", "patchDate
+    // cannot repair this"), which is actively wrong advice for the second — withholding is
+    // self-healing, the 8am capture records the owner's fills and the return is computed then, and
+    // the withholding note already says exactly that two lines up.
+    //
+    // 2026-10-15 is the worked case and it emailed the owner: the agent sold 1.190290 MRVL against
+    // a stored baseline of 1.111172, because the owner's 10-14 fills were not yet captured. The run
+    // carried BOTH "Return WITHHELD ... computed [at 8am] rather than published now" AND "DAILY
+    // RETURN NOT COMPUTED — an unknown condition ... a permanent gap unless the prior run's total
+    // value is corrected." Nothing was wrong with the prior run's total value.
+    //
+    // THE CLASS, fourth instance in four days (autopilot banner, uncaptured-after-capture, capture
+    // reconciles, this): a nullable value with SEVERAL possible causes, reported by a branch that
+    // assumes one of them. The fix is always the same — establish the cause before describing it,
+    // and never let one branch narrate a state another branch owns.
     const unpricedTrades = findUnpriceableTrades(positions, allTradesToday)
       .map(t => `${t.side} ${t.symbol} x${t.quantity}`);
-    if (agenticResult === null && unpricedTrades.length > 0 && portfolioAfter && previousDayRun?.portfolioAfter) {
+    if (unreconciled) {
+      // Already explained by the withholding note, and resolved by the 8am capture. Logged so the
+      // path is visible in traces, never emailed.
+      console.log("RETURN_NULL_BY_WITHHOLDING — not an alert", { date: today, unreconciled });
+    } else if (agenticResult === null && unpricedTrades.length > 0 && portfolioAfter && previousDayRun?.portfolioAfter) {
       buySizingAdjustments.push(
         `DAILY RETURN NOT COMPUTED — ${unpricedTrades.join(", ")} has no usable price in either day's snapshot; today's return is a permanent gap unless the fill price is supplied.`);
       await sendAlert(

@@ -139,6 +139,34 @@ describe("wiring: ORDER of operations between components", () => {
     expect(s).not.toMatch(/capPct: 0\.4\b/);
   });
 
+  test("a WITHHELD return is not alerted as an uncomputable one", () => {
+    // 2026-10-15: the agent sold 1.190290 MRVL against a stored baseline of 1.111172 because the
+    // owner's 10-14 fills were not captured yet, so the return was deliberately WITHHELD. The run
+    // then carried both "Return WITHHELD ... computed [at 8am] rather than published now" and
+    // "DAILY RETURN NOT COMPUTED — an unknown condition ... a permanent gap unless the prior run's
+    // total value is corrected", and emailed the owner the second one. Nothing was wrong with the
+    // prior run's total value; withholding is self-healing.
+    //
+    // `agenticResult === null` has TWO causes and these alerts describe only one of them, so the
+    // withholding case must be handled FIRST and must not reach sendAlert.
+    const s = src("app/api/trade/route.ts");
+    const guard = at(s, "if (unreconciled) {\n      // Already explained by the withholding note");
+    const priceAlert = at(s, "Daily return could not be computed — permanent track-record gap");
+    const baselineAlert = at(s, "Daily return could not be computed — no usable baseline");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(priceAlert);
+    expect(guard).toBeLessThan(baselineAlert);
+    // Chained, not parallel: an independent `if` would let the withholding case fall into the
+    // next branch and alert anyway. Asserted by COUNTING the chained forms and forbidding a bare
+    // one — a "does the chained form appear somewhere" regex passes on the un-chained code,
+    // because the SECOND branch still carries `} else if` and a lazy wildcard reaches it. That
+    // version of this test let the mutation through.
+    const chained = (s.match(/\n    \} else if \(agenticResult === null/g) ?? []).length;
+    const bare = (s.match(/\n    if \(agenticResult === null/g) ?? []).length;
+    expect(chained).toBe(2);     // both alert branches hang off the withholding guard
+    expect(bare).toBe(0);        // none of them is independently reachable
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.
