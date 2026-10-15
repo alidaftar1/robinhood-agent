@@ -6,6 +6,7 @@ import { runMockAgent, runAnalysisAgent } from "./agent";
 import { runAllChecks, runAllDecisionChecks } from "./checks";
 import { scoreInsiderAwareness } from "./scorers";
 import { buildSystemPrompt, buildV1AnalysisPrompt, maxPositionDollars, SP500_UNIVERSE, STALE_DAYS } from "@/lib/strategy";
+import { MAIN_DROP_THRESHOLD_PCT } from "@/lib/stopouts";
 import { computeStockBeta, resolvePrevClose, buildV1Shortlist, formatV1Shortlist, STOCK_SECTOR } from "@/lib/market-data";
 import { computeBookBeta, formatBookBeta, computeBenchmarkVerdict, sharpeConfidence, sharpeProbPositive, computeSpySharpe, probBeatsSpy, SMALL_SAMPLE_DAYS } from "@/lib/risk-metrics";
 import { attributeSignals, type SignalSnapshot } from "@/lib/signal-ledger";
@@ -232,12 +233,19 @@ describe("execution constraint: budget with zero buying power", () => {
 });
 
 describe("execution constraint: drop-check stop-loss", () => {
-  it("sells held position down ≥5% intraday, keeps others unchanged", async () => {
+  it("sells a held position past the same-day bar, keeps others unchanged", async () => {
     const scenario = SCENARIOS.find((s) => s.name === "drop-check")!;
     const dropped = scenario.droppedPositions ?? [];
+    // DERIVED from the fixture and the live constant, never re-typed. Both numbers used to be
+    // literals here: "-6.2% today" and "≥5% intraday". On 2026-10-14 the bar moved -5 -> -10 and
+    // the fixture deepened to -12.4%, and this header kept saying -6.2% — so the prompt told the
+    // model the position was down 6.2% in its header and 12.4% in the positions list, and
+    // announced a 5% threshold the system no longer uses. The test failed in CI the next morning.
+    // Same class as the defects it is testing: a literal duplicating a value that lives elsewhere.
+    const dropPct = (sym: string) => scenario.stockOverrides?.[sym]?.change1d ?? null;
     const urgentHeader = `🔴 STOP-LOSS RUN — ${TODAY} 🔴
-The following held positions have dropped ≥5% intraday — thesis breakdown signal — must be evaluated for exit:
-  ${dropped.map((s) => `${s} (-6.2% today)`).join("\n  ")}
+The following held positions have dropped past the ${MAIN_DROP_THRESHOLD_PCT}% same-day bar — thesis breakdown signal — must be evaluated for exit:
+  ${dropped.map((s) => `${s} (${dropPct(s) != null ? dropPct(s)!.toFixed(1) : "?"}% today)`).join("\n  ")}
 
 INSTRUCTIONS — deviate from standard process:
 1. SELL the positions listed above immediately — the drop signals a breakdown in thesis.
