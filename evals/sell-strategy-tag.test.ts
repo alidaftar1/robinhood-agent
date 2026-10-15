@@ -845,6 +845,64 @@ describe("planCapture across multiple fills of one symbol", () => {
     expect(p.reconciles).toBe(false);
   });
 
+  test("the broker's 2dp ROUNDING does not hide an already-recorded fill", () => {
+    // 2026-10-15, the bug that reached production. The agent's own MRVL sell was stored exact
+    // (1.190290) and returned by the broker rounded ("1.19"). The already-recorded check used a
+    // 1e-9 epsilon, so it did not recognise its own trade, counted it into the multi-fill net
+    // (0.69 - 0.33 - 0.28 - 1.19 = -1.11 against a gap of +0.079), matched nothing, and the day
+    // was withheld and locked with every fill available. The unit test missed it by using exact
+    // quantities on BOTH sides, which the broker never does.
+    const agentSell: TradeSnapshot = { symbol: "MRVL", side: "sell", quantity: "1.190290",
+      avgPrice: "230.9995", state: "filled", actor: "agent", strategy: "main" } as TradeSnapshot;
+    const latest = { positions: [] as PositionSnapshot[], trades: [agentSell] };
+    const p = planCapture(heldOf(), latest, [
+      ord("sell", "MRVL", "1.19", "231.00", "2026-10-15"),   // the SAME fill, rounded
+      ord("buy", "MRVL", "0.69", "253.66"), ord("sell", "MRVL", "0.33", "252.09"), ord("sell", "MRVL", "0.28", "253.22"),
+    ], W);
+    // The agent's own sell must not be recorded a second time...
+    expect(p.record.filter(t => parseFloat(t.quantity) > 1)).toEqual([]);
+    // ...and the owner's three fills must all be captured.
+    expect(p.record).toHaveLength(3);
+    expect(p.reconciles).toBe(true);
+  });
+
+  test("quantities come from POSITION ARITHMETIC — the fills sum exactly to the change", () => {
+    // Recording the broker's rounded quantities verbatim left the book 0.000882 out (~$0.20) and
+    // `reconciles` false, withholding a day over sub-penny dust. The remainder is absorbed into the
+    // LARGEST fill; every fill keeps its own broker PRICE, so cost basis and P&L stay true.
+    const agentSell: TradeSnapshot = { symbol: "MRVL", side: "sell", quantity: "1.190290",
+      avgPrice: "230.9995", state: "filled", actor: "agent" } as TradeSnapshot;
+    const p = planCapture(heldOf(), { positions: [] as PositionSnapshot[], trades: [agentSell] }, [
+      ord("sell", "MRVL", "1.19", "231.00", "2026-10-15"),
+      ord("buy", "MRVL", "0.69", "253.66"), ord("sell", "MRVL", "0.33", "252.09"), ord("sell", "MRVL", "0.28", "253.22"),
+    ], W);
+    const net = p.record.reduce((a, t) => a + (t.side === "buy" ? 1 : -1) * parseFloat(t.quantity), 0);
+    // baseline 1.111172 + net - agent's 1.190290 must leave exactly 0 held.
+    expect(1.111172 + net - 1.190290).toBeCloseTo(0, 9);
+    expect(p.record.find(t => t.side === "buy")!.quantity).toBe("0.689118");   // absorbed here
+    expect(p.record.find(t => t.side === "buy")!.avgPrice).toBe("253.66");     // price untouched
+  });
+
+  test("an adjustment that would flip a fill NEGATIVE is refused, not clamped", () => {
+    // Reaching this guard is fiddly and two earlier attempts did NOT: wildly mismatched orders are
+    // rejected by netMultiFill first, and a small BUY is absorbed by the single-order path (which
+    // prices from the gap, not the order). Both passed the mutation that disables the guard, which
+    // is the whole reason this comment exists.
+    //
+    // The shape that gets here: a shares-appeared gap explained only by SELLS, since the single
+    // path only tries buys for an increase. Gap +0.002, sells 0.003 and 0.002 -> net -0.005,
+    // delta +0.007 (inside the 0.01 floor), and absorbing +0.007 into the 0.003 sell gives -0.004.
+    // These orders do not describe this change; inventing a fill that never happened is worse than
+    // withholding.
+    const latest = { positions: [pos2("MRVL", "1.113172", "252.09")], trades: [] as TradeSnapshot[] };
+    const p = planCapture(heldOf(), latest, [
+      ord("sell", "MRVL", "0.003", "252.09"), ord("sell", "MRVL", "0.002", "252.09"),
+    ], W);
+    expect(p.record).toEqual([]);
+    expect(p.residual.length).toBeGreaterThan(0);
+    expect(p.reconciles).toBe(false);
+  });
+
   test("CONTROL: a single fill still takes the single-order path, priced from the broker", () => {
     const latest = { positions: [pos2("MRVL", "0.811172", "252.09")], trades: [] as TradeSnapshot[] };
     const p = planCapture(heldOf(), latest, [ord("sell", "MRVL", "0.30", "252.09")], W);

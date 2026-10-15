@@ -1345,10 +1345,25 @@ export function planCapture(
   // different days are not conflated. Where a date is missing the quantity match stands alone; the
   // error direction is then "do not record", which under-records and leaves `reconciles` false
   // rather than inventing a trade.
-  const sameFill = (t: TradeSnapshot, o: LiveOrder) =>
-    t.symbol === o.symbol && t.side === o.side
-    && Math.abs((parseFloat(t.quantity) || 0) - (parseFloat(o.quantity) || 0)) < 1e-9
-    && (!t.tradedOn || !o.createdAt || t.tradedOn === o.createdAt);
+  //
+  // TOLERANT ON QUANTITY, and this is the correction that made the mechanism work at all. The
+  // broker's order reader ROUNDS TO 2dp — the same fact `matches` above is built around ("KO came
+  // back as both 0.64 and 0.637741") — so an exact comparison never recognises a stored trade in
+  // the order list. 2026-10-15: the agent's own MRVL sell was stored as 1.190290 and returned by
+  // the broker as "1.19", so it was NOT excluded, was counted into the multi-fill net
+  // (0.69 - 0.33 - 0.28 - 1.19 = -1.11 against a gap of +0.079), matched nothing, and MRVL fell to
+  // residual — the day withheld and locked with every fill available. Shipped with a 1e-9 epsilon
+  // because the unit test used exact quantities on BOTH sides, which the broker never does.
+  //
+  // Same tolerance as `matches`, so the two cannot disagree about whether an order and a trade are
+  // the same fill. Over-matching here UNDER-records, which leaves `reconciles` false and withholds
+  // loudly; under-matching double-counts silently. Those are not symmetric, so prefer this side.
+  const sameFill = (t: TradeSnapshot, o: LiveOrder) => {
+    if (t.symbol !== o.symbol || t.side !== o.side) return false;
+    if (t.tradedOn && o.createdAt && t.tradedOn !== o.createdAt) return false;
+    const tq = parseFloat(t.quantity) || 0, oq = parseFloat(o.quantity) || 0;
+    return Math.abs(tq - oq) <= Math.max(0.01, Math.abs(tq) * 0.02);
+  };
   const alreadyRecorded = (o: LiveOrder) =>
     realTrades.some(t => sameFill(t, o)) || (heldRun.trades ?? []).some(t => sameFill(t, o));
   const netMultiFill = (symbol: string, signedGap: number): LiveOrder[] | null => {
@@ -1365,16 +1380,50 @@ export function planCapture(
     const tol = Math.max(0.01, Math.abs(signedGap) * 0.02);
     return Math.abs(net - signedGap) <= tol ? fills : null;
   };
-  const recordFills = (fills: LiveOrder[], symbol: string) => {
+  //
+  // QUANTITY FROM POSITIONS, PRICE FROM THE BROKER — the same rule the single-order path follows,
+  // applied to a set. The broker rounds order quantities to 2dp, so recording the fills verbatim
+  // leaves the book out by the rounding error: on 2026-10-15 the real fills summed to 0.000882
+  // more than the position change (~$0.20), `reconciles` came back false, and the day stayed
+  // withheld over sub-penny dust with every fill correctly captured. So the residual is absorbed
+  // into the LARGEST fill, where it is proportionally smallest, and every fill keeps its own
+  // broker PRICE — cost basis and realised P&L stay true while the arithmetic closes exactly.
+  const reconcileQuantities = (fills: LiveOrder[], signedGap: number): Map<LiveOrder, number> | null => {
+    const q = new Map<LiveOrder, number>();
+    let net = 0;
+    for (const o of fills) {
+      const v = parseFloat(o.quantity);
+      const n = Number.isFinite(v) ? v : 0;
+      q.set(o, n);
+      net += o.side === "buy" ? n : -n;
+    }
+    const delta = signedGap - net;
+    if (Math.abs(delta) < 1e-12) return q;
+    // Largest by absolute size: the adjustment is a rounding remainder, and putting it on the
+    // biggest fill keeps the relative distortion smallest.
+    let biggest: LiveOrder | null = null;
+    for (const o of fills) if (!biggest || (q.get(o) ?? 0) > (q.get(biggest) ?? 0)) biggest = o;
+    if (!biggest) return null;
+    const adjusted = (q.get(biggest) ?? 0) + (biggest.side === "buy" ? delta : -delta);
+    // A correction that flips a fill negative means these orders do not describe this change at
+    // all; refuse rather than invent one.
+    if (!(adjusted > 0)) return null;
+    q.set(biggest, adjusted);
+    return q;
+  };
+  const recordFills = (fills: LiveOrder[], symbol: string, signedGap: number) => {
+    const qty = reconcileQuantities(fills, signedGap);
+    if (!qty) return false;
     for (const o of fills) {
       used.add(o);
       record.push({
-        symbol, side: o.side as "buy" | "sell", quantity: (parseFloat(o.quantity) || 0).toFixed(6),
+        symbol, side: o.side as "buy" | "sell", quantity: (qty.get(o) ?? 0).toFixed(6),
         avgPrice: parseFloat(o.avgPrice).toFixed(2), state: "filled", actor: "human",
         ...(o.createdAt ? { tradedOn: o.createdAt } : {}),
         strategy: inferSellStrategy(symbol, heldRun.influencerPositions, heldRun.trades ?? []),
       });
     }
+    return true;
   };
 
   // SELLS the records are missing — buildInferredSells already priced them at the held run's mark;
@@ -1386,8 +1435,7 @@ export function planCapture(
       // A NET decrease can also be several fills (a buy and two larger trims). Signed negative:
       // the position went down.
       const fills = netMultiFill(est.symbol, -qty);
-      if (fills) {
-        recordFills(fills, est.symbol);
+      if (fills && recordFills(fills, est.symbol, -qty)) {
         supersede.push(...inferredSells.filter(t => t.symbol === est.symbol));
       }
       continue; // no evidence — leave it to patchTrades to estimate as before
@@ -1407,8 +1455,7 @@ export function planCapture(
     const hit = candidates.find(o => matches(o, "buy", u.symbol, u.excessQty!));
     if (!hit) {
       const fills = netMultiFill(u.symbol, u.excessQty);
-      if (!fills) { residual.push(u); continue; }
-      recordFills(fills, u.symbol);
+      if (!fills || !recordFills(fills, u.symbol, u.excessQty)) { residual.push(u); continue; }
       continue;
     }
     used.add(hit);
