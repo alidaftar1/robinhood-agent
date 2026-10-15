@@ -36,6 +36,7 @@ export const maxDuration = 200;
 // actual names, few enough that one watchlist video (Everything Money named 17 tickers in a single
 // video) does not swamp the email. The overflow is always counted, never silently truncated.
 import { classifyNoTradeState, GUARD_DROP } from "@/lib/no-trade-cause";
+import { findReportContradictions } from "@/lib/report-consistency";
 
 const LEDGER_PICKS_SHOWN = 14;
 
@@ -631,6 +632,26 @@ export async function GET(request: Request) {
   // ─── Email ────────────────────────────────────────────────────────────────────
 
   // Email status — deliberately BROAD and unchanged: anything worth your glance flips the banner.
+  // ── REPORT SELF-CONSISTENCY ──────────────────────────────────────────────────
+  // Runs LAST, on the assembled report rather than on the data, because the defect it looks for is
+  // in what we are about to SAY. Four times in three days this report asserted two things that
+  // could not both be true and three of them were emailed before anything noticed; the registry
+  // made the reviewer catch the fourth, but that is a model reading a prompt AFTER the fact. These
+  // particular contradictions are deterministic, so they get a deterministic check.
+  //
+  // Raised as a hard issue, never soft: a report that contradicts itself is worth more attention
+  // than most of what it describes, because every other number in it is now suspect.
+  const contradictions = findReportContradictions({
+    notes: todayRun?.buySizingAdjustments ?? [],
+    issues, autoFixed,
+    discrepancies: verifyResult?.discrepancies ?? [],
+    captureReconciles: (verifyResult as { capture?: { reconciles?: boolean } } | null)?.capture?.reconciles ?? null,
+  });
+  for (const c of contradictions) {
+    console.warn("REPORT_CONTRADICTION", { id: c.id, detail: c.detail });
+    issues.push(`REPORT CONTRADICTS ITSELF (${c.id}) — ${c.detail} Fix the report before acting on it.`);
+  }
+
   const allIssues = [...issues, ...softIssues];
   const needsAttention = allIssues.length > 0 || seriousConcerns.length > 0 || seriousReconcile.length > 0;
   const statusLabel = needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";

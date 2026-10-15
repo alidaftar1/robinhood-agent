@@ -167,6 +167,24 @@ describe("wiring: ORDER of operations between components", () => {
     expect(bare).toBe(0);        // none of them is independently reachable
   });
 
+  test("the autopilot checks its own report before sending it", () => {
+    // Four self-contradicting reports in three days, three of them emailed before anything
+    // noticed. The registry made the REVIEWER catch the fourth, but that is a model reading a
+    // prompt after the fact. Pin the deterministic check, and pin that it runs on the ASSEMBLED
+    // report — after issues and autoFixed are populated, before needsAttention is computed from
+    // them — because a check that runs earlier sees a half-built report.
+    const s = src("app/api/autopilot/route.ts");
+    const call = at(s, "findReportContradictions({");
+    const allIssues = at(s, "const allIssues = [...issues, ...softIssues]");
+    const capture = at(s, "const cap = (verifyResult as");
+    expect(call).toBeGreaterThan(-1);
+    expect(capture).toBeLessThan(call);     // after the data phase
+    expect(call).toBeLessThan(allIssues);   // before the status is derived
+    // Hard issue, never soft: a report that contradicts itself makes every other number suspect.
+    expect(s).toMatch(/issues\.push\(`REPORT CONTRADICTS ITSELF/);
+    expect(s).not.toMatch(/softIssues\.push\(`REPORT CONTRADICTS/);
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.

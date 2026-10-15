@@ -83,6 +83,15 @@ export const REPLAY_CASES: ReplayCase[] = [
     expect: "the agent's own sell is counted into the multi-fill net; the day is withheld and locked with every fill available",
   },
   {
+    id: "2026-10-15/report-consistency-unwired",
+    incident: "The deterministic report self-consistency check is the only thing standing in front of a FIFTH instance",
+    replayable: true,
+    file: "lib/report-consistency.ts",
+    find: "  const notes = input.notes ?? [];",
+    replace: "  return [];\n  const notes = input.notes ?? [];",
+    expect: "every known report contradiction stops being detected; the class recurs silently",
+  },
+  {
     id: "2026-10-06/sleeve-split-unrepaired",
     incident: "A repaired whole-account return left the SLEEVE split computed from the unrepaired trades",
     replayable: true,
