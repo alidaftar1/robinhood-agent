@@ -101,6 +101,15 @@ export const REPLAY_CASES: ReplayCase[] = [
     expect: "the sympathy-judgment model can place orders directly; audit finding [7] is undone",
   },
   {
+    id: "2026-10-15/sleeve-both-slots-one-industry",
+    incident: "Both influencer slots sat in semiconductors (NVDA + AVGO) with no guard registering it",
+    replayable: true,
+    file: "lib/market-data.ts",
+    find: "  if (SEMICONDUCTORS.has(symbol)) return \"XLK:semis\";",
+    replace: "",
+    expect: "the sleeve rule falls back to sector granularity: NVDA+AVGO passes, and the sleeve caps at one name ~60% of the time",
+  },
+  {
     id: "2026-10-06/sleeve-split-unrepaired",
     incident: "A repaired whole-account return left the SLEEVE split computed from the unrepaired trades",
     replayable: true,

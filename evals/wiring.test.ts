@@ -217,6 +217,24 @@ describe("wiring: ORDER of operations between components", () => {
     expect(s).toMatch(/runSellSession\(sellsToExecute/);
   });
 
+  test("the sleeve sector rule runs BEFORE the 2-slot cap", () => {
+    // Order is the guard: a buy blocked for concentration must not consume one of the two scarce
+    // sleeve slots on its way to being dropped — otherwise blocking a second semi silently costs
+    // the slot a different industry could have used.
+    const s = src("app/api/trade/route.ts");
+    const rule = at(s, "applySleeveSectorRule(decision.buys");
+    const slotCap = at(s, "const allowedNew = Math.max(0, MAX_INFLUENCER_POSITIONS - keptInfluencer)");
+    expect(rule).toBeGreaterThan(-1);
+    expect(rule).toBeLessThan(slotCap);
+    // INDUSTRY granularity, not sector — the whole point. A sector-level call here would cap the
+    // sleeve at one name ~60% of the time, since that share of influencer mentions are XLK.
+    expect(s).toContain("sectorOf: industryOf");
+    expect(s).not.toMatch(/applySleeveSectorRule[^]{0,400}sectorOf: \(sym\) => STOCK_SECTOR/);
+    // Held sectors come from the positions being KEPT, not from all of yesterday's — a name sold
+    // this run frees its industry too.
+    expect(s).toMatch(/\.filter\(p => !soldSet\.has\(p\.symbol\)\)\s*\n\s*\.map\(p => industryOf\(p\.symbol\)\)/);
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.

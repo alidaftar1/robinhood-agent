@@ -239,6 +239,68 @@ export function applySectorBudget<T extends { symbol: string; dollarAmount: numb
   return { buys: kept, notes };
 }
 
+// ── Sleeve sector diversification (risk control) ──────────────────────────────────────────────
+// The influencer sleeve has 2 slots and, until 2026-10-15, no sector awareness whatsoever: it
+// picks on a YouTube signal, and YouTube talks about semiconductors. Both slots sat in XLK (NVDA
+// and AVGO) — two names, one industry, in a sleeve whose entire purpose is to catch moves the main
+// book cannot. Two positions in the same industry is one bet with extra commission.
+//
+// The cross-sleeve BUDGET (applySectorBudget) does not cover this. That is a VALUE cap on the whole
+// book; with the sleeve at ~$630 of a ~$940 budget, both slots can be semis without it ever firing.
+// This is a different control: a COUNT limit INSIDE the sleeve.
+//
+// BUY-SIDE ONLY, like every other cap here — it can never force a sale, so an existing pair stays
+// until its own rails (stale clock, stop, take-profit) move it.
+//
+// THE COST, stated because it is real: if the only qualifying pick shares a sector with the name
+// already held, the sleeve buys NOTHING and sits at one position. That is the intended trade — a
+// slot held empty is better than a second helping of the same bet — but it means the sleeve will
+// sometimes look idle when the signal is concentrated, which is exactly when it usually is.
+export const MAX_SLEEVE_PER_SECTOR = 1;
+
+export function applySleeveSectorRule<T extends { symbol: string }>(
+  buys: T[],
+  opts: {
+    /** Sectors of the sleeve positions being KEPT this run. */
+    heldSectors: readonly (string | null)[];
+    sectorOf: (symbol: string) => string | null;
+    isSleeveBuy: (buy: T) => boolean;
+    maxPerSector?: number;
+  },
+): { buys: T[]; notes: string[] } {
+  const notes: string[] = [];
+  const limit = opts.maxPerSector ?? MAX_SLEEVE_PER_SECTOR;
+  const count = new Map<string, number>();
+  let unsectoredHeld = 0;
+  for (const sec of opts.heldSectors) {
+    if (sec == null) { unsectoredHeld++; continue; }   // grandfathered off-index hold — see note below
+    count.set(sec, (count.get(sec) ?? 0) + 1);
+  }
+  if (unsectoredHeld > 0) {
+    // Fail-open by necessity and SAID SO: a held name we cannot classify cannot block anything, so
+    // the rule is weaker than it looks while such a position exists. Silence here would be the
+    // dangerous version.
+    notes.push(`CONTEXT — ${unsectoredHeld} sleeve holding(s) have no sector mapping (off-index names predating the S&P-only sleeve rule) and cannot be counted against the ${limit}-per-sector sleeve rule.`);
+  }
+  const kept = buys.filter(b => {
+    if (!opts.isSleeveBuy(b)) return true;             // main picks unaffected
+    const sec = opts.sectorOf(b.symbol);
+    if (sec == null) {
+      // Same direction as the other gates: dropping the CHECK rather than the BUY is fail-open.
+      notes.push(`${b.symbol} influencer buy DROPPED — could NOT establish its sector, so it cannot be checked against the ${limit}-per-sector sleeve rule. This says our sector data is missing, NOT that ${b.symbol} is concentrated.`);
+      return false;
+    }
+    const n = count.get(sec) ?? 0;
+    if (n >= limit) {
+      notes.push(`${b.symbol} influencer buy DROPPED — the sleeve already holds ${n} ${sec} name(s) and its limit is ${limit} per sector. Both slots in one industry is one bet, not two.`);
+      return false;
+    }
+    count.set(sec, n + 1);
+    return true;
+  });
+  return { buys: kept, notes };
+}
+
 // ── Concentration trim-on-drift (risk control) ────────────────────────────────────────────────
 // The per-position cap (applyPerPositionCap) only bounds NEW BUYS — a winner can still APPRECIATE
 // past it (APA drifted to 28% of the book with the 20% cap never trimming it; when Energy sold off

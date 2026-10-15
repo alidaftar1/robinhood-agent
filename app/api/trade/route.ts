@@ -3,7 +3,7 @@ import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
-import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR } from "@/lib/market-data";
+import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
@@ -12,7 +12,7 @@ import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions,
 import { sendAlert } from "@/lib/alert";
 import { parseTradeDecision, isFullExit, type TradeDecision } from "@/lib/trade-decision";
 import { isMarketHoliday, holidayTableCovers } from "@/lib/holidays";
-import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applySectorBudget, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
+import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applySectorBudget, applySleeveSectorRule, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { recordExits, triggerFromReason, type ExitRecord } from "@/lib/exit-ledger";
@@ -958,6 +958,26 @@ export async function GET(request: Request) {
       const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !soldSet.has(p.symbol)).length;
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
         b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
+      // ── SLEEVE SECTOR DIVERSIFICATION ──────────────────────────────────────
+      // Runs BEFORE the slot cap, so a buy blocked for concentration never consumes one of the two
+      // scarce slots on its way to being dropped. Granularity is INDUSTRY, not sector: 60% of
+      // influencer mentions are XLK, so a sector rule would cap the sleeve at one position most of
+      // the time and would block PLTR+NVDA or MSFT+AMD — different businesses. industryOf splits
+      // semiconductors out of XLK, which is the concentration that actually occurred (NVDA+AVGO).
+      {
+        const keptSectors = (previousRun?.influencerPositions ?? [])
+          .filter(p => !soldSet.has(p.symbol))
+          .map(p => industryOf(p.symbol));
+        const { buys: diversified, notes: sectorNotes } = applySleeveSectorRule(decision.buys, {
+          heldSectors: keptSectors, sectorOf: industryOf, isSleeveBuy: isInfluencerBuy,
+        });
+        decision.buys = diversified;
+        if (sectorNotes.length > 0) {
+          console.log("SLEEVE_SECTOR_GUARD", { keptSectors, notes: sectorNotes });
+          influencerGuardNotes.push(...sectorNotes);
+        }
+      }
+
       const allowedNew = Math.max(0, MAX_INFLUENCER_POSITIONS - keptInfluencer);
       let kept = 0;
       const trimmed: string[] = [];
