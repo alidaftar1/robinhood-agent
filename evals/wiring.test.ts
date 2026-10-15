@@ -185,6 +185,38 @@ describe("wiring: ORDER of operations between components", () => {
     expect(s).not.toMatch(/softIssues\.push\(`REPORT CONTRADICTS/);
   });
 
+  test("drop-check CANNOT emit a buy — the guarantee that replaced a stochastic eval", () => {
+    // Replaces "execution: imminent-earnings" in the LLM suite, retired 2026-10-15. That test
+    // asserted a free-discretion execution model would not BUY a name reporting in 2 days, and it
+    // failed 2/2 on re-run — reproducible, and a true statement about prompts: a prompt-only rule
+    // does not hold under discretion. But production grants no such discretion, so it was testing
+    // a configuration that no longer exists.
+    //
+    // What production actually guarantees is structural (audit finding [7]), so it belongs here,
+    // in the deterministic deploy gate, not in a scheduled stochastic suite:
+    const s = src("app/api/drop-check/route.ts");
+
+    // 1. The REASONING model holds no trade token — CLAUDE.md's first trade-execution invariant.
+    //    Asserted on the CALL BLOCK, not on the comment that explains it: a comment is not a
+    //    guarantee, and deleting `mcp_servers` from the prose while adding it to the code is
+    //    exactly the edit this needs to catch.
+    const decision = at(s, "system: decisionSystem");
+    expect(decision).toBeGreaterThan(-1);
+    const decisionCall = s.slice(decision, s.indexOf("}, {", decision) + 4);
+    expect(decisionCall).not.toMatch(/mcp_servers\s*:/);
+
+    // 2. The ONLY order-placing session is the sell session, and its instruction says sells.
+    expect(s).toMatch(/Place these market sell orders one at a time/);
+    expect(s).not.toMatch(/Place these market buy orders/);
+    expect(s).not.toMatch(/dollar_amount=/);                      // the notional BUY shape
+
+    // 3. The order list is built from resolveDropCheckExits' `exiting` and nothing else — so a
+    //    "buy" cannot enter by another route even if the model asked for one.
+    expect(s).toMatch(/const \{ exiting, heldOnSympathy \} = resolveDropCheckExits\(/);
+    expect(s).toMatch(/const sellsToExecute = exiting/);
+    expect(s).toMatch(/runSellSession\(sellsToExecute/);
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.

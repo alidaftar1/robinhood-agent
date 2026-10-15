@@ -178,7 +178,25 @@ describe("analysis constraint: earnings awareness", () => {
 // earnings-exit is excluded from the execution suite: under B2, holding through
 // imminent earnings is an ANALYSIS-layer judgment (tested via the awareness check),
 // not a forced sell the execution layer must carry out.
-for (const scenario of SCENARIOS.filter((s) => !["drop-check", "t1-settlement", "min-position-size", "rebalance-losers", "overweight-single-position", "bear-market", "earnings-exit"].includes(s.name))) {
+//
+// imminent-earnings excluded 2026-10-15, and this one is a CONFIGURATION that no longer exists
+// rather than a model artifact. It asserted that a free-discretion execution model would not BUY a
+// name reporting in 2 days, and it failed 2/2 on re-run — reproducible, not noise. But production
+// grants the executor no discretion at all: /api/trade hands it a pre-computed order list under
+// "Do not analyze — just execute", and buildSystemPrompt (what this harness exercises) is used only
+// by /api/drop-check, whose reasoning model runs with NO mcp_servers and whose only order session
+// is runSellSession. A buy is structurally impossible there — audit finding [7].
+//
+// So the test was measuring whether a prompt-only rule holds under discretion the system does not
+// grant. It does not hold, which is exactly why the rule moved into code on 2026-10-13
+// (screenImminentEarningsBuys). The real guarantees are tested where they live:
+//   · the DECISION layer still must not propose such a buy — "analysis constraint: imminent
+//     earnings no-buy" above, which passes;
+//   · the CODE gate that drops one anyway — evals/fail-closed.test.ts, mutation-verified;
+//   · and that drop-check cannot emit a buy at all — evals/wiring.test.ts, which moves the
+//     assertion into the deterministic deploy gate instead of a scheduled stochastic suite.
+// Retired here rather than weakened, and replaced, not simply deleted.
+for (const scenario of SCENARIOS.filter((s) => !["drop-check", "t1-settlement", "min-position-size", "rebalance-losers", "overweight-single-position", "bear-market", "earnings-exit", "imminent-earnings"].includes(s.name))) {
   describe(`execution: ${scenario.name}`, () => {
     it(scenario.description, async () => {
       const systemPrompt = buildExecutionSystemPrompt(scenario);

@@ -92,6 +92,15 @@ export const REPLAY_CASES: ReplayCase[] = [
     expect: "every known report contradiction stops being detected; the class recurs silently",
   },
   {
+    id: "2026-10-15/drop-check-holds-trade-token",
+    incident: "A reasoning model holding the trade token — the invariant that makes a drop-check buy impossible",
+    replayable: true,
+    file: "app/api/drop-check/route.ts",
+    find: "          system: decisionSystem,",
+    replace: "          system: decisionSystem,\n          mcp_servers: [mcpServer],",
+    expect: "the sympathy-judgment model can place orders directly; audit finding [7] is undone",
+  },
+  {
     id: "2026-10-06/sleeve-split-unrepaired",
     incident: "A repaired whole-account return left the SLEEVE split computed from the unrepaired trades",
     replayable: true,
