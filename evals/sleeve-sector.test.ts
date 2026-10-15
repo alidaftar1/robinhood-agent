@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { applySleeveSectorRule, MAX_SLEEVE_PER_SECTOR } from "@/lib/buy-sizing";
-import { SEMICONDUCTORS, industryOf, STOCK_SECTOR } from "@/lib/market-data";
+import { industryOf, STOCK_SECTOR } from "@/lib/market-data";
+import { STOCK_INDUSTRY } from "@/lib/stock-industry";
 import { SP500_UNIVERSE } from "@/lib/strategy";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -27,7 +28,7 @@ describe("the influencer sleeve cannot put both slots in one industry", () => {
   test("the live case: holding NVDA, an AVGO buy is dropped", () => {
     const r = run([sleeveBuy("AVGO")], ["NVDA"]);
     expect(r.buys).toHaveLength(0);
-    expect(r.notes[0]).toMatch(/already holds 1 XLK:semis name/);
+    expect(r.notes[0]).toMatch(/already holds 1 Semiconductors name/);
     expect(r.notes[0]).toMatch(/one bet, not two/);
   });
 
@@ -46,9 +47,17 @@ describe("the influencer sleeve cannot put both slots in one industry", () => {
     expect(r.buys.map(b => b.symbol)).toEqual(["NVDA"]);
   });
 
-  test("a different sector is unaffected", () => {
+  test("a different industry is unaffected, and SAME-industry is blocked", () => {
     expect(run([sleeveBuy("LLY")], ["NVDA"]).buys).toHaveLength(1);
-    expect(run([sleeveBuy("LLY")], ["REGN"]).buys).toHaveLength(0);   // both XLV
+    // The directory is finer than the sector map here too, and correctly so: LLY is "Drug
+    // Manufacturers - General" and REGN is "Biotechnology". Both are XLV, so a sector-level rule
+    // would have blocked this pair — these are not the same bet.
+    expect(run([sleeveBuy("LLY")], ["REGN"]).buys).toHaveLength(1);
+    // Two large-cap pharma names ARE the same bet, and are blocked.
+    expect(run([sleeveBuy("MRK")], ["LLY"]).buys).toHaveLength(0);
+    // Two refiners likewise — a distinction XLE cannot draw against midstream or E&P.
+    expect(run([sleeveBuy("MPC")], ["VLO"]).buys).toHaveLength(0);
+    expect(run([sleeveBuy("TRGP")], ["APA"]).buys).toHaveLength(1);   // midstream vs E&P
   });
 
   test("a buy whose industry cannot be established is WITHHELD, not waved through", () => {
@@ -76,29 +85,44 @@ describe("the influencer sleeve cannot put both slots in one industry", () => {
   });
 });
 
-describe("the semiconductor list cannot rot silently", () => {
-  test("every member is still in the S&P universe", () => {
-    // The whole objection to a hand-maintained list is that it goes stale invisibly. A delisting or
-    // a ticker change makes an entry a no-op — this turns that into a RED TEST instead.
+describe("the industry directory is generated, and cannot rot silently", () => {
+  test("it covers the universe, with the known gap pinned", () => {
+    // Was a hand-maintained SEMICONDUCTORS set; replaced on 2026-10-15 with lib/stock-industry,
+    // generated from Sharadar's `tickers` table. Coverage is pinned so the gap cannot widen without
+    // a red test — PSKY and WBD are recent ticker changes Sharadar has not reflected, and both
+    // FAIL OPEN (unclassifiable, so they block nothing).
+    const missing = SP500_UNIVERSE.filter(s => !STOCK_INDUSTRY[s]);
+    expect(missing.sort()).toEqual(["PSKY", "WBD"]);
+  });
+
+  test("every entry is a current universe member — a delisting fails LOUDLY", () => {
     const universe = new Set(SP500_UNIVERSE);
-    expect([...SEMICONDUCTORS].filter(s => !universe.has(s))).toEqual([]);
+    expect(Object.keys(STOCK_INDUSTRY).filter(s => !universe.has(s))).toEqual([]);
   });
 
-  test("every member is mapped to XLK, so the refinement sits inside its sector", () => {
-    expect([...SEMICONDUCTORS].filter(s => STOCK_SECTOR[s] !== "XLK")).toEqual([]);
+  test("the directory is FINER than the sector map, which is the whole point", () => {
+    // XLK alone is 85 names. If industryOf ever collapsed back to sector granularity the sleeve
+    // rule would cap at one tech name ~60% of the time — the version the owner rejected.
+    const xlk = Object.keys(STOCK_SECTOR).filter(s => STOCK_SECTOR[s] === "XLK");
+    const industries = new Set(xlk.map(industryOf).filter(Boolean));
+    expect(industries.size).toBeGreaterThan(5);
+    expect(industries.has("XLK")).toBe(false);   // no XLK name falls back to the sector
   });
 
-  test("the names that have actually reached the sleeve are covered", () => {
-    for (const s of ["NVDA", "AVGO", "MRVL", "MU", "AMD", "LRCX"]) expect(industryOf(s)).toBe("XLK:semis");
+  test("it makes the distinctions the hand list got WRONG", () => {
+    // Six disagreements, and the directory was right on these: storage is not a semiconductor,
+    // solar is its own industry, and semi EQUIPMENT is a sibling of semis rather than the same.
+    expect(industryOf("NVDA")).toBe("Semiconductors");
+    expect(industryOf("AVGO")).toBe("Semiconductors");
+    expect(industryOf("SNDK")).toBe("Computer Hardware");          // my list said semiconductor
+    expect(industryOf("FSLR")).toBe("Solar");                      // my list said semiconductor
+    expect(industryOf("AMAT")).toBe("Semiconductor Equipment & Materials");
+    expect(industryOf("MSFT")).toBe("Software - Infrastructure");
+    expect(industryOf("PLTR")).toBe("Software - Infrastructure");
   });
 
-  test("the documented EXCLUSIONS stay excluded — the boundary is deliberate", () => {
-    // EDA software, storage, servers, components. If one of these should be in, that is a decision,
-    // not a drift.
-    for (const s of ["CDNS", "SNPS", "STX", "WDC", "DELL", "SMCI", "ANET", "APH", "GLW", "KEYS"]) {
-      if (!STOCK_SECTOR[s]) continue;
-      expect(industryOf(s)).toBe("XLK");
-    }
+  test("an unknown symbol is null, so the caller decides the direction", () => {
+    expect(industryOf("ZZZZ")).toBeNull();
   });
 
   test("the limit is 1 — two slots, two industries", () => {

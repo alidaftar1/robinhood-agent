@@ -105,9 +105,9 @@ export const REPLAY_CASES: ReplayCase[] = [
     incident: "Both influencer slots sat in semiconductors (NVDA + AVGO) with no guard registering it",
     replayable: true,
     file: "lib/market-data.ts",
-    find: "  if (SEMICONDUCTORS.has(symbol)) return \"XLK:semis\";",
-    replace: "",
-    expect: "the sleeve rule falls back to sector granularity: NVDA+AVGO passes, and the sleeve caps at one name ~60% of the time",
+    find: "  return STOCK_INDUSTRY[symbol] ?? STOCK_SECTOR[symbol] ?? null;",
+    replace: "  return STOCK_SECTOR[symbol] ?? null;",
+    expect: "the sleeve rule collapses to sector granularity: NVDA+AVGO passes as one XLK, and the sleeve caps at one tech name ~60% of the time",
   },
   {
     id: "2026-10-06/sleeve-split-unrepaired",

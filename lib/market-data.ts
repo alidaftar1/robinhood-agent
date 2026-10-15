@@ -1,4 +1,5 @@
 import { SP500_UNIVERSE } from "./strategy";
+import { STOCK_INDUSTRY } from "./stock-industry";
 import { formatNewsTag } from "./news-tag";
 import { formatAnalystTag, ANALYST_LOOKBACK_DAYS } from "./analyst-tag";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
@@ -22,37 +23,19 @@ export const SECTOR_ETFS: Record<string, string> = {
   XLU:  "Utilities",
 };
 
-/** SEMICONDUCTORS — an INDUSTRY refinement inside XLK, used only by the sleeve's diversification
- *  rule (lib/buy-sizing applySleeveSectorRule).
+/** Sector, refined to INDUSTRY where the directory has one — the granularity the sleeve's
+ *  diversification rule runs at (lib/buy-sizing applySleeveSectorRule).
  *
- *  WHY A SECOND LIST EXISTS AT ALL, since this file otherwise avoids hand-maintained ones. The
- *  sector map has exactly 11 SPDR labels and XLK alone covers 85 names — semis, software and
- *  hardware in one bucket. On 2026-10-15 both influencer slots sat in semiconductors (NVDA and
- *  AVGO), which is one bet with extra commission, and a sector-level rule cannot see it.
+ *  Was a hand-maintained SEMICONDUCTORS set for a few hours on 2026-10-15; replaced by
+ *  lib/stock-industry, generated from Sharadar's `tickers` table, after the owner asked whether a
+ *  directory existed. It does, we already pay for it, and it is finer than the list was: it splits
+ *  "Semiconductors" from "Semiconductor Equipment & Materials", calls SNDK storage rather than a
+ *  semiconductor, and puts FSLR in Solar — three calls my list got wrong.
  *
- *  Sector granularity was the first proposal and the OWNER REJECTED IT ON THE DATA: 60% of
- *  influencer mentions are XLK, so "max 1 XLK" would cap the sleeve at one position most of the
- *  time — and would block PLTR+NVDA or MSFT+AMD, which are genuinely different businesses. Only
- *  NVDA/AMD/MU/LRCX in the current top-10 mentions are semis.
- *
- *  FAILS OPEN BY CONSTRUCTION, which is the cost of the finer granularity: a semiconductor NOT in
- *  this list reads as generic XLK and may be bought alongside another semi. So incompleteness is
- *  the risk, not over-inclusion. evals/sleeve-sector.test.ts asserts every member is still in
- *  SP500_UNIVERSE so a delisting or rename fails LOUDLY rather than quietly doing nothing.
- *
- *  BOUNDARY, stated so the next edit is a decision rather than a guess: semiconductor MAKERS and
- *  semiconductor EQUIPMENT, following GICS "Semiconductors & Semiconductor Equipment" (which is why
- *  FSLR is in). Deliberately OUT: EDA software (CDNS, SNPS), storage and drives (STX, WDC),
- *  servers and systems (DELL, SMCI), networking and components (ANET, APH, GLW, COHR, KEYS). */
-export const SEMICONDUCTORS = new Set([
-  "NVDA", "AVGO", "AMD", "INTC", "MU", "TXN", "QCOM", "ADI", "LRCX", "AMAT",
-  "KLAC", "NXPI", "MCHP", "ON", "MPWR", "SWKS", "TER", "FSLR", "MRVL", "SNDK",
-]);
-
-/** Sector, refined to industry where we have one. The granularity the sleeve rule runs at. */
+ *  FAILS OPEN on an unknown symbol by returning null: the caller decides, and the sleeve rule
+ *  withholds a BUY it cannot classify while letting an unclassifiable HOLDING block nothing. */
 export function industryOf(symbol: string): string | null {
-  if (SEMICONDUCTORS.has(symbol)) return "XLK:semis";
-  return STOCK_SECTOR[symbol] ?? null;
+  return STOCK_INDUSTRY[symbol] ?? STOCK_SECTOR[symbol] ?? null;
 }
 
 export const STOCK_SECTOR: Record<string, string> = {
