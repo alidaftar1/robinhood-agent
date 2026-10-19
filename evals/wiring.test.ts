@@ -235,6 +235,19 @@ describe("wiring: ORDER of operations between components", () => {
     expect(s).toMatch(/\.filter\(p => !soldSet\.has\(p\.symbol\)\)\s*\n\s*\.map\(p => industryOf\(p\.symbol\)\)/);
   });
 
+  test("/api/runs says so when it truncates", () => {
+    // 2026-10-19: the endpoint capped at 30 SILENTLY. A caller asking for 400 got 30 with no
+    // indication, which produced a confident analysis of the influencer sleeve over the wrong
+    // window and a false conclusion that four months of history had been deleted. The dashboard
+    // reads the store directly, so nothing on the live surface was ever wrong — which is precisely
+    // why the truncation went unnoticed for as long as it did.
+    const s = src("app/api/runs/route.ts");
+    expect(s).toContain("MAX_RUNS");
+    expect(s).not.toMatch(/Math\.min\([^)]*,\s*30\)/);   // the old hard 30
+    expect(s).toContain("truncated: true");
+    expect(s).toMatch(/requested > limit/);                 // only when the answer IS short
+  });
+
   test("drop-check re-reads the live book BEFORE placing any sell", () => {
     // 2026-10-06: exits were decided from the 07:30 snapshot, so the stop placed an order for an
     // ILMN position the owner had already closed, then recorded the owner's fill as its own.
