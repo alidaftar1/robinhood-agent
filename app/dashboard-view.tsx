@@ -50,6 +50,37 @@ interface ReturnSeries {
   since: { agentic: string | null; influencer: string | null; main: string | null };
 }
 
+/** How much of a card's window the cumulative figure actually covers.
+ *
+ * A sleeve return is WITHHELD on a day it cannot be priced honestly: the tiny-denominator guard in
+ * computeSleeveReturns refuses a day when yesterday's sleeve was under 10% of today's, because a
+ * few dollars of P&L over a near-zero base is not a meaningful percentage — and since 2026-10-19
+ * the sleeves also inherit a withheld ACCOUNT return rather than each re-deciding. Both are
+ * correct, and both mean the compounded number silently skips days.
+ *
+ * 2026-09-16 is the worked example: the sleeve held $49.29 of SPCX, which rose a real +3.86%, then
+ * bought ~$450 of NVDA. Counting that would credit a 10x-larger book with a gain $49 produced, so
+ * it is excluded — correctly. The omission just has to be VISIBLE, because a reader seeing one
+ * number assumes it covers the whole window. (Counting the stub days would move the influencer
+ * figure 3.5pp better and the main book 1.9pp worse — that asymmetry is what shows this is a
+ * convention, not a bug.)
+ *
+ * Returns null when nothing is missing: a "91 of 91" badge on every card is noise that trains the
+ * eye to skip the line, which defeats the point of showing it.
+ */
+export type PricedField = "agenticDailyReturn" | "influencerDailyReturn" | "mainDailyReturn";
+
+export function daysPricedIn(
+  chronological: ReadonlyArray<Partial<Record<PricedField, number | null>>>,
+  field: PricedField,
+): { priced: number; total: number } | null {
+  const first = chronological.findIndex(r => r[field] != null);
+  if (first < 0) return null;                       // the series never started — nothing to qualify
+  const window = chronological.slice(first);
+  const priced = window.filter(r => r[field] != null).length;
+  return priced === window.length ? null : { priced, total: window.length };
+}
+
 function buildReturnSeries(runs: TradeRun[]): ReturnSeries {
   const chronological = [...runs].reverse();
   let agentIdx = 100;
@@ -348,6 +379,9 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   })();
 
   const latestInfluencer = returnSeries[returnSeries.length - 1]?.influencer;
+  const inflPriced = daysPricedIn(runsChronological, "influencerDailyReturn");
+  const mainPriced = daysPricedIn(runsChronological, "mainDailyReturn");
+
   const influencerCumReturn = latestInfluencer != null ? latestInfluencer - 100 : null;
   // Influencer alpha must use SPY over the INFLUENCER window, not the AI-window spyReturn —
   // otherwise it compares mismatched periods. Match BOTH ends: start at the sleeve's baseline
@@ -485,7 +519,10 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={{ ...s.perfValue, color: returnColor(mainCumReturn) }}>
               {mainCumReturn != null ? fmtPct(mainCumReturn) : "—"}
             </span>
-            <span style={s.perfSince}>core S&P strategy · since {seriesSince.main ?? "—"}</span>
+            <span style={s.perfSince}>
+              core S&P strategy · since {seriesSince.main ?? "—"}
+              {mainPriced ? ` · ${mainPriced.priced} of ${mainPriced.total} days priced` : ""}
+            </span>
           </div>
           <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="Main Book vs S&P 500" def="The core strategy's return minus the S&P 500's over the same period. Positive = the core book is beating the market. A 'trailing N days' flag warns when the book has stayed behind buy-and-hold SPY for a sustained stretch — a nudge to reconsider whether active trading is earning its risk." />
@@ -586,7 +623,10 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
             <span style={{ ...s.perfValue, color: returnColor(influencerCumReturn) }}>
               {influencerCumReturn != null ? fmtPct(influencerCumReturn) : "—"}
             </span>
-            <span style={s.perfSince}>the influencer slice · since {seriesSince.influencer ?? "—"}</span>
+            <span style={s.perfSince}>
+              the influencer slice · since {seriesSince.influencer ?? "—"}
+              {inflPriced ? ` · ${inflPriced.priced} of ${inflPriced.total} days priced` : ""}
+            </span>
           </div>
           <div style={s.perfStat}>
             <Tip style={s.perfLabel} label="Influencers vs. The Market" def="How much better (or worse) the YouTube-picks slice did than the S&P 500 over the same period." />
