@@ -249,8 +249,44 @@ describe("wiring: ORDER of operations between components", () => {
     // computeSleeveReturns was unit-tested; the route wiring was not, which is why the registry
     // replay still caught this at 70% after the fix shipped.
     const s = src("app/api/debug/route.ts");
-    expect(s).toContain("sleevesFor(patchedTrades)");
+    // Pins BOTH halves of the wiring: the repaired trade list is what the sleeves are recomputed
+    // from, AND the account-level result is handed to them so they inherit its verdict. Passing
+    // only the trades is what let 2026-10-16 publish +39.4% for main beside a null account return.
+    expect(s).toContain("sleevesFor(patchedTrades, agenticResult)");
     expect(s).toMatch(/influencerDailyReturn: null, mainDailyReturn: null/);   // withheld branch too
+  });
+
+  test("patchDate restores the SLEEVES, not just the account return", () => {
+    // The hole the 2026-10-16 fix opened. Withholding the sleeves whenever the account return is
+    // withheld is only safe if the AUTOMATED repair puts both back. Autopilot Fix 2 calls
+    // ?patchDate whenever today's return is null; patchDate used to write agenticDailyReturn and
+    // agenticImpliedTransfer alone, so the repaired day would have carried a real account number
+    // beside null sleeves forever — and dashboard-view drops null-sleeve days, so the day would
+    // have silently left the Main Book index, its Sharpe and its beat-rate, with no automated
+    // path back (recomputeSleeves has no caller).
+    const s = src("app/api/debug/route.ts");
+    expect(s).toContain("const patchedSleeves = sleeveReturnsForStorage(");
+    expect(s).toContain("...patchedSleeves,");
+    // Computed from the DEDUPED trades — the same input as the account return, so the two
+    // numbers cannot be derived from different trade lists (the 2026-10-06 shape).
+    expect(at(s, "const dedupedTrades")).toBeLessThan(at(s, "const patchedSleeves"));
+    expect(at(s, "const patchedSleeves")).toBeGreaterThan(at(s, "const result = computeDailyReturn("));
+  });
+
+  test("clearing a day's return clears its SLEEVE returns too", () => {
+    // The same invariant from the other direction, also reachable automatically: autopilot Fix 3
+    // calls ?clearReturnForDate on the inception run's bogus 0%. Nulling the account return alone
+    // would leave that run publishing half-book numbers beside no whole-book number.
+    const s = src("app/api/debug/route.ts");
+    // Every site that nulls the account return must null both sleeves in the SAME object literal.
+    // The window spans a few lines because one of the three (the patchTrades unreconstructable
+    // branch) explains itself in a comment between the two — which is fine, but means a
+    // same-line-only assertion would report it as a violation.
+    const clears = [...s.matchAll(/agenticDailyReturn: null, agenticImpliedTransfer: null([\s\S]{0,400})/g)];
+    expect(clears.length).toBeGreaterThanOrEqual(3);   // patchTrades-withheld + clearReturn + clearReturnForDate
+    for (const m of clears) {
+      expect(m[1]).toContain("influencerDailyReturn: null, mainDailyReturn: null");
+    }
   });
 
   test("the trade route checks the book reconciles BEFORE computing a return", () => {

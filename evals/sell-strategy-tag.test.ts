@@ -911,3 +911,50 @@ describe("planCapture across multiple fills of one symbol", () => {
     expect(p.reconciles).toBe(true);
   });
 });
+
+// ── sleeveReturnsForStorage: the halves inherit the whole's verdict ──────────
+import { sleeveReturnsForStorage } from "../lib/run-store";
+
+// 2026-10-16. The owner bought REGN, ROST and LLY in his own account before the 07:30 run. The
+// agent placed none of them, so no trade record offset the purchase and $476.90 of cash turning
+// into equity read as profit. computeDailyReturn refused the day — agenticDailyReturn stored null
+// — but the MAIN sleeve had an EMPTY trade list (the only recorded trade, an AVGO sell, belongs to
+// the influencer sleeve) and published +39.4%, which is what the dashboard showed until the 08:00
+// autopilot captured the owner's fills.
+//
+// The 50% clamp did not save it and could not: a phantom's size says nothing about whether it is
+// real, it only has to be under the ceiling. The account-level null is the honest signal.
+describe("sleeveReturnsForStorage — a day the whole book refused cannot publish half-book numbers", () => {
+  const raw = { influencerDailyReturn: -0.0006, mainDailyReturn: 0.3936 };
+
+  test("account return withheld (null) ⇒ BOTH sleeves withheld", () => {
+    expect(sleeveReturnsForStorage(null, raw)).toEqual({
+      influencerDailyReturn: null,
+      mainDailyReturn: null,
+    });
+  });
+
+  test("the 39.4% phantom specifically — under the 50% clamp, so only this guard stops it", () => {
+    expect(clampSleeveReturn(raw.mainDailyReturn)).toBe(0.3936); // clamp lets it through
+    expect(sleeveReturnsForStorage(null, raw).mainDailyReturn).toBeNull(); // the guard does not
+  });
+
+  test("account return present ⇒ sleeves pass through, still clamped", () => {
+    const ok = sleeveReturnsForStorage({ dailyReturn: 0.00996, impliedTransfer: -0.03 }, raw);
+    expect(ok.mainDailyReturn).toBeCloseTo(0.3936, 6);
+    expect(ok.influencerDailyReturn).toBeCloseTo(-0.0006, 6);
+
+    const extreme = sleeveReturnsForStorage(
+      { dailyReturn: 0.01, impliedTransfer: 0 },
+      { influencerDailyReturn: 0.9, mainDailyReturn: -0.8 },
+    );
+    expect(extreme.influencerDailyReturn).toBeNull();
+    expect(extreme.mainDailyReturn).toBeNull();
+  });
+
+  test("a zero account return is a REAL day, not a missing one", () => {
+    // `agentic == null` is the withheld signal; dailyReturn 0 is a flat day and must publish.
+    const flat = sleeveReturnsForStorage({ dailyReturn: 0, impliedTransfer: 0 }, raw);
+    expect(flat.mainDailyReturn).toBeCloseTo(0.3936, 6);
+  });
+});

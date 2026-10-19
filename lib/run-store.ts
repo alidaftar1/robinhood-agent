@@ -831,6 +831,51 @@ export const SLEEVE_EXTREME_RETURN = 0.5;
 export const clampSleeveReturn = (x: number | null): number | null =>
   x != null && Math.abs(x) > SLEEVE_EXTREME_RETURN ? null : x;
 
+/**
+ * The sleeve pair as it should be STORED, given the account-level result for the same day.
+ *
+ * A sleeve return must never publish on a day the account-level return was withheld. The two are
+ * computed independently — computeDailyReturn for the whole book, computeSleeveReturns for the
+ * halves — and before this they could disagree about whether the day was knowable at all.
+ *
+ * 2026-10-16 is the case that forced it. The owner bought REGN, ROST and LLY in his own account
+ * before the 07:30 run. The agent never placed those orders, so no trade record existed to offset
+ * them, and $476.90 of cash turning into equity read as profit. computeDailyReturn correctly
+ * refused the day and agenticDailyReturn was stored null — but the MAIN sleeve, whose trade list
+ * was empty (the only recorded trade, an AVGO sell, belongs to the influencer sleeve), published
+ * +39.4% and that is what the dashboard showed for the half hour until the 08:00 autopilot ran
+ * /api/verify?capture=1 and recorded the owner's fills.
+ *
+ * Note what did NOT save it: clampSleeveReturn's 50% ceiling. A phantom only has to be smaller
+ * than the clamp to reach the dashboard, and the size of a phantom has nothing to do with whether
+ * it is real. The account-level null is the honest signal — it is the system saying it cannot
+ * price this day — so the sleeves must inherit it rather than each re-deciding.
+ *
+ * Where this rule holds, and where it does not — do not read it as a global invariant on stored
+ * history:
+ *   - ENFORCED at write time by all four paths that derive a sleeve return: trade, verify capture,
+ *     debug patchTrades and debug patchDate, each through this one definition. The two clear
+ *     endpoints (clearReturn, clearReturnForDate) null the sleeves alongside the account return,
+ *     so the automated repairs cannot violate it from either direction.
+ *   - NOT RETROACTIVE. backfillSleeveReturns SKIPS a null-agentic run, which is not the same rule:
+ *     skipping LEAVES the stale sleeve value in place rather than nulling it. So a phantom already
+ *     written under the old code — the 2026-10-16 mainDailyReturn: +39.4% on a null-account day —
+ *     is not cleared by ?recomputeSleeves. Repair such a day with ?patchDate (which now recomputes
+ *     both) or by hand. The skip is deliberate and stays: it is what protects the hand-supplied
+ *     ?setInfluencerReturn value on the non-canonical 2026-06-22 run, which is a null-agentic day
+ *     carrying a real sleeve number on purpose — the one documented exception to the rule above.
+ */
+export function sleeveReturnsForStorage(
+  agentic: { dailyReturn: number; impliedTransfer: number } | null,
+  raw: { influencerDailyReturn: number | null; mainDailyReturn: number | null },
+): { influencerDailyReturn: number | null; mainDailyReturn: number | null } {
+  if (agentic == null) return { influencerDailyReturn: null, mainDailyReturn: null };
+  return {
+    influencerDailyReturn: clampSleeveReturn(raw.influencerDailyReturn),
+    mainDailyReturn: clampSleeveReturn(raw.mainDailyReturn),
+  };
+}
+
 export async function backfillSleeveReturns(): Promise<string[]> {
   const all = await getRuns(MAX_RUNS); // newest-first
   const changes: string[] = [];

@@ -5,7 +5,7 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
-import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, clampSleeveReturn, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
+import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta, SECTOR_CAP_PCT } from "@/lib/risk-metrics";
@@ -2118,8 +2118,10 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // Clamp an extreme single-day sleeve move at the LIVE write too (not just the recompute), so a
     // residual artifact from any source is nulled here rather than stored raw + shown on the dashboard
     // until a manual recompute. Matches backfillSleeveReturns' sanity clear.
-    const influencerDailyReturn = clampSleeveReturn(rawSleeves.influencerDailyReturn);
-    const mainDailyReturn = clampSleeveReturn(rawSleeves.mainDailyReturn);
+    // Inherit the account-level verdict: if computeDailyReturn withheld the day, the sleeves are
+    // withheld too. See sleeveReturnsForStorage — on 2026-10-16 the account return was correctly
+    // null while main published +39.4% off the owner's uncaptured manual buys.
+    const { influencerDailyReturn, mainDailyReturn } = sleeveReturnsForStorage(agenticResult, rawSleeves);
 
     // Patch the run already saved at index 0 with return metrics.
     const finalRun = {

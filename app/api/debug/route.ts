@@ -4,7 +4,7 @@ import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { prunePicksByFirstSeen, resetLedger } from "@/lib/influencer-ledger";
-import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, clampSleeveReturn, applyActorTag } from "@/lib/run-store";
+import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, sleeveReturnsForStorage, applyActorTag } from "@/lib/run-store";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -162,16 +162,18 @@ export async function GET(request: Request) {
         // including the cash the sale produced. It compounded into the dashboard's headline Main
         // Book Return as -30.90%. Under SLEEVE_EXTREME_RETURN (50%) nothing clamped it, and no
         // reviewer check covers it. ?recomputeSleeves repairs history; this stops it recurring.
-        const sleevesFor = (trades: typeof realTrades) => {
-          const raw = computeSleeveReturns(
+        // Takes the account-level result so the sleeves inherit its verdict rather than deciding
+        // independently — a day the whole book could not be priced must not ship half-book numbers.
+        const sleevesFor = (
+          trades: typeof realTrades,
+          agentic: { dailyReturn: number; impliedTransfer: number } | null,
+        ) => sleeveReturnsForStorage(
+          agentic,
+          computeSleeveReturns(
             latest.positions ?? [], trades,
             latest.influencerPositions ?? [], prevDay.influencerPositions ?? [], prevDay.positions ?? [],
-          );
-          return {
-            influencerDailyReturn: clampSleeveReturn(raw.influencerDailyReturn),
-            mainDailyReturn: clampSleeveReturn(raw.mainDailyReturn),
-          };
-        };
+          ),
+        );
 
         if (plan.unreconstructable.length > 0) {
           // The day's INVENTORY disagrees with its records. The sells we CAN reconstruct are still
@@ -222,7 +224,7 @@ export async function GET(request: Request) {
               )
             : null;
 
-          await updateLatestRun({ ...latest, trades: patchedTrades, agenticDailyReturn: agenticResult?.dailyReturn ?? null, agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null, ...sleevesFor(patchedTrades) });
+          await updateLatestRun({ ...latest, trades: patchedTrades, agenticDailyReturn: agenticResult?.dailyReturn ?? null, agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null, ...sleevesFor(patchedTrades, agenticResult) });
           results.patchTrades = `patched ${plan.sells.length} sell(s): ${plan.sells.map(s => `${s.symbol} ${s.quantity}@$${s.avgPrice}[${s.strategy}]`).join(", ")} → return ${agenticResult?.dailyReturn != null ? (agenticResult.dailyReturn * 100).toFixed(2) + "%" : "null"}`;
         } else if ((latest.trades ?? []).length !== realTrades.length) {
           // Nothing left to infer, but the STORE still holds inferred sells that are no longer
@@ -245,7 +247,7 @@ export async function GET(request: Request) {
             ...latest, trades: realTrades,
             agenticDailyReturn: agenticResult?.dailyReturn ?? null,
             agenticImpliedTransfer: agenticResult?.impliedTransfer ?? null,
-            ...sleevesFor(realTrades),
+            ...sleevesFor(realTrades, agenticResult),
           });
           results.patchTrades = `dropped ${obsolete.length} obsolete inferred sell(s) now covered by real fills `
             + `(${obsolete.map(t => `${t.symbol} x${t.quantity}`).join(", ")}) → return `
@@ -292,14 +294,31 @@ export async function GET(request: Request) {
           run.positions, prevRun.positions,
           dedupedTrades
         );
+        // The sleeves are recomputed alongside, not left behind. This path is the AUTOMATED
+        // repair — autopilot Fix 2 calls it whenever today's return is null — and its whole job is
+        // to turn a withheld day into a published one. Since 2026-10-16 the live writers withhold
+        // BOTH sleeve returns when the account return is withheld (sleeveReturnsForStorage), so a
+        // patchDate that restored only agenticDailyReturn would leave the day with a real account
+        // number and null sleeves forever: dashboard-view filters those out, and the day would
+        // vanish from the Main Book index, its Sharpe and its beat-rate with nothing to repair it
+        // (recomputeSleeves has no automated caller). Same inputs as the account return — the
+        // DEDUPED trades — so the two can't disagree.
+        const patchedSleeves = sleeveReturnsForStorage(
+          result,
+          computeSleeveReturns(
+            run.positions, dedupedTrades,
+            run.influencerPositions ?? [], prevRun.influencerPositions ?? [], prevRun.positions,
+          ),
+        );
         const patched = await updateRunByDate(date, r => ({
           ...r,
           agenticDailyReturn: result?.dailyReturn ?? null,
           agenticImpliedTransfer: result?.impliedTransfer ?? null,
+          ...patchedSleeves,
           ...(unlock ? { returnLocked: false } : {}),
         }));
         results.patchDate = patched
-          ? `${date}: return = ${result?.dailyReturn != null ? (result.dailyReturn * 100).toFixed(2) + "%" : "null"}${dropKeys.size ? ` (dropped ${dropKeys.size} re-recorded sell)` : ""}${unlock ? " [unlocked]" : ""}`
+          ? `${date}: return = ${result?.dailyReturn != null ? (result.dailyReturn * 100).toFixed(2) + "%" : "null"}${dropKeys.size ? ` (dropped ${dropKeys.size} re-recorded sell)` : ""}${unlock ? " [unlocked]" : ""}, main sleeve = ${patchedSleeves.mainDailyReturn != null ? (patchedSleeves.mainDailyReturn * 100).toFixed(2) + "%" : "null"}`
           : `no run found for ${date}`;
       }
     } catch (e) {
@@ -312,7 +331,9 @@ export async function GET(request: Request) {
     try {
       const latest = await getLatestRun();
       if (latest) {
-        await updateLatestRun({ ...latest, agenticDailyReturn: null, agenticImpliedTransfer: null });
+        // Sleeves cleared with it — a day with no whole-book number must not keep publishing
+        // half-book ones. Same invariant the live writers enforce (sleeveReturnsForStorage).
+        await updateLatestRun({ ...latest, agenticDailyReturn: null, agenticImpliedTransfer: null, influencerDailyReturn: null, mainDailyReturn: null });
         results.clearReturn = `cleared return for ${latest.date}`;
       }
     } catch (e) {
@@ -483,10 +504,17 @@ export async function GET(request: Request) {
   }
 
   // Clear agenticDailyReturn for a specific date (use when early runs have bogus 0% same-day returns)
+  //
+  // Clears the SLEEVE returns too, for the same reason the live writers withhold them together: a
+  // day whose whole-book number was rejected as bogus cannot honestly publish half-book numbers
+  // beside it. Autopilot Fix 3 reaches this automatically on the inception run.
+  //
+  // ORDERING: if a day needs a hand-supplied sleeve value (?setInfluencerReturn, as 2026-06-22
+  // does for the SPCX same-day round trip), clear FIRST and set AFTER — this wipes it.
   if (url.searchParams.get("clearReturnForDate")) {
     const date = url.searchParams.get("clearReturnForDate")!;
     try {
-      const patched = await updateRunByDate(date, r => ({ ...r, agenticDailyReturn: null, agenticImpliedTransfer: null, returnLocked: true }));
+      const patched = await updateRunByDate(date, r => ({ ...r, agenticDailyReturn: null, agenticImpliedTransfer: null, influencerDailyReturn: null, mainDailyReturn: null, returnLocked: true }));
       results.clearReturnForDate = patched ? `cleared + locked return for ${date}` : `no run found for ${date}`;
     } catch (e) {
       results.clearReturnForDate = `error: ${e}`;

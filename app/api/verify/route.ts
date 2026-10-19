@@ -3,7 +3,7 @@ import { recordSell } from "@/lib/stopouts";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { getRuns, mergeRunsByDate, planCapture, findUncapturedOrders, type LiveOrder, updateRunByDate, computeDailyReturn, computeSleeveReturns, clampSleeveReturn } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate, planCapture, findUncapturedOrders, type LiveOrder, updateRunByDate, computeDailyReturn, computeSleeveReturns, sleeveReturnsForStorage } from "@/lib/run-store";
 
 export const maxDuration = 90;
 
@@ -297,8 +297,10 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
           ...run, trades,
           agenticDailyReturn: agentic?.dailyReturn ?? null,
           agenticImpliedTransfer: agentic?.impliedTransfer ?? null,
-          influencerDailyReturn: clampSleeveReturn(rawSleeves.influencerDailyReturn),
-          mainDailyReturn: clampSleeveReturn(rawSleeves.mainDailyReturn),
+          // Sleeves inherit the account-level verdict (sleeveReturnsForStorage): capture can supply
+          // the missing records, but if the day is STILL unpriceable afterwards the halves must not
+          // publish a number the whole refused.
+          ...sleeveReturnsForStorage(agentic, rawSleeves),
           ...(plan.reconciles ? { returnLocked: false } : {}),
         }));
         // A captured SELL is still an exit: feed it to the re-buy cooldown so the agent cannot buy
