@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { daysPricedIn } from "@/app/dashboard-view";
+import { readFileSync } from "node:fs";
+import { V1_TRACK_START } from "@/lib/risk-metrics";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // A cumulative return that skips days must SAY it skipped days.
@@ -58,5 +60,39 @@ describe("the days-priced badge", () => {
     ];
     expect(daysPricedIn(runs, "influencerDailyReturn")).toEqual({ priced: 1, total: 2 });
     expect(daysPricedIn(runs, "mainDailyReturn")).toBeNull();   // main is complete → silent
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The quality-momentum card measured from V1_TRACK_START while every label said
+// 2026-07-09 — a two-day gap, hardcoded in five places. The constant is the
+// right anchor (the tooltip's own rationale, "once the book was fully rebuilt
+// after T+1 settlement", describes 07-11, not the switch date), so the labels
+// were what was wrong. Measured from 07-09 instead, the card would read
+// -0.56% / SPY +3.38% / vs S&P -3.95% rather than -0.96% / +2.10% / -3.06%.
+//
+// Fifth instance this week of a literal duplicating a value that lives
+// elsewhere, so pin it rather than fix it and move on.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("the quality-momentum card cannot drift from the window it measures", () => {
+  const src = readFileSync(`${import.meta.dir}/../app/dashboard-view.tsx`, "utf8");
+
+  test("the measurement window is stated from the CONSTANT, never a literal", () => {
+    expect(src).toContain("`measured from ${V1_TRACK_START}`");
+    expect(src).toMatch(/measured from \$\{V1_TRACK_START\}\)/);          // the vs-S&P tooltip
+    expect(src).toMatch(/measured from \$\{V1_TRACK_START\}\./);          // the days-beat tooltip
+  });
+
+  test("no label claims the card is measured from the SWITCH date", () => {
+    // The switch (2026-07-09) and the measurement anchor are different dates and must read that
+    // way. The banner may still name the switch; nothing may say the measurement starts there.
+    expect(src).not.toMatch(/since strategy update · 2026-07-09/);
+    expect(src).not.toMatch(/since the 2026-07-09 switch/);
+    expect(src).not.toMatch(/since it took over on 2026-07-09/);
+  });
+
+  test("the switch date and the anchor are genuinely different — the gap is real", () => {
+    expect(V1_TRACK_START).toBe("2026-07-11");
+    expect(V1_TRACK_START > "2026-07-09").toBe(true);
   });
 });
