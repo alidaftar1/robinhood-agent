@@ -177,6 +177,16 @@ const entryStopSweep: Array<number | null> | null = entryStopsArg !== -1
       .filter(v => v === null || Number.isFinite(v))
   : null;
 
+// --tranches 1,2,3,5 — split a NEW position's entry across N consecutive trading days.
+// Asked 2026-10-21. Staggering buys a better AVERAGE price when a name keeps falling after you
+// first like it, and pays CASH DRAG plus extra commission when it does not; both sides are charged
+// here because every tranche prices at that day's close and the unspent cash sits genuinely idle.
+// Top-ups are NOT staggered — only entries carry entry-timing risk.
+const tranchesArg = argv.indexOf("--tranches");
+const trancheSweep: number[] | null = tranchesArg !== -1
+  ? argv[tranchesArg + 1].split(",").map(t => parseInt(t.trim(), 10)).filter(n => Number.isFinite(n) && n >= 1)
+  : null;
+
 const stopsArg = argv.indexOf("--stops");
 const stopSweep: Array<number | null> | null = stopsArg !== -1
   ? argv[stopsArg + 1].split(",").map(t => t.trim()).map(t => t === "off" ? null : parseFloat(t))
@@ -190,6 +200,12 @@ const sweep = sweepArg !== -1
 
 type StopRow = { label: string; cfg: Parameters<typeof runBacktest>[4] };
 const stopRows: StopRow[] | null =
+  trancheSweep
+    ? trancheSweep.map(t => ({
+        label: t === 1 ? "1 (all at once)" : `${t} tranches`,
+        cfg: { ...DEFAULT_BACKTEST, entryTranches: t },
+      }))
+    :
   entryStopSweep
     ? entryStopSweep.map(e => ({
         label: e === null ? `${MAIN_BAR}% only` : `${MAIN_BAR}%d + ${e}%e`,
@@ -203,11 +219,11 @@ const stopRows: StopRow[] | null =
     : null;
 
 if (stopRows && stopRows.length > 0) {
-  const what = entryStopSweep ? `live same-day ${MAIN_BAR}% PLUS a cumulative bar` : `${STOP_MODE} bar`;
+  const what = trancheSweep ? "staggered ENTRY over N consecutive trading days" : entryStopSweep ? `live same-day ${MAIN_BAR}% PLUS a cumulative bar` : `${STOP_MODE} bar`;
   console.log(`\nSTOP SWEEP — ${VARIANT.id}, ${what}, ${VARIANT.config.maxPositions} positions, same rules otherwise`);
   console.log(`Quality: ${useQuality ? `${dimension}/${qualityBasis}` : "OFF"} · rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d · cost ${DEFAULT_BACKTEST.costBps}bps`);
   console.log(`Stops evaluated on CLOSES — intraday round-trips never fire, so every stopOut count below is a FLOOR.\n`);
-  console.log(`  ${"stop".padEnd(16)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"trades".padStart(9)}${"stopOuts".padStart(10)}${"flat days".padStart(11)}`);
+  console.log(`  ${(trancheSweep ? "entry" : "stop").padEnd(16)}${"CAGR".padStart(9)}${"Sharpe".padStart(9)}${"IR".padStart(8)}${"maxDD".padStart(9)}${"trades".padStart(9)}${"stopOuts".padStart(10)}${"flat days".padStart(11)}`);
   console.log("  " + "─".repeat(81));
   for (const row of stopRows) {
     const rr = runBacktest(VARIANT, dayStream(), priceOf, (d) => spy.get(d) ?? null, row.cfg);

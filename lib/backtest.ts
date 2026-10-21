@@ -57,6 +57,19 @@ export interface BacktestConfig {
    * null (the default, and every pre-2026-10-14 config) means one bar, exactly as before.
    */
   entryStopPct?: number | null;
+  /**
+   * Split a NEW position's entry across this many consecutive trading days (1 = today's behaviour,
+   * the whole weight on day 0).
+   *
+   * What it measures, and the trade is real in both directions: staggering buys a better AVERAGE
+   * price when a name keeps falling after you first like it, and pays CASH DRAG plus extra
+   * commission when it does not. The backtest prices every tranche at that day's close and leaves
+   * the unspent cash genuinely idle, so both sides are charged honestly.
+   *
+   * TOP-UPS ARE NOT STAGGERED — only entries. A rebalance that merely re-levels an existing holding
+   * is not an entry decision and has no entry-timing risk to spread.
+   */
+  entryTranches?: number;
   /** Round-trip cost in basis points, applied on every buy and every sell. */
   costBps: number;
   /** Starting capital. Scale-invariant — reported results are percentages. */
@@ -74,6 +87,7 @@ export const DEFAULT_BACKTEST: BacktestConfig = {
   stopLossPct: MAIN_DROP_THRESHOLD_PCT,
   // Matches the live main book. See stopMode's doc comment for why this is load-bearing.
   stopMode: "same-day",
+  entryTranches: 1,
   costBps: 5,
   startingCapital: 10_000,
 };
@@ -144,6 +158,9 @@ export function runBacktest(
   let cash = cfg.startingCapital;
   let holdings: Holding[] = [];
   let trades = 0, stopOuts = 0, daysFlat = 0, excludedDays = 0;
+  // Entries still filling. One record per name that entered on a staggered schedule; `left` counts
+  // the tranches still owed, `slice` is the dollar amount of each.
+  let pending: Array<{ symbol: string; slice: number; left: number }> = [];
   let sinceRebalance = Number.MAX_SAFE_INTEGER;   // force a rebalance on the first usable day
   // Last close seen per symbol, for the same-day stop. Carried across days because a symbol can
   // miss a bar (halt) — in which case the comparison is against its last REAL close, and the
@@ -186,6 +203,29 @@ export function runBacktest(
       holdings = survivors;
     }
 
+    // ── 2b. fill one tranche of any entry still building ──
+    // Runs AFTER stops so a name stopped out today is not topped up into on its way out, and
+    // BEFORE the rebalance so a fresh rebalance sees the position at its true size.
+    if (pending.length > 0) {
+      const stillHeld = new Set(holdings.map(h => h.symbol));
+      const carry: typeof pending = [];
+      for (const q of pending) {
+        if (!stillHeld.has(q.symbol)) continue;          // exited before it finished — cancel the rest
+        const p = priceOf(date, q.symbol);
+        if (p == null || p <= 0) { carry.push(q); continue; }   // unpriceable: defer, do not drop
+        const h = holdings.find(x => x.symbol === q.symbol)!;
+        const add = q.slice / p;
+        // Entry basis is the weighted average across tranches, so the from-entry stop measures the
+        // position actually paid for rather than the first slice.
+        h.entry = (h.shares * h.entry + add * p) / (h.shares + add);
+        h.shares += add;
+        cash -= q.slice + cost(q.slice);
+        trades++;
+        if (q.left > 1) carry.push({ ...q, left: q.left - 1 });
+      }
+      pending = carry;
+    }
+
     // ── 3. rebalance ──
     sinceRebalance++;
     const res = runVariantDay(variant, day);
@@ -204,6 +244,9 @@ export function runBacktest(
         trades++;
       }
       holdings = keep;
+      // A name the rebalance dropped must not keep filling.
+      const keptSyms = new Set(keep.map(h => h.symbol));
+      pending = pending.filter(q => keptSyms.has(q.symbol) || target.has(q.symbol));
 
       // Equal-weight into the target across the WHOLE book, so a rebalance re-levels rather than
       // letting one winner compound into a concentrated bet the live caps would have trimmed.
@@ -216,13 +259,17 @@ export function runBacktest(
         if (p == null || p <= 0) continue;
         const existing = held.get(sym);
         const curVal = existing ? existing.shares * p : 0;
-        const delta = per - curVal;
+        // A NEW name takes its weight in T slices; an existing one re-levels in full, because a
+        // top-up carries no entry-timing risk to spread.
+        const T = Math.max(1, Math.floor(cfg.entryTranches ?? 1));
+        const firstSlice = !existing && T > 1 ? per / T : per;
+        const delta = firstSlice - curVal;
         if (Math.abs(delta) > 1) {                       // skip trivial rebalancing churn
           cash -= delta + cost(Math.abs(delta));
           trades++;
         }
-        const shares = per / p;
-        next.push({ symbol: sym, shares, entry: existing ? existing.entry : p });
+        if (!existing && T > 1) pending.push({ symbol: sym, slice: per / T, left: T - 1 });
+        next.push({ symbol: sym, shares: firstSlice / p, entry: existing ? existing.entry : p });
       }
       holdings = next;
     }
