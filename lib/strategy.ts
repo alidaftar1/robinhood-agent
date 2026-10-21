@@ -103,10 +103,6 @@ export const STALE_DAYS = 60;
  *  for — the weekly cadence exists to stop exactly that kind of churn. */
 export const OFF_WINDOW_MIN_CASH = 100;
 
-/** A selloff steep enough that "there is cash" stops being a good reason to deploy it today.
- *  Paired with the regime check, not a substitute for it: regime is the trend, this is the day. */
-export const SPY_SELLOFF_PCT = -1.0;
-
 /**
  * Are MAIN-BOOK buys open today?
  *
@@ -117,12 +113,29 @@ export const SPY_SELLOFF_PCT = -1.0;
  * — 7.2% of equity — sat idle through a full open window with the model repeatedly proposing buys
  * the cap then dropped.
  *
- * UNLESS THE MARKET IS RISK-OFF. Two independent conditions, both required, and both FAIL CLOSED
- * when they cannot be established:
- *   · regime riskOn — SPY above its ~100-day average. Unknown regime => window stays shut.
- *   · the day itself is not a steep selloff (SPY change1d > SPY_SELLOFF_PCT). Unknown => shut.
+ * UNLESS THE MARKET IS RISK-OFF — meaning the TREND, not the day. One condition, and it FAILS
+ * CLOSED: regime riskOn, SPY above its ~100-day average. An unknown regime keeps the window shut.
  * The asymmetry is deliberate: refusing to open an EXTRA window costs a deferred buy, while opening
  * one into a downtrend buys a falling knife with money the weekly cadence would have held anyway.
+ *
+ * NO SAME-DAY SELLOFF FLOOR, and this is a MEASURED decision — do not re-add one on intuition.
+ * A `SPY change1d > -1%` condition shipped with the first version of this gate and was removed the
+ * same day after checking it against SPY 1997-2026, RISK-ON days only:
+ *
+ *     bucket                   n      +1d     +3d     +5d    +20d   %pos 20d
+ *     up day      (>0%)     2935    0.03%   0.08%   0.15%   0.65%     65%
+ *     mild   (-1%..0%]      1775    0.02%   0.11%   0.19%   0.72%     66%
+ *     moderate (-2%..-1%]    314    0.11%   0.23%   0.32%   0.96%     65%
+ *     steep      (<= -2%)     67    0.24%   0.36%   0.76%   1.78%     70%
+ *
+ * Inside an uptrend a down day is a DIP, and deeper dips paid MORE at every horizon — so a -1%
+ * floor blocked the `-2%..-1%` bucket (better than an up day on all four horizons) and a -2% floor
+ * would have blocked the best bucket of the four. The regime filter already removes the bad
+ * environments; the floor was double-counting the same risk with the sign reversed.
+ *
+ * Name-level falling-knife risk is real and is handled where it belongs: the drop-check's same-day
+ * bar and the sleeve's pre-buy momentum screen, both of which look at the NAME rather than the
+ * index. Caveat on the table above: it is SPY, and this book runs higher beta.
  *
  * SETTLED cash only. Unsettled proceeds cannot fund a buy under T+1, so counting them would open
  * the window for money that is not there — the same mistake as sizing buys off total cash.
@@ -135,7 +148,6 @@ export function mainBuysOpen(args: {
   isHoliday: (d: string) => boolean;
   settledCash: number | null;
   regimeRiskOn: boolean | null;
-  spyChange1d: number | null;
 }): { open: boolean; reason: string } {
   if (isMainRebalanceDay(args.date, args.isHoliday)) {
     return { open: true, reason: "weekly rebalance window (first two trading days)" };
@@ -150,11 +162,6 @@ export function mainBuysOpen(args: {
     return { open: false, reason: args.regimeRiskOn == null
       ? `off-window with $${cash.toFixed(2)} idle, but the market regime could not be established — withheld rather than deploying blind`
       : `off-window with $${cash.toFixed(2)} idle, but the market is RISK-OFF (SPY below its 100-day average)` };
-  }
-  if (args.spyChange1d == null || !(args.spyChange1d > SPY_SELLOFF_PCT)) {
-    return { open: false, reason: args.spyChange1d == null
-      ? `off-window with $${cash.toFixed(2)} idle, but today's SPY move could not be established — withheld`
-      : `off-window with $${cash.toFixed(2)} idle, but SPY is ${args.spyChange1d.toFixed(2)}% today (selloff floor ${SPY_SELLOFF_PCT}%)` };
   }
   return { open: true, reason: `off-window, but $${cash.toFixed(2)} settled cash is idle and the market is risk-on` };
 }

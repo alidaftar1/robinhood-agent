@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mainBuysOpen, isMainRebalanceDay, OFF_WINDOW_MIN_CASH, SPY_SELLOFF_PCT } from "@/lib/strategy";
+import { mainBuysOpen, isMainRebalanceDay, OFF_WINDOW_MIN_CASH } from "@/lib/strategy";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2026-10-21, owner's request: Wed-Fri the main book also opens when idle
@@ -18,14 +18,14 @@ import { mainBuysOpen, isMainRebalanceDay, OFF_WINDOW_MIN_CASH, SPY_SELLOFF_PCT 
 const noHoliday = () => false;
 const WED = "2026-10-21";              // mid-week, outside the window
 const MON = "2026-10-19";              // first trading day of that week
-const risky = { settledCash: 500, regimeRiskOn: true, spyChange1d: 0.4 };
+const risky = { settledCash: 500, regimeRiskOn: true };
 
 describe("main-book buys: the weekly window, plus an idle-cash exception", () => {
   test("the weekly window is unconditional — cash and regime cannot close it", () => {
     expect(isMainRebalanceDay(MON, noHoliday)).toBe(true);
     // Risk-off, a steep selloff and no cash at all: still open, because a scheduled rebalance in a
     // downtrend is still a rebalance. This must not quietly tighten.
-    const r = mainBuysOpen({ date: MON, isHoliday: noHoliday, settledCash: 0, regimeRiskOn: false, spyChange1d: -3 });
+    const r = mainBuysOpen({ date: MON, isHoliday: noHoliday, settledCash: 0, regimeRiskOn: false });
     expect(r.open).toBe(true);
     expect(r.reason).toMatch(/weekly rebalance window/);
   });
@@ -51,19 +51,24 @@ describe("main-book buys: the weekly window, plus an idle-cash exception", () =>
     expect(r.reason).toMatch(/RISK-OFF/);
   });
 
-  test("a steep selloff closes it even in a risk-on trend — regime is the trend, this is the day", () => {
-    const r = mainBuysOpen({ date: WED, isHoliday: noHoliday, ...risky, spyChange1d: SPY_SELLOFF_PCT - 0.1 });
-    expect(r.open).toBe(false);
-    expect(r.reason).toMatch(/selloff floor/);
-    // A mild down day is NOT a selloff — the floor is a threshold, not a sign test.
-    expect(mainBuysOpen({ date: WED, isHoliday: noHoliday, ...risky, spyChange1d: -0.3 }).open).toBe(true);
+  test("NO same-day selloff floor — a down day inside an uptrend does not close the window", () => {
+    // A `SPY change1d > -1%` condition shipped with the first version of this gate and was removed
+    // the same day, measured against SPY 1997-2026 on RISK-ON days only:
+    //   up day +0.65% / mild -1..0 +0.72% / moderate -2..-1 +0.96% / steep <=-2 +1.78% (20d fwd)
+    // Deeper dips paid MORE at every horizon, so the floor blocked the better days. The regime
+    // filter already removes the bad environments. Do not re-add a floor on intuition.
+    //
+    // The gate takes no spyChange1d at all now — this test pins that the TYPE has no such input,
+    // which is what stops it creeping back as an ignored argument.
+    const r = mainBuysOpen({ date: WED, isHoliday: noHoliday, ...risky });
+    expect(r.open).toBe(true);
+    expect(Object.keys({ date: WED, isHoliday: noHoliday, ...risky })).not.toContain("spyChange1d");
   });
 
   test("FAILS CLOSED on every unestablished input", () => {
     const cases: Array<[string, Parameters<typeof mainBuysOpen>[0]]> = [
       ["cash",   { date: WED, isHoliday: noHoliday, ...risky, settledCash: null }],
       ["regime", { date: WED, isHoliday: noHoliday, ...risky, regimeRiskOn: null }],
-      ["spy",    { date: WED, isHoliday: noHoliday, ...risky, spyChange1d: null }],
     ];
     for (const [what, args] of cases) {
       const r = mainBuysOpen(args);
@@ -79,7 +84,6 @@ describe("main-book buys: the weekly window, plus an idle-cash exception", () =>
     for (const args of [
       { date: WED, isHoliday: noHoliday, ...risky, settledCash: 10 },
       { date: WED, isHoliday: noHoliday, ...risky, regimeRiskOn: false },
-      { date: WED, isHoliday: noHoliday, ...risky, spyChange1d: -5 },
       { date: WED, isHoliday: noHoliday, ...risky },
       { date: MON, isHoliday: noHoliday, ...risky },
     ]) {
@@ -93,7 +97,7 @@ describe("main-book buys: the weekly window, plus an idle-cash exception", () =>
     // Monday holiday → the window moves to Tue+Wed. That Wednesday is open on the CALENDAR, so it
     // must not depend on cash or regime.
     const mondayOff = (d: string) => d === "2026-10-19";
-    const r = mainBuysOpen({ date: "2026-10-21", isHoliday: mondayOff, settledCash: 0, regimeRiskOn: false, spyChange1d: -4 });
+    const r = mainBuysOpen({ date: "2026-10-21", isHoliday: mondayOff, settledCash: 0, regimeRiskOn: false });
     expect(r.open).toBe(true);
     expect(r.reason).toMatch(/weekly rebalance window/);
   });

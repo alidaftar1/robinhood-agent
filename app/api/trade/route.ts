@@ -352,8 +352,11 @@ export async function GET(request: Request) {
       // will actually spend — opening the window on a raw number the buffer then eats would offer a
       // buy that cannot be placed.
       settledCash: agenticBalance ? usableNotionalBudget(agenticBalance.buyingPower) : null,
+      // Regime only — no same-day selloff floor. See mainBuysOpen: measured against SPY 1997-2026,
+      // a down day INSIDE an uptrend paid more than an up day at every horizon, so a floor blocked
+      // the better days. Name-level falling-knife risk is handled by the drop-check bar and the
+      // sleeve's momentum screen, which look at the name rather than the index.
       regimeRiskOn: marketData.spyContext?.regime?.riskOn ?? null,
-      spyChange1d: marketData.spyContext?.change1d ?? null,
     });
     const buysOpen = buysGate.open;
     // Only worth a note when the live rule DISAGREES with the calendar — that is the new behaviour,
