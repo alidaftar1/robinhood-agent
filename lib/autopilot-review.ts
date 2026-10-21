@@ -48,6 +48,15 @@ export const REVIEW_HISTORY_DAYS = 15;
  *  new rule and its own main-book buy reads as a bypassed guardrail. */
 export const WEEKLY_GATE_EFFECTIVE = "2026-09-22";
 
+/** Were main-book buys open on this run? Prefer the DECISION the run recorded; fall back to the
+ *  calendar for runs predating the field. Recomputing is no longer sufficient: since 2026-10-21 an
+ *  off-window day can open on idle cash in a risk-on market, and the regime is not in the record —
+ *  so a calendar-only answer would tell the reviewer the book was shut on a day it bought. */
+function buysOpenFor(r: TradeRun): boolean | undefined {
+  if (typeof r.mainBuysOpen === "boolean") return r.mainBuysOpen;
+  return r.date >= WEEKLY_GATE_EFFECTIVE ? isMainRebalanceDay(r.date, isMarketHoliday) : undefined;
+}
+
 function compactRun(r: TradeRun, isRebalanceDay?: boolean) {
   // Cadence context: without it, zero main-book buys plus rising settled cash reads as a broken
   // guardrail rather than the weekly rebalance working as designed.
@@ -189,14 +198,14 @@ function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[], verify?: Ve
     // null for dates BEFORE the weekly gate shipped: stamping today's rule on older runs makes a
     // Wed/Thu/Fri row claim "buys closed" while its own trades contain a main-book buy, which reads
     // as a bypassed guardrail rather than as history.
-    .map((r) => compactRun(r, r.date >= WEEKLY_GATE_EFFECTIVE ? isMainRebalanceDay(r.date, isMarketHoliday) : undefined));
+    .map((r) => compactRun(r, buysOpenFor(r)));
 
   return `SCHEDULED trade cron time: ${SCHEDULED_TRADE_CRON_UTC}. A today timestamp materially later than that implies the morning failed at least once and silently recovered.
 
 ${formatVerify(verify)}
 
 TODAY'S RUN:
-${JSON.stringify(compactRun(todayRun, todayRun.date >= WEEKLY_GATE_EFFECTIVE ? isMainRebalanceDay(todayRun.date, isMarketHoliday) : undefined), null, 2)}
+${JSON.stringify(compactRun(todayRun, buysOpenFor(todayRun)), null, 2)}
 
 TODAY'S RUN SUMMARY (full — includes the per-name thesis and the trailing TRADE_DECISION line):
 ${(todayRun.summary ?? "").slice(0, SUMMARY_CHAR_LIMIT)}

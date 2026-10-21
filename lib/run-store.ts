@@ -75,6 +75,15 @@ export interface TradeRun {
   timestamp: string;
   date: string;
   summary: string;
+  /** Whether MAIN-BOOK buys were open on this run, as DECIDED at trade time.
+   *
+   *  Stored rather than recomputed because it is no longer a pure function of the date: since
+   *  2026-10-21 an off-window day also opens when idle settled cash clears the floor and the market
+   *  is risk-on (lib/strategy mainBuysOpen). The reviewer cannot reconstruct that from a stored run
+   *  — the regime is not in the record — so a calendar-only recomputation would report
+   *  mainBookBuysOpen:false on a day the book genuinely bought, and file concerns about it.
+   *  Absent on runs predating this field; callers fall back to the calendar rule. */
+  mainBuysOpen?: boolean;
   portfolioAfter: {
     totalValue: string;
     cash: string;

@@ -98,6 +98,67 @@ export const STALE_DAYS = 60;
  * The window starts at the first TRADING day of the week, so a Monday holiday shifts it to Tue+Wed
  * rather than skipping the week.
  */
+/** Settled cash above which an OFF-WINDOW buy day is worth opening. Below this the deployable
+ *  amount is near the $50 minimum buy and a sub-scale position is not worth re-opening the book
+ *  for — the weekly cadence exists to stop exactly that kind of churn. */
+export const OFF_WINDOW_MIN_CASH = 100;
+
+/** A selloff steep enough that "there is cash" stops being a good reason to deploy it today.
+ *  Paired with the regime check, not a substitute for it: regime is the trend, this is the day. */
+export const SPY_SELLOFF_PCT = -1.0;
+
+/**
+ * Are MAIN-BOOK buys open today?
+ *
+ * The weekly window (first two trading days) is unchanged and unconditional — see
+ * isMainRebalanceDay for why two days. What is NEW, 2026-10-21 at the owner's request: Wed-Fri the
+ * book also opens when idle SETTLED cash exceeds OFF_WINDOW_MIN_CASH, because the cadence rule was
+ * written to stop re-deciding momentum every morning, not to strand capital. On 2026-10-13 $174.68
+ * — 7.2% of equity — sat idle through a full open window with the model repeatedly proposing buys
+ * the cap then dropped.
+ *
+ * UNLESS THE MARKET IS RISK-OFF. Two independent conditions, both required, and both FAIL CLOSED
+ * when they cannot be established:
+ *   · regime riskOn — SPY above its ~100-day average. Unknown regime => window stays shut.
+ *   · the day itself is not a steep selloff (SPY change1d > SPY_SELLOFF_PCT). Unknown => shut.
+ * The asymmetry is deliberate: refusing to open an EXTRA window costs a deferred buy, while opening
+ * one into a downtrend buys a falling knife with money the weekly cadence would have held anyway.
+ *
+ * SETTLED cash only. Unsettled proceeds cannot fund a buy under T+1, so counting them would open
+ * the window for money that is not there — the same mistake as sizing buys off total cash.
+ *
+ * The weekly window does NOT consult the regime. That is the existing design and this must not
+ * quietly tighten it: a scheduled rebalance in a downtrend is still a rebalance.
+ */
+export function mainBuysOpen(args: {
+  date: string;
+  isHoliday: (d: string) => boolean;
+  settledCash: number | null;
+  regimeRiskOn: boolean | null;
+  spyChange1d: number | null;
+}): { open: boolean; reason: string } {
+  if (isMainRebalanceDay(args.date, args.isHoliday)) {
+    return { open: true, reason: "weekly rebalance window (first two trading days)" };
+  }
+  const cash = args.settledCash;
+  if (cash == null || !(cash > OFF_WINDOW_MIN_CASH)) {
+    return { open: false, reason: cash == null
+      ? "off-window and settled cash could not be established"
+      : `off-window and settled cash $${cash.toFixed(2)} is at or below the $${OFF_WINDOW_MIN_CASH} floor` };
+  }
+  if (args.regimeRiskOn !== true) {
+    return { open: false, reason: args.regimeRiskOn == null
+      ? `off-window with $${cash.toFixed(2)} idle, but the market regime could not be established — withheld rather than deploying blind`
+      : `off-window with $${cash.toFixed(2)} idle, but the market is RISK-OFF (SPY below its 100-day average)` };
+  }
+  if (args.spyChange1d == null || !(args.spyChange1d > SPY_SELLOFF_PCT)) {
+    return { open: false, reason: args.spyChange1d == null
+      ? `off-window with $${cash.toFixed(2)} idle, but today's SPY move could not be established — withheld`
+      : `off-window with $${cash.toFixed(2)} idle, but SPY is ${args.spyChange1d.toFixed(2)}% today (selloff floor ${SPY_SELLOFF_PCT}%)` };
+  }
+  return { open: true, reason: `off-window, but $${cash.toFixed(2)} settled cash is idle and the market is risk-on` };
+}
+
 export function isMainRebalanceDay(date: string, isHoliday: (d: string) => boolean): boolean {
   const d = new Date(`${date}T00:00:00Z`);
   // Called on every stored run record by the reviewer, so a single legacy/corrupt date must not
@@ -478,16 +539,21 @@ ${marketRegime}${marketContextBlock}
 T+1 SETTLEMENT RULE: cash account — sell proceeds do NOT settle until tomorrow. Your buy budget is the settled buying power above; it does NOT increase when you sell today. Plan buys within settled buying power only.
 
 ${isRebalanceDay ? "" : `
-⛔ NOT THE WEEKLY REBALANCE DAY — MAIN-BOOK BUYS ARE CLOSED TODAY.
+⛔ MAIN-BOOK BUYS ARE CLOSED TODAY.
 The main book rebalances ONCE A WEEK, over the first TWO trading days of the week. 12-1 momentum is a
 months-horizon signal; re-deciding it every morning churned the book (~2x turnover in five weeks,
-18% of round-trips profitable) and that is what this rule exists to stop. Today:
+18% of round-trips profitable) and that is what this rule exists to stop.
+There is ONE off-cycle exception and it does not apply today: Wed-Fri the book also opens when idle
+SETTLED cash is material AND the market is risk-on. So today is either inside the week's closed
+stretch with little idle cash, or the market is risk-off — in both cases the answer is the same and
+the reason is recorded on the run. Today:
   · Do NOT propose any MAIN-BOOK buy. Code drops them, so proposing one only wastes a slot and makes
     your thesis disagree with the trades that actually happen.
   · Main-book SELLS remain available for RISK ONLY — risk is never deferred. Sell if loss discipline
     applies, a bearish ⚡NEWS↓ event or ↓FIRM downgrade lands, or a holding genuinely fell off the
     shortlist (momentum went negative / lost quality-eligibility).
-  · The next window is the first two trading days of next week. Do NOT make a ROTATION sell today. Any sell whose reason is "free a slot for a better name" or
+  · The next window is the first two trading days of next week, or sooner if idle cash builds while
+    the market is risk-on. Do NOT make a ROTATION sell today. Any sell whose reason is "free a slot for a better name" or
     "rotate this ⏳STALE holding into a stronger one" MUST WAIT for the rebalance day: the paired buy
     would be dropped, leaving the book in cash with nothing bought. The TIME-STOP's rotate-or-justify
     requirement is SUSPENDED on non-rebalance days — a ⏳STALE holding simply waits.

@@ -168,7 +168,7 @@ describe("the rendered prompt honours the rebalance window", () => {
   test("the override is positioned BEFORE every rule it suspends", () => {
     // It previously rendered ~11KB BELOW the MUST-rotate time-stop, so a model reading in order
     // acted on the rule long before reaching its suspension — and sells are not code-gated.
-    const block = off.indexOf("NOT THE WEEKLY REBALANCE DAY");
+    const block = off.indexOf("MAIN-BOOK BUYS ARE CLOSED TODAY");
     expect(block).toBeGreaterThan(-1);
     expect(block).toBeLessThan(off.indexOf("STRATEGY — QUALITY-MOMENTUM"));
     expect(block).toBeLessThan(off.indexOf("DEFAULT IS ROTATE"));

@@ -2,7 +2,7 @@ import { requireCronAuth } from "@/lib/auth";
 import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
+import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, mainBuysOpen, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
@@ -337,6 +337,33 @@ export async function GET(request: Request) {
       };
     }
 
+    // ── ARE MAIN-BOOK BUYS OPEN TODAY? ─────────────────────────────────────────
+    // Computed HERE, not at the top of the handler, because it now depends on live data: settled
+    // cash and the market regime. `isRebalanceDay` above stays the pure CALENDAR answer — the
+    // dry-run path uses it before any data exists, and the two must not be conflated.
+    //
+    // Wed-Fri the book opens when idle settled cash clears the floor AND the market is risk-on;
+    // the weekly window is unconditional as before. See mainBuysOpen for the full rule and why
+    // every unestablished input keeps the extra window SHUT.
+    const buysGate = mainBuysOpen({
+      date: today,
+      isHoliday: isMarketHoliday,
+      // The USABLE figure, matching what the prompt budgets against and what fitNotionalBuysToBudget
+      // will actually spend — opening the window on a raw number the buffer then eats would offer a
+      // buy that cannot be placed.
+      settledCash: agenticBalance ? usableNotionalBudget(agenticBalance.buyingPower) : null,
+      regimeRiskOn: marketData.spyContext?.regime?.riskOn ?? null,
+      spyChange1d: marketData.spyContext?.change1d ?? null,
+    });
+    const buysOpen = buysGate.open;
+    // Only worth a note when the live rule DISAGREES with the calendar — that is the new behaviour,
+    // and it belongs in the run rather than only in Vercel logs. Held until buySizingAdjustments
+    // exists further down.
+    const buysGateNote = buysOpen !== isRebalanceDay
+      ? `MAIN-BOOK BUYS ${buysOpen ? "OPEN" : "CLOSED"} — ${buysGate.reason}.`
+      : null;
+    console.log("MAIN_BUYS_GATE", { date: today, calendar: isRebalanceDay, open: buysOpen, reason: buysGate.reason });
+
     // Current book β + sector exposure → fed into the prompt so the agent can weigh each
     // buy's marginal risk impact and respect the 40% soft cap.
     const sectorSection = buildRiskSection(portfolioCtx?.positions ?? [], priceMap, marketData.stocks);
@@ -610,7 +637,7 @@ export async function GET(request: Request) {
       // is the top 12 by net REGARDLESS of value, but a buy below the floor is rejected in code.
       const convictionInfluencer = new Set(
         [...influencerCandidateSet].filter(t => (influencerNet[t] ?? 0) >= INFLUENCER_BUY_FLOOR));
-      const convictionCtx = { mainShortlist: v1ShortlistSet, influencerCandidates: convictionInfluencer, isRebalanceDay };
+      const convictionCtx = { mainShortlist: v1ShortlistSet, influencerCandidates: convictionInfluencer, isRebalanceDay: buysOpen };
       convictionSection = formatConviction(convictionRun, today, convictionCtx);
       const auditNote = convictionAuditNote(convictionRun, today, convictionCtx);
       if (auditNote) convictionNotes.push(auditNote);   // so the run records WHAT research it saw
@@ -648,7 +675,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, isRebalanceDay, valuationSection + convictionSection, marketData.analystRatings),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, buysOpen, valuationSection + convictionSection, marketData.analystRatings),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
@@ -699,7 +726,7 @@ export async function GET(request: Request) {
     // buy is dropped for a calendar reason with no bearing on churn, so flagging it would warn about
     // a trade that could never have happened today. Such a buy still gets a DEFERRED note, which
     // carries its own churn-intent marker.
-    const flagBuys = isRebalanceDay ? decidedRaw.buys : decidedRaw.buys.filter(b => !v1ShortlistSet.has(b.symbol));
+    const flagBuys = buysOpen ? decidedRaw.buys : decidedRaw.buys.filter(b => !v1ShortlistSet.has(b.symbol));
     let reentryNote = "";
     const reentries = flagBuys.filter(b => recentStopouts.some(s => s.symbol === b.symbol));
     if (reentries.length > 0) {
@@ -731,7 +758,7 @@ export async function GET(request: Request) {
     // reviewer flagged "decided buy absent, no explanation" (registry #19). Every drop belongs here.
     // Seeded with earnings-release coverage gaps gathered above, so a per-run cap or an EDGAR
     // miss is visible on the stored run. Prefixed CONTEXT — these are not dropped orders.
-    let buySizingAdjustments: string[] = [...releaseNotes, ...contextWarnings, ...valuationNotes, ...convictionNotes];
+    let buySizingAdjustments: string[] = [...releaseNotes, ...contextWarnings, ...valuationNotes, ...convictionNotes, ...(buysGateNote ? [buysGateNote] : [])];
     if (decisionParseNote) buySizingAdjustments.push(decisionParseNote);
     // Influencer-sleeve guard drops (position cap, downtrend screen). Collected separately because
     // those guards run before buySizingAdjustments' own guards, then merged in below.
@@ -804,7 +831,7 @@ export async function GET(request: Request) {
       //    on the rebalance day, a name sold in week N is still inside the window at week N+1, so an
       //    exit effectively blocks re-entry for two rebalances. That is MORE anti-churn, which is the
       //    direction this change wants — left as-is on purpose, not overlooked.
-      if (!isRebalanceDay) {
+      if (!buysOpen) {
         // DELIBERATELY NARROWER than the file's other influencer classifiers, which are all
         // `tag || (candidate && !shortlist)`. Here the `!shortlist` guard also applies to the
         // EXPLICIT-TAG branch, so a name that is both a main-shortlist entry and a sleeve pick
@@ -1310,7 +1337,7 @@ export async function GET(request: Request) {
       // higher-conviction NEW name" to the valid-sell list there, and the book holds ~11 against a
       // 6-name target, so a legitimate consolidation is larger than 3. Off-window that trigger is
       // withdrawn, so the tighter cap is the right one.
-      const railMax = isRebalanceDay
+      const railMax = buysOpen
         ? Math.max(MAX_DISCRETIONARY_EXITS, Math.ceil((mainHeldForRail - TARGET_MAIN_POSITIONS) / 2))
         : MAX_DISCRETIONARY_EXITS;
       // Both news and analyst ratings fail to an EMPTY map on an outage or a missing key, which
@@ -1839,6 +1866,8 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
         headlinesLoaded: marketData.headlines.length,
       },
       bookBeta,
+      // The DECISION, not the calendar — see TradeRun.mainBuysOpen.
+      mainBuysOpen: buysOpen,
       ...(buySizingAdjustments.length > 0 ? { buySizingAdjustments } : {}),
       ...(spyPrice != null ? { spyPrice } : {}),
     };
