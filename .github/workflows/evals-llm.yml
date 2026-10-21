@@ -81,11 +81,16 @@ jobs:
             echo "Commit \`${GITHUB_SHA:0:7}\` · $(date -u '+%Y-%m-%d %H:%M UTC')"
             echo ""
             echo '```'
-            grep -E "^\(fail\)|^ *[0-9]+ (pass|fail)|^Ran " /tmp/llm-evals.log | tail -40 || echo "(no summary lines — see the log)"
+            grep -E "^\(fail\)|^ *[0-9]+ (pass|fail)|^Ran |^  [✓✗] [0-9]+ attempt|^sampled assertions" /tmp/llm-evals.log | tail -60 || echo "(no summary lines — see the log)"
             echo '```'
             echo ""
-            echo "This suite is LLM-stochastic: a 1-3 test spread between identical runs is its noise"
-            echo "floor. Treat a single new failure as a lead, not a regression — re-run before acting."
+            echo "This suite is LLM-stochastic. Since 2026-10-21 each execution scenario is sampled"
+            echo "PASS@3 with early exit, so a single unlucky draw no longer reddens the run and a"
+            echo "healthy suite still costs one draw per scenario. A failure now means all THREE"
+            echo "draws failed — treat it as real, not as the old 1-3 noise floor."
+            echo ""
+            echo "Read the ATTEMPT COUNTS above even when green: a scenario drifting from 1 attempt"
+            echo "to 3 is degrading well before it goes red, which the old binary could not show."
           } >> "$GITHUB_STEP_SUMMARY"
 
   registry-replay:
