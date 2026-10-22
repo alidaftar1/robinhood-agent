@@ -190,7 +190,33 @@ export const EXPANDED_UNIVERSE = [
 ];
 
 // Fast-accept set — tickers known liquid, skip the Yahoo round-trip for these.
+// NOTE this is the EXTRACTION universe (what a creator may be understood to have named), which is
+// deliberately WIDER than what the sleeve may BUY — see SLEEVE_BUY_UNIVERSE below.
 const VALID_TICKERS = new Set([...SP500_UNIVERSE, ...EXPANDED_UNIVERSE]);
+
+// ── SLEEVE BUY UNIVERSE — the rule that decides which candidates may be SHOWN and BOUGHT ─────────
+// Sleeve buys were restricted to S&P 500 members on 2026-10-04 (82a52a7), but that restriction was
+// implemented ONLY inside fetchMomentum, which REFUSES DATA for an off-index name instead of
+// removing the name. EXPANDED_UNIVERSE still accepted it for extraction (it whitelists SPCX by
+// name), this formatter still rendered a row for it, and the trade route still put it in the
+// buy-allowlist. So the single effect of the restriction was to BLANK the price and momentum of an
+// off-index pick — and every screen that reads momentum then passed it, because
+// isInfluencerDowntrend(undefined) === false and a data-less row renders like a clean one.
+//
+// 2026-10-22 is the worked example: the model chose SPCX — net=7, the run's TOP-ranked name, off
+// index, no price — reasoning "no ⛔DOWNTREND, no imminent earnings shown". Absence of data read to
+// it as absence of risk. Nothing in the sleeve stopped it; an unrelated sector-budget gate did,
+// and only because that gate had shipped 8 days earlier. SPCX is also the name in the comment
+// above the downtrend guard ("SPCX bought mid-decline") — the incident that screen exists for, let
+// through a second time because its input was missing rather than bad.
+//
+// This is CLAUDE.md's canonical trap: dropping a bad input is the fail-OPEN branch, because absent
+// means unconstrained. The universe rule belongs HERE, where it removes the candidate, not in the
+// fetch, where it only starves it. fetchMomentum keeps its check as defence in depth.
+const SLEEVE_BUY_UNIVERSE = new Set(SP500_UNIVERSE);
+export function isSleeveEligible(ticker: string): boolean {
+  return SLEEVE_BUY_UNIVERSE.has(ticker);
+}
 
 // Liquidity bar for tickers NOT in VALID_TICKERS. Higher than typical so obscure /
 // hallucinated symbols that happen to resolve on Yahoo don't sneak in.
@@ -721,9 +747,20 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
   const net = netScores(cache);
   const avoidOf = cache.avoidCounts ?? {};
   const sorted = Object.keys(cache.tickerCounts)
+    // Off-index names are not buyable, so they are not shown. Filtered BEFORE the slice so all 12
+    // rows go to names the sleeve can actually act on: on 2026-10-22 two of the four candidates the
+    // model weighed (SPCX net=7, TSM net=3) were off-index, and its one sleeve slot went to one of
+    // them. Showing an unbuyable name does not just mislead, it consumes the decision.
+    .filter((t) => isSleeveEligible(t))   // t is still a bare ticker here — the .map to tuples is below
     .map((t) => [t, net[t] ?? 0] as [string, number])
     .sort(([, a], [, b]) => b - a)
-    .slice(0, 12); // matches the buy-allowlist slice in the trade route (shown ⇒ buyable)
+    .slice(0, 12); // matches the buy-allowlist slice in the trade route
+  // CAVEAT, not yet closed: the $5-$500 liquidity rule below is still enforced by HIDING the row,
+  // which leaves the name in the route's candidate set — the same "rule enforced where it hides data
+  // rather than where it removes the candidate" shape this universe fix exists to correct. So
+  // "shown ⇒ buyable" holds for the UNIVERSE rule and not yet for the price band. Moving the band up
+  // here next to isSleeveEligible would close it, and narrows what the sleeve may buy, so it is the
+  // owner's call rather than a silent rider on this change.
 
   if (sorted.length === 0) return "";
 
@@ -739,9 +776,19 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     if (price && (price < 5 || price > 500)) return null;
     const mom = momentum?.get(ticker);
     const tag = mom == null ? "" : isInfluencerDowntrend(mom) ? " ⛔DOWNTREND" : isInfluencerRecovering(mom) ? " ↑RECOVERING" : "";
+    // A missing momentum reading is a FETCH FAILURE, not a quiet pass. Rendered as blank space it
+    // reads as a clean screen — that is precisely how the 2026-10-22 SPCX pick was justified ("no
+    // ⛔DOWNTREND", for a name whose momentum was never fetched). So SAY the data is missing and say
+    // the name is not buyable, matching the route's fail-closed sleeve gate, which drops it.
+    // Says MOMENTUM, not price: priceMap is seeded with a quote for every S&P name, so this row can
+    // legitimately print a price while its trend reading is missing. Claiming "no price data" next
+    // to a printed price is the self-contradicting-report class (registry 2026-10-15).
+    // `momentum != null` distinguishes "the screen ran and this name failed it" from "no caller
+    // supplied momentum at all" (display-only callers), so this cannot invent a warning.
+    const screenAttempted = momentum != null;
     const momStr = mom != null
       ? ` 1d:${mom.change1d >= 0 ? "+" : ""}${mom.change1d.toFixed(0)}% 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${tag}`
-      : "";
+      : screenAttempted ? " ⚠NO MOMENTUM READING — NOT BUYABLE" : "";
     // Backward-looking earnings flag: a pick that JUST reported (esp. with a big 1d/5d move) is a
     // post-earnings entry — a fresh pop is a late/risky momentum chase, not durable trend.
     const re = recentEarnings?.get(ticker);
@@ -797,7 +844,14 @@ FILL THE SLEEVE ONLY ON A QUALIFYING SIGNAL — an empty sleeve is a valid, corr
   So a pick at "5d:-6% hi:-12%" clears BOTH bars and is buyable; neither -6% nor -12% is a rejection.
   Why the screen exists: these signals measure popularity, not price — a falling stock can be the most-talked-about one. A pick marked ↑RECOVERING breached a bar but has reclaimed its 5-day average (trend turned up) — it is allowed too. Between two qualifying picks, prefer the one with stronger price action; but "no tag" means buyable, full stop.
 • Tag EVERY influencer buy in TRADE_DECISION with "strategy":"influencer".
-• Non-S&P-500 tickers here (e.g. SPCX, PLTR, COIN, HOOD) can ONLY be bought as influencer picks.
+• Every ticker listed here is an S&P 500 member, so a name can appear BOTH here and on your main
+  quality-momentum shortlist (MU and TGT are regulars). Tag "strategy":"influencer" ONLY when you are
+  buying it as one of the 2 SLEEVE slots on this creator signal. If you are buying it as a main-book
+  position on its own momentum/quality rank, leave it untagged — the 🎬INFL✓ flag on the shortlist row
+  is corroboration for a MAIN buy, not an instruction to re-label it. The tag decides which cap, which
+  stop and which book it lands in, so a mis-tag puts the position under the wrong rules.
+• Off-index names are not eligible for this sleeve and are not listed — if you have a ticker in mind
+  that is not in the rows above, it is NOT buyable.
 • These are funded from the SAME settled buying power as main picks — total buys still ≤ budget.
 
 ${rows}

@@ -11,18 +11,22 @@ import {
 // bar as ">8% below recent high", conflating the 5-day threshold with the distance-from-high one.
 // The screen itself was correct; the prompt let the two numbers be collapsed.
 
+// FIXTURE TICKER: must be an S&P 500 member. The sleeve's buy universe is the index
+// (lib/influencer-signals SLEEVE_BUY_UNIVERSE), and off-index names are no longer rendered at all,
+// so the original off-index fixture made every assertion here vacuous against an empty section.
+// The subject under test is the downtrend TAG rendering, not the ticker — MRNA is in the index.
 const cache = {
   refreshedAt: "2026-09-16",
-  signals: [{ tickers: ["CELH"], channelName: "Meet Kevin", confidence: "high" }],
-  tickerCounts: { CELH: 6 },
+  signals: [{ tickers: ["MRNA"], channelName: "Meet Kevin", confidence: "high" }],
+  tickerCounts: { MRNA: 6 },
   avoidCounts: {},
 } as any;
 
 const render = (m: { change5d: number; distFromHigh: number; aboveShortMA: boolean }) =>
   formatInfluencerSignals(
     cache,
-    new Map([["CELH", 27.78]]),
-    new Map([["CELH", { change1d: -1, ...m }]]) as any,
+    new Map([["MRNA", 27.78]]),
+    new Map([["MRNA", { change1d: -1, ...m }]]) as any,
   );
 
 const section = render({ change5d: -6, distFromHigh: -12, aboveShortMA: false });
@@ -46,13 +50,13 @@ describe("downtrend screen prompt", () => {
     expect(section).toContain('a pick at "5d:-6% hi:-12%" clears BOTH bars and is buyable');
     expect(isInfluencerDowntrend({ change1d: -1, change5d: -6, distFromHigh: -12, aboveShortMA: false } as any)).toBe(false);
     // And the row the model actually reads carries no tag.
-    const row = section.split("\n").find(l => l.includes("CELH"))!;
+    const row = section.split("\n").find(l => l.includes("MRNA"))!;
     expect(row).not.toContain("⛔DOWNTREND");
   });
 
   test("a genuine breach IS tagged on the row", () => {
     const breached = render({ change5d: -9, distFromHigh: -12, aboveShortMA: false });
-    const row = breached.split("\n").find(l => l.includes("CELH"))!;
+    const row = breached.split("\n").find(l => l.includes("MRNA"))!;
     expect(row).toContain("⛔DOWNTREND");
     expect(isInfluencerDowntrend({ change1d: -1, change5d: -9, distFromHigh: -12, aboveShortMA: false } as any)).toBe(true);
   });

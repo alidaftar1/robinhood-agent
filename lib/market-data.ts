@@ -862,9 +862,15 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
  * The sleeve was buying ETFs and trusts on YouTube conviction: of 50 tracked picks, QQQ, SCHD and
  * VTWO are index funds, and BTC resolves to the Grayscale Bitcoin Mini Trust. None has fundamentals,
  * none can be quality-screened, and "a creator mentioned the Nasdaq" is not a stock pick. Single
- * stocks off the index (SHOP, CELH, NBIS, SK, SPCX — Yahoo classifies SPCX as EQUITY) are
- * deliberately still allowed: those are real companies the main book cannot reach, which is what
- * the sleeve is for.
+ * stocks off the index (SHOP, CELH, NBIS, SK, SPCX — Yahoo classifies SPCX as EQUITY) PASS this
+ * instrument-type check, which is about ETFs and trusts and nothing else.
+ *
+ * SUPERSEDED on 2026-10-04: off-index single stocks are NO LONGER buyable by the sleeve — see the
+ * SP500_SET check in fetchMomentum below and isSleeveEligible in lib/influencer-signals, which is
+ * where the universe rule is now enforced. This paragraph used to end "deliberately still allowed:
+ * those are real companies the main book cannot reach, which is what the sleeve is for", which has
+ * been the opposite of the rule since that date. A stale comment stating the inverse of the live
+ * constraint is how the next reader re-opens the hole, so it is corrected here rather than left.
  *
  * Yahoo's own instrumentType is the source, so there is no hand-maintained denylist to go stale.
  */

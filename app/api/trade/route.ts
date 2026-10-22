@@ -6,7 +6,7 @@ import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebala
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
-import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
+import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta, SECTOR_CAP_PCT } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
@@ -106,8 +106,15 @@ export async function GET(request: Request) {
       let influencerSection = "";
       const influencerMomentum = new Map<string, MomentumSignal>();
       if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
-        const topTickers = Object.entries(influencerCache.tickerCounts)
-          .sort(([, a], [, b]) => b - a).slice(0, 12).map(([t]) => t);
+        // Same eligibility rule AND the same NET ranking as the real path below, both applied before
+        // the slice. This is the pre-deploy smoke test, so it has to show what the real run would
+        // show: an off-index name rendered here would read as a buyable candidate production will
+        // never offer, and ranking by raw buy count (as this path did) silently diverged from
+        // production's buy-minus-avoid order whenever any creator issued an AVOID.
+        const dryNet = netScores(influencerCache);
+        const topTickers = Object.keys(influencerCache.tickerCounts)
+          .filter(isSleeveEligible)
+          .sort((a, b) => (dryNet[b] ?? 0) - (dryNet[a] ?? 0)).slice(0, 12);
         const moms = await Promise.allSettled(topTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
         for (const r of moms) if (r.status === "fulfilled" && r.value.m) { priceMap.set(r.value.t, r.value.m.price); influencerMomentum.set(r.value.t, { change1d: r.value.m.change1d, change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA }); }
         influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
@@ -225,6 +232,9 @@ export async function GET(request: Request) {
     // Fetch live prices + 5-day momentum for top influencer tickers (downtrend screen)
     let influencerSection = "";
     const influencerMomentum = new Map<string, MomentumSignal>();
+    // Built with the candidate list (far above influencerGuardNotes) and flushed into the run notes
+    // where that array is declared, so the exclusion is recorded without reordering either block.
+    let sleeveOffUniverseNote: string | null = null;
     const influencerCandidateSet = new Set<string>(); // symbols the LLM may buy as INFLUENCER picks (the rails allow these off-shortlist)
     // Net influencer conviction (weighted-buy − avoid) per ticker, computed once. Also surfaced as a
     // CROSS-SIGNAL onto MAIN-book shortlist rows (🎬INFL✓/⚠) so a main buy is aware the YouTube crowd
@@ -241,9 +251,34 @@ export async function GET(request: Request) {
       // Rank by NET score (buy − avoid), matching formatInfluencerSignals exactly, so every name the
       // LLM is SHOWN is also in the buy-allowlist (no "shown but silently dropped" mismatch).
       const topInfluencerTickers = Object.keys(influencerCache.tickerCounts)
+        // SAME eligibility rule the formatter uses, so the shown rows and the buy-allowlist are the
+        // same set of names (that is the invariant the comment above claims). Filtered BEFORE the
+        // slice so all 12 slots go to names the sleeve can act on. Previously the only expression of
+        // the S&P-only rule was fetchMomentum returning null below, which left the name in this set
+        // with its price and momentum blank — see SLEEVE_BUY_UNIVERSE in lib/influencer-signals.
+        .filter(isSleeveEligible)
         .sort((a, b) => (influencerNet[b] ?? 0) - (influencerNet[a] ?? 0))
         .slice(0, 12)
         .map((t) => t);
+      // SAY what the universe rule removed. Silence here is how "why did the sleeve buy nothing?"
+      // became unanswerable from the run record — the question that started this fix. On the live
+      // 2026-10-22 cache the TOP-ranked name (net=7) was off-index, so this fires on ordinary days,
+      // and without a note classifyNoTradeState would read such a day as "unexplained".
+      const offUniverse = Object.keys(influencerCache.tickerCounts)
+        .filter(t => !isSleeveEligible(t))
+        .sort((a, b) => (influencerNet[b] ?? 0) - (influencerNet[a] ?? 0))
+        .slice(0, 6);
+      if (offUniverse.length > 0) {
+        const listed = offUniverse.map(t => `${t} (net=${influencerNet[t] ?? 0})`).join(", ");
+        console.log("SLEEVE_OFF_UNIVERSE_EXCLUDED", { excluded: offUniverse });
+        sleeveOffUniverseNote =
+          `Influencer candidates EXCLUDED as non-S&P-500: ${listed}. The sleeve buys index members `
+          + `only, so these were never shown to the model or added to the buy-allowlist. This is the `
+          + `universe rule working, not missing data`
+          + (topInfluencerTickers.length === 0
+              ? " — and NO eligible candidate remained, so the sleeve had nothing to consider today."
+              : ".");
+      }
       topInfluencerTickers.forEach(t => influencerCandidateSet.add(t));
       const moms = await Promise.allSettled(topInfluencerTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
       for (const r of moms) {
@@ -766,6 +801,7 @@ export async function GET(request: Request) {
     // Influencer-sleeve guard drops (position cap, downtrend screen). Collected separately because
     // those guards run before buySizingAdjustments' own guards, then merged in below.
     const influencerGuardNotes: string[] = [];
+    if (sleeveOffUniverseNote) influencerGuardNotes.push(sleeveOffUniverseNote);
 
     // ── V1 WITHIN-RAILS HARD FILTER ───────────────────────────────────────────
     // The main book may ONLY buy from the pre-screened quality-momentum shortlist. Soft prompt guidance
@@ -897,6 +933,48 @@ export async function GET(request: Request) {
         buySizingAdjustments.push(...dropped.map(b =>
           `${b.symbol} buy DROPPED — dollarAmount ${typeof b.dollarAmount === "number" ? `$${b.dollarAmount.toFixed(2)}` : String(b.dollarAmount)} is invalid or below the $${MIN_BUY_DOLLARS} min`
         ));
+      }
+    }
+
+    // ── Pre-buy DATA gate: a sleeve pick whose momentum never resolved is not buyable ──────
+    // The downtrend screen below is only as good as its input, and its input fails SILENTLY:
+    // isInfluencerDowntrend(undefined) === false, so a name with no momentum reading passes every
+    // price-trend check by having no price. The per-position cap is dollar-based and passes it too.
+    // Withhold instead: we cannot establish that this name is not a falling knife, and a sleeve buy
+    // is exactly where that matters (2026-10-22, SPCX — see SLEEVE_BUY_UNIVERSE in
+    // lib/influencer-signals for the full incident). The off-index case is now removed upstream, so
+    // what reaches here is a FETCH FAILURE on an eligible name — a fact about us, not about the
+    // company, and never a reason to buy. Runs BEFORE the downtrend guard so the recorded reason is
+    // the real one ("no data") rather than the screen it silently skipped.
+    {
+      const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
+        b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
+      const unpriced: string[] = [];
+      decision.buys = decision.buys.filter(b => {
+        if (!isInfluencerBuy(b)) return true;              // main buys are railed by the shortlist
+        // A name ON the main shortlist has already been screened by the quality/momentum rails and
+        // carries a price from the shortlist, so it is not unscreened — even if the model tagged it
+        // "influencer" (MU and TGT are standing examples of names in BOTH lists). Without this the
+        // gate would drop a fully-screened main-rails buy for lacking an entry in a map that only
+        // ever holds the top-12 SLEEVE candidates, which withholds for a reason that is not true.
+        if (v1ShortlistSet.has(b.symbol)) return true;
+        if (influencerMomentum.has(b.symbol)) return true; // momentum established — screens can run
+        unpriced.push(b.symbol);
+        influencerGuardNotes.push(
+          `${b.symbol} buy DROPPED — could NOT establish a momentum/trend reading, so the ⛔DOWNTREND `
+          + `screen could not run. This says our momentum fetch failed for ${b.symbol}, NOT that `
+          + `${b.symbol} is in a downtrend (a last-trade price may well be known). Withheld rather `
+          + `than bought unscreened.`);
+        return false;
+      });
+      if (unpriced.length > 0) {
+        console.error("INFLUENCER_UNPRICED_DROPPED", { unpriced });
+        await sendAlert(
+          `⚠️ Sleeve buy dropped — no momentum reading — ${today}`,
+          `No momentum/trend reading could be established for: ${unpriced.join(", ")}. The buy was withheld `
+          + `because the downtrend screen cannot run without it. If this recurs for an S&P member, the `
+          + `market-data fetch is failing; if the name is off-index it should never have been a candidate.`
+        ).catch(() => {});
       }
     }
 

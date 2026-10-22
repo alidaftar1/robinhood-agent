@@ -68,4 +68,32 @@ describe("an empty trade list is classified by WHY, with a missing input outrank
       .toBe("unexplained");
     expect(classifyNoTradeState(["AAA buy DID NOT CONFIRM after retry"]).cause).toBe("unexplained");
   });
+
+  // WIDENED 2026-10-22. Three gates emit the "could NOT establish" shape and only the earnings one
+  // was recognised, so a sector- or momentum-data outage classified as "explained" — a guard doing
+  // its job — which is how the 2026-10-22 sleeve drop got reported as a concentration decision when
+  // the real cause was a name with no data at all. One case per emitting gate, so a future narrowing
+  // of the predicate fails here rather than going quiet in the report.
+  test("a missing SECTOR is a data failure, not a guard decision", () => {
+    const r = classifyNoTradeState([
+      "SPCX buy DROPPED — could NOT establish its sector, so it cannot be counted against the 40% sector budget.",
+    ]);
+    expect(r.cause).toBe("data-failure");
+  });
+
+  test("a missing MOMENTUM reading is a data failure, not a guard decision", () => {
+    const r = classifyNoTradeState([
+      "MU buy DROPPED — could NOT establish a momentum/trend reading, so the ⛔DOWNTREND screen could not run.",
+    ]);
+    expect(r.cause).toBe("data-failure");
+  });
+
+  test("CONTROL: a genuine guard decision is still 'explained', not inflated to a data failure", () => {
+    // The widening must not swallow the ordinary case — a real cap/cooldown drop states a fact we DID
+    // establish, and reporting it as a data outage would be the opposite error.
+    const r = classifyNoTradeState([
+      "ROST buy DROPPED — main book at its 7-position cap (7 held at the start; no slots were open; 0 left for ROST)",
+    ]);
+    expect(r.cause).toBe("explained");
+  });
 });

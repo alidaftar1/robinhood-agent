@@ -2,9 +2,10 @@
  *
  *  Three outcomes, and the ORDER they are tested in is the guard:
  *
- *   · "data-failure" — at least one buy was withheld because an earnings date could NOT be
- *     established. The imminent-earnings gate fails CLOSED, so a dead Finnhub key, a spent quota or
- *     a run of timeouts drops EVERY buy and writes a DROPPED note for each one. Tested FIRST,
+ *   · "data-failure" — at least one buy was withheld because an INPUT OF OURS could NOT be
+ *     established: an earnings date, a sector, or a momentum reading. Those gates fail CLOSED, so a
+ *     dead Finnhub key, a spent quota, a missing sector row or a run of timeouts drops EVERY buy and
+ *     writes a DROPPED note for each one. Tested FIRST,
  *     because the generic rule below would otherwise read those notes as "guards working" and log
  *     them away — making the day the data source dies the day the report goes quiet.
  *   · "explained" — a guard dropped the buys on purpose (cap, budget, off-rails, cooldown) and said
@@ -22,9 +23,22 @@ export type NoTradeCause = "data-failure" | "explained" | "unexplained";
  *  the kind lost in a re-type. Callers that need it per symbol must still match the symbol with a
  *  boundary, so a note about AAPL cannot explain away a dropped buy of ticker L. */
 export const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED)\b|off-rails/;
-/** The earnings gate's unknown-branch wording. It is a SEPARATE sentence from the imminent one
- *  precisely so the two can be told apart here: one asserts a print, this asserts a broken input. */
-const UNESTABLISHED = /could NOT establish an earnings date|could not be parsed/;
+/** The "we could not establish an input" wording, in any gate that fails closed. It is always a
+ *  SEPARATE sentence from the one asserting a real condition, precisely so the two can be told apart
+ *  here: one asserts a fact about the company, this asserts a broken input of ours.
+ *
+ *  WIDENED 2026-10-22 from the earnings-date wording alone to the general "could NOT establish"
+ *  form, because three gates now share the shape and only one was recognised: the earnings date, the
+ *  sector budget ("could NOT establish its sector", lib/buy-sizing) and the sleeve momentum reading
+ *  ("could NOT establish a momentum/trend reading", app/api/trade). The other two matched GUARD_DROP
+ *  instead, so an outage in either read as "a guard did its job" — the exact outcome the ordering in
+ *  this file exists to prevent, and the reason a 2026-10-22 sleeve drop was reported as a sector
+ *  concentration decision when the real cause was that the name was off-index with no data at all.
+ *
+ *  This predicate is module-private and classifyNoTradeState is its only consumer, so widening it
+ *  re-claims nothing else. It moves affected days from "explained" to "data-failure", which SURFACES
+ *  them in the report rather than logging them away — the fail-safe direction for a diagnostic. */
+const UNESTABLISHED = /could NOT establish|could not be parsed/;
 
 export function classifyNoTradeState(notes: readonly string[]): {
   cause: NoTradeCause;

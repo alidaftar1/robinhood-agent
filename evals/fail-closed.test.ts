@@ -1,6 +1,8 @@
 import { describe, test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
 import { normalizeReportDate, screenImminentEarningsBuys, IMMINENT_EARNINGS_DAYS } from "@/lib/earnings";
 import { pointsIncludeReport, getValuations, type XbrlPoint } from "@/lib/valuation";
+import { formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, type MomentumSignal } from "@/lib/influencer-signals";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FAIL-CLOSED DIRECTION INVARIANTS
@@ -162,5 +164,156 @@ describe("the imminent-earnings buy gate withholds rather than buying blind", ()
     expect(r.kept.map(b => b.symbol)).toEqual(["BBB"]);
     expect(r.imminent).toEqual(["AAA"]);
     expect(r.unknown).toEqual(["CCC"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SLEEVE BUY UNIVERSE — a universe rule must REMOVE a candidate, not starve it
+//
+// 2026-10-22. Sleeve buys were restricted to S&P 500 members on 2026-10-04, but
+// the restriction was implemented only inside fetchMomentum, which returns null
+// for an off-index symbol. That does not remove the name from anything — it
+// blanks its price and momentum. The name was still extracted, still rendered to
+// the model as a candidate, and still in the buy-allowlist; the one thing that
+// changed was that every price-trend screen lost its input, and each of those
+// screens treats a missing reading as a pass (isInfluencerDowntrend(undefined)
+// === false). The per-position cap is dollar-based, so it passed too.
+//
+// The model then chose SPCX — net=7, the run's TOP-ranked name, off index, no
+// price — and justified it with "no ⛔DOWNTREND, no imminent earnings shown".
+// Absence of data read to it as absence of risk. The order was stopped only by
+// the unrelated sector-budget gate, which had shipped 8 days earlier; in the
+// 10 days before that, nothing downstream would have stopped it.
+//
+// Same canonical trap as the normalizeReportDate cases above: dropping a bad
+// input is the fail-OPEN branch, because "absent" means "unconstrained".
+// ─────────────────────────────────────────────────────────────────────────────
+describe("sleeve buy universe fails closed", () => {
+  // Select the rendered DATA row, not prose that merely names the ticker — the prompt body
+  // discusses tickers too, and matching it made an earlier draft of these tests assert against
+  // an instruction line instead of the row under test.
+  const dataRow = (section: string, ticker: string) =>
+    section.split("\n").find(l => /^(?:🔥|📺)/.test(l) && l.includes(ticker))!;
+
+  const momOf = (m: Partial<MomentumSignal> = {}) =>
+    ({ change1d: 1, change5d: 3, distFromHigh: -2, aboveShortMA: true, ...m }) as MomentumSignal;
+
+  // The exact shape of the 2026-10-22 run: the off-index names OUTRANK the index ones,
+  // so a filter applied after the ranking slice would still surface them.
+  const liveShape = {
+    refreshedAt: "2026-10-22",
+    signals: [
+      { tickers: ["SPCX"], channelName: "Meet Kevin", confidence: "high" },
+      { tickers: ["TSM"], channelName: "Tom Nash", confidence: "high" },
+      { tickers: ["PLTR"], channelName: "Ticker Symbol YOU", confidence: "high" },
+    ],
+    tickerCounts: { SPCX: 7, TSM: 3, PLTR: 4 },
+    avoidCounts: {},
+  } as any;
+
+  test("the predicate itself: index membership decides sleeve eligibility", () => {
+    expect(isSleeveEligible("PLTR")).toBe(true);   // in the index
+    expect(isSleeveEligible("SPCX")).toBe(false);  // Nasdaq listing, never in the index
+    expect(isSleeveEligible("TSM")).toBe(false);   // foreign ADR
+  });
+
+  test("an off-index name is NOT shown to the model, however high its consensus", () => {
+    const section = formatInfluencerSignals(
+      liveShape,
+      new Map([["PLTR", 180]]),
+      new Map([["PLTR", momOf()]]),
+    );
+    // net=7 was the highest score in the run and must still not appear.
+    expect(section).not.toContain("SPCX");
+    expect(section).not.toContain("TSM");
+  });
+
+  // CONTROL — the suite must not be able to pass by rejecting everything. This is the
+  // companion to the "UNDEGRADED input still publishes" control above.
+  test("CONTROL: the in-index name IS still shown, with its reading", () => {
+    const section = formatInfluencerSignals(
+      liveShape,
+      new Map([["PLTR", 180]]),
+      new Map([["PLTR", momOf()]]),
+    );
+    expect(section).toContain("PLTR");
+    expect(section).toContain("net=4");
+  });
+
+  test("an in-index name with NO momentum reading is marked NOT BUYABLE, not left blank", () => {
+    // The failure that survives the universe fix: an eligible name whose fetch timed out.
+    // Rendered blank it reads as a clean screen — which is how SPCX was justified.
+    const section = formatInfluencerSignals(
+      liveShape,
+      new Map(),
+      new Map(),          // the screen was ATTEMPTED and produced nothing for PLTR
+    );
+    const row = dataRow(section, "PLTR");
+    expect(row).toContain("NOT BUYABLE");
+  });
+
+  test("CONTROL: a name WITH a clean reading carries no NOT-BUYABLE marker", () => {
+    const section = formatInfluencerSignals(
+      liveShape,
+      new Map([["PLTR", 180]]),
+      new Map([["PLTR", momOf()]]),
+    );
+    const row = dataRow(section, "PLTR");
+    expect(row).not.toContain("NOT BUYABLE");
+    expect(row).toContain("5d:+3%");
+  });
+
+  test("a missing reading is not silently a PASS of the downtrend screen", () => {
+    // The root predicate. It returns false for undefined, which is correct for a DISPLAY
+    // tag but must never be read as "screened and cleared" by a buy decision — hence the
+    // route's data gate drops an unpriced sleeve buy instead of consulting this.
+    expect(isInfluencerDowntrend(undefined)).toBe(false);
+    expect(isInfluencerDowntrend(momOf({ change5d: -20, distFromHigh: -30, aboveShortMA: false }))).toBe(true);
+  });
+
+  // The route's data gate decides on three inputs. The gate itself lives in a route handler, so
+  // (as with evals/main-position-cap.test.ts) pin the DECISION it relies on. The third case is the
+  // one an earlier draft of this fix got wrong: it withheld a main-rails buy for lacking an entry
+  // in a map that only ever holds sleeve candidates — withholding for a reason that is not true,
+  // which is its own direction bug, not a safe default.
+  const dropsAsUnpriced = (a: { sleeve: boolean; onShortlist: boolean; hasMomentum: boolean }) =>
+    a.sleeve && !a.onShortlist && !a.hasMomentum;
+
+  test("the data gate drops an unpriced SLEEVE pick", () => {
+    expect(dropsAsUnpriced({ sleeve: true, onShortlist: false, hasMomentum: false })).toBe(true);
+  });
+
+  test("it does NOT drop a sleeve pick whose momentum resolved", () => {
+    expect(dropsAsUnpriced({ sleeve: true, onShortlist: false, hasMomentum: true })).toBe(false);
+  });
+
+  test("it does NOT drop a name the MAIN rails screened, even tagged influencer", () => {
+    // MU/TGT are in both lists. The main shortlist carries its own price and quality screen.
+    expect(dropsAsUnpriced({ sleeve: true, onShortlist: true, hasMomentum: false })).toBe(false);
+  });
+
+  test("it never touches an ordinary main buy", () => {
+    expect(dropsAsUnpriced({ sleeve: false, onShortlist: true, hasMomentum: false })).toBe(false);
+    expect(dropsAsUnpriced({ sleeve: false, onShortlist: false, hasMomentum: false })).toBe(false);
+  });
+
+  // COUPLING CHECK. The candidate sets in app/api/trade/route.ts are built in a route handler and
+  // are not reachable from a unit test, but they are the lists the model actually buys from. The
+  // whole defect was those lists and the SHOWN list disagreeing, so assert BOTH copies (the real
+  // path and the dry-run preview) are keyed to the same exported predicate, and that each applies
+  // it before its ranking slice. Asserting presence separately from ordering matters: an
+  // indexOf-only check passes vacuously at -1 once the filter is gone.
+  test("both route candidate paths filter by the same predicate, before slicing", () => {
+    const src = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
+    const calls = src.split("isSleeveEligible").length - 1;
+    expect(calls).toBeGreaterThanOrEqual(3);          // 1 import + the real path + the dry-run path
+
+    // Each candidate declaration must filter, and must do so BEFORE its slice.
+    for (const marker of ["const topInfluencerTickers", "const topTickers"]) {
+      const at = src.indexOf(marker);
+      expect(at).toBeGreaterThan(-1);
+      const decl = src.slice(at, src.indexOf(".slice(", at));
+      expect(decl).toContain("isSleeveEligible");     // present, not merely ordered
+    }
   });
 });
