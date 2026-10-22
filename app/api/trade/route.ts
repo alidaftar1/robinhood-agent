@@ -105,6 +105,14 @@ export async function GET(request: Request) {
       // Price + 5d momentum for influencer tickers (downtrend screen)
       let influencerSection = "";
       const influencerMomentum = new Map<string, MomentumSignal>();
+      // What the model was actually SHOWN, and what the universe rule removed. Reported separately
+      // because the old diagnostic was a FOURTH independent derivation off tickerCounts with no
+      // eligibility filter, so it listed off-index names the prompt no longer contains — it reported
+      // SPCX(7) and TSM(3) from a run whose section had neither, which is a smoke test that
+      // contradicts the thing it is smoke-testing. Same shown-vs-actual divergence as the bug this
+      // whole change fixes, one layer up in the reporting.
+      let dryShown: string[] = [];
+      let dryExcluded: string[] = [];
       if (influencerCache && Object.keys(influencerCache.tickerCounts).length > 0) {
         // Same eligibility rule AND the same NET ranking as the real path below, both applied before
         // the slice. This is the pre-deploy smoke test, so it has to show what the real run would
@@ -115,6 +123,11 @@ export async function GET(request: Request) {
         const topTickers = Object.keys(influencerCache.tickerCounts)
           .filter(isSleeveEligible)
           .sort((a, b) => (dryNet[b] ?? 0) - (dryNet[a] ?? 0)).slice(0, 12);
+        dryShown = topTickers.map(t => `${t}(${dryNet[t] ?? 0})`);
+        dryExcluded = Object.keys(influencerCache.tickerCounts)
+          .filter(t => !isSleeveEligible(t))
+          .sort((a, b) => (dryNet[b] ?? 0) - (dryNet[a] ?? 0))
+          .map(t => `${t}(${dryNet[t] ?? 0})`);
         const moms = await Promise.allSettled(topTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
         for (const r of moms) if (r.status === "fulfilled" && r.value.m) { priceMap.set(r.value.t, r.value.m.price); influencerMomentum.set(r.value.t, { change1d: r.value.m.change1d, change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA }); }
         influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
@@ -184,7 +197,10 @@ export async function GET(request: Request) {
         dryRun: true,
         simulateCash: buyingPower,
         influencerSignalsAvailable: influencerCache?.signals.length ?? 0,
-        topInfluencerTickers: Object.entries(influencerCache?.tickerCounts ?? {}).sort(([, a], [, b]) => b - a).slice(0, 8).map(([t, s]) => `${t}(${s})`),
+        // The ELIGIBLE candidates actually rendered to the model, by NET score — not a re-derivation
+        // off tickerCounts, which is how this field came to disagree with the prompt it describes.
+        topInfluencerTickers: dryShown,
+        offUniverseExcluded: dryExcluded,
         influencerSectionInjected: influencerSection.length > 0,
         decision: { thesis: decision.thesis, sells: decision.sells, buys: annotatedBuys },
         ...(decisionParseError ? { decisionParseError } : {}),
