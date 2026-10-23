@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { parseEtAt } from "@/lib/cron-clock";
 import { withBudget, QUALITY_CALL_BUDGET_MS } from "../lib/quality";
 import { buildV1Shortlist, type StockData } from "../lib/market-data";
 
@@ -93,8 +94,10 @@ describe("the quality-refresh cron is scheduled ahead of the trade run", () => {
     const trade = cfg.crons.find(c => c.path.startsWith("/api/trade"));
     expect(refresh, "quality-refresh cron must be scheduled — without it the cache expires and the fail-closed screen stops buys").toBeDefined();
     expect(trade).toBeDefined();
-    const mins = (s: string) => { const [m, h] = s.split(" "); return Number(h) * 60 + Number(m); };
-    expect(mins(refresh!.schedule)).toBeLessThan(mins(trade!.schedule));
+    // Compare the ET times the gate actually runs them at (lib/cron-clock.ts), not the UTC schedule:
+    // each is scheduled at both DST twins, and the etAt param is what decides which one runs.
+    const et = (c: { path: string }) => parseEtAt(new URL(c.path, "https://x").searchParams.get("etAt")!)[0];
+    expect(et(refresh!)).toBeLessThan(et(trade!));
   });
 
   test("it runs on weekdays, matching the trade cadence", async () => {

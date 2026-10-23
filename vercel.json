@@ -1,36 +1,36 @@
 {
   "crons": [
     {
-      "path": "/api/quality-refresh",
-      "schedule": "30 12 * * 1-5"
+      "path": "/api/quality-refresh?etAt=0830",
+      "schedule": "30 12,13 * * 1-5"
     },
     {
-      "path": "/api/influencer-cache",
-      "schedule": "0 13 * * 1-5"
+      "path": "/api/influencer-cache?etAt=0900",
+      "schedule": "0 13,14 * * 1-5"
     },
     {
-      "path": "/api/insider",
-      "schedule": "30 13 * * 1-5"
+      "path": "/api/insider?etAt=0930",
+      "schedule": "30 13,14 * * 1-5"
     },
     {
-      "path": "/api/trade",
-      "schedule": "30 14 * * 1-5"
+      "path": "/api/trade?etAt=1030",
+      "schedule": "30 14,15 * * 1-5"
     },
     {
-      "path": "/api/autopilot?cloudDispatch=1",
-      "schedule": "0 15 * * 1-5"
+      "path": "/api/autopilot?cloudDispatch=1&etAt=1100",
+      "schedule": "0 15,16 * * 1-5"
     },
     {
-      "path": "/api/drop-check?scope=influencer",
-      "schedule": "0 14,15,16,18,19 * * 1-5"
+      "path": "/api/drop-check?scope=influencer&etAt=1000,1100,1200,1400,1500",
+      "schedule": "0 14-20 * * 1-5"
     },
     {
-      "path": "/api/drop-check?scope=influencer&t=close",
-      "schedule": "45 19 * * 1-5"
+      "path": "/api/drop-check?scope=influencer&t=close&etAt=1545",
+      "schedule": "45 19,20 * * 1-5"
     },
     {
-      "path": "/api/drop-check",
-      "schedule": "0 17 * * 1-5"
+      "path": "/api/drop-check?etAt=1300",
+      "schedule": "0 17,18 * * 1-5"
     }
   ]
 }

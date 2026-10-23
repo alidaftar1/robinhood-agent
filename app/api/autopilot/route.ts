@@ -1,5 +1,6 @@
 import { isMainRebalanceDay } from "@/lib/strategy";
 import { requireCronAuth } from "@/lib/auth";
+import { requireCronEtWindow } from "@/lib/cron-clock";
 import { parseTradeDecision, isFullExit } from "@/lib/trade-decision";
 import { dashboardPublicUrl, dashboardLoginUrl, mintLoginToken, EMAIL_LOGIN_TOKEN_TTL_SECONDS } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
@@ -35,7 +36,7 @@ export const maxDuration = 200;
 // How many of a channel's picks the ledger table lists. Enough to audit a hit rate against the
 // actual names, few enough that one watchlist video (Everything Money named 17 tickers in a single
 // video) does not swamp the email. The overflow is always counted, never silently truncated.
-import { classifyNoTradeState, GUARD_DROP } from "@/lib/no-trade-cause";
+import { classifyNoTradeState, dataFailureMessage, GUARD_DROP } from "@/lib/no-trade-cause";
 import { findReportContradictions } from "@/lib/report-consistency";
 
 const LEDGER_PICKS_SHOWN = 14;
@@ -105,6 +106,8 @@ async function dispatchCloudAgent(): Promise<{ ok: boolean; detail: string; stat
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;
+  const offHour = await requireCronEtWindow(request);
+  if (offHour) return offHour;
 
   const today = todayPT();
 
@@ -260,7 +263,7 @@ export async function GET(request: Request) {
         // Always refetch, even on "no missing sells detected" — that message doesn't mean nothing
         // changed, it can mean patchTrades' OWN independent read (a separate /api/debug call, a beat
         // later) already found the sell recorded, because a concurrently-running cron (e.g. the
-        // influencer drop-check, scheduled the same 15:00 UTC minute as this route) landed its
+        // influencer drop-check, scheduled the same 11:00 ET minute as this route) landed its
         // saveRun between this route's initial getRuns() and the patchTrades call. Without a refetch,
         // the stale in-memory todayRun (still missing the sell) flows into verify/the reviewer below,
         // producing a false "silently dropped position" concern for a position that is, in the store,
@@ -399,9 +402,7 @@ export async function GET(request: Request) {
     // source-structure test cannot see a disabled branch. See its comment.
     const noTrade = classifyNoTradeState(todayRun?.buySizingAdjustments ?? []);
     if (noTrade.cause === "data-failure") {
-      issues.push(
-        `No trades executed with $${parseFloat(buyingPower).toFixed(2)} on hand, and ${noTrade.unestablished} buy(s) were withheld because an earnings date could NOT be established — that is a DATA failure (Finnhub key/quota/timeouts), not a strategy decision. Check FINNHUB_API_KEY and the earnings lookup.`,
-      );
+      issues.push(dataFailureMessage(parseFloat(buyingPower), noTrade));
     } else if (noTrade.cause === "explained") {
       console.log("NO_TRADES_EXPLAINED_BY_GUARD — not an issue", { buyingPower, note: noTrade.note });
     } else if (isMainRebalanceDay(today, isMarketHoliday)) {

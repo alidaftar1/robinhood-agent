@@ -158,7 +158,7 @@ describe("capture health must not cry wolf", () => {
     expect(gaps).not.toContain("2026-09-27");   // Sun
   });
 
-  test("TODAY is never a gap — the cron runs at 14:30 UTC", () => {
+  test("TODAY is never a gap — the cron runs at 10:30 ET", () => {
     // Otherwise the card is red from midnight UTC until mid-morning ET on every trading day:
     // roughly 14 hours out of every 24, with nothing wrong.
     const gaps = missingCaptureWeekdays(probe("2026-09-30"), new Set(["2026-09-29"]), "2026-09-30");

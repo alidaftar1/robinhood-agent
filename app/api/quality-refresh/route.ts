@@ -25,6 +25,7 @@
  * NEVER TRADES. No MCP, no token, no orders — it writes one Redis key.
  */
 import { requireCronAuth } from "@/lib/auth";
+import { requireCronEtWindow } from "@/lib/cron-clock";
 import { getQualityScores } from "@/lib/quality";
 import { sendAlert } from "@/lib/alert";
 
@@ -35,6 +36,8 @@ export const maxDuration = 300;
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;
+  const offHour = await requireCronEtWindow(request);
+  if (offHour) return offHour;
 
   const started = Date.now();
   // force=true: the point is to REFRESH, not to confirm a hit. A warm cache would otherwise return

@@ -231,7 +231,7 @@ function perTicker(cache: InfluencerCache): Map<string, { channels: Map<string, 
 // ticker. Returns null when no session has closed yet, and the caller WITHHOLDS the credit.
 //
 // There is deliberately NO live-price fallback, and that is the whole correctness argument.
-// This cron runs at 13:00 UTC — THIRTY MINUTES BEFORE the 13:30 UTC open. So for any video
+// This cron runs at 09:00 ET — THIRTY MINUTES BEFORE the 09:30 ET open. So for any video
 // published since the previous close (i.e. every genuinely fresh pick) today's bar does not
 // exist yet. A live-price fallback would baseline the channel at a PRE-MARKET price and credit
 // it with the entire day's move, permanently — the next run short-circuits on
@@ -661,7 +661,7 @@ export async function computeAttribution(
   const runs = await getRuns(120).catch(() => []);
   const spyByDate = new Map<string, number>();
   // SPY's own daily CLOSES first, because a baseline is now a session close (firstCloseAfter) while
-  // a run's stored `spyPrice` is an INTRADAY mark captured when /api/trade fires at 14:30 UTC.
+  // a run's stored `spyPrice` is an INTRADAY mark captured when /api/trade fires at 10:30 ET.
   // Mixing them puts the two alpha legs on different clocks — a systematic open-to-close SPY error
   // in the very metric channels are RANKED on. The repo has measured that gap: the 10:30 and close
   // clocks correlate only 0.668 on SPY, and SPY's own annualised Sharpe flips SIGN between them

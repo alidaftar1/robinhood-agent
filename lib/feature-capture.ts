@@ -165,7 +165,7 @@ export interface CaptureStatus {
  *   · weekends — no run;
  *   · market holidays — the exchange is shut, and with ~10 a year a naive weekday test would sit
  *     red for a large slice of the calendar;
- *   · TODAY — the capture is written by the 14:30 UTC cron, so from midnight UTC until then its
+ *   · TODAY — the capture is written by the 10:30 ET trade cron, so from midnight UTC until then its
  *     absence is expected. Excluding it costs one day of detection latency and removes a false
  *     alarm that would otherwise be lit ~14 hours of every trading day;
  *   · anything before the FIRST capture we can see — those days predate the feature, and without

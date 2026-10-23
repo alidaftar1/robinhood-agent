@@ -78,7 +78,7 @@ describe("wiring: ORDER of operations between components", () => {
     // case-sensitivity rules that keep "may be rejected" from matching are the kind lost in a re-type.
     expect(s).not.toMatch(/const unestablished = notes\.filter/);
     // Both checks — per symbol and whole list — share ONE pattern, imported, defined nowhere here.
-    expect(s).toContain('classifyNoTradeState, GUARD_DROP } from "@/lib/no-trade-cause"');
+    expect(s).toContain('classifyNoTradeState, dataFailureMessage, GUARD_DROP } from "@/lib/no-trade-cause"');
     expect(s).not.toMatch(/const GUARD_DROP(_RE)? = \//);
   });
 
@@ -485,5 +485,35 @@ describe("braintrust trace covers more than the buy decision", () => {
     const s = computeDecisionScores(run(), decision, "100");
     expect(s.sells_tagged).toBeUndefined();
     expect(s.fills_observed).toBeUndefined();
+  });
+});
+
+// 2026-10-23. A main-shortlist name the model tags "influencer" is booked into the SLEEVE but used to
+// be waved past the momentum data gate ("the main rails screened it"); those rails are long-horizon,
+// and the ⛔DOWNTREND screen read its missing reading as a pass. It must now get a reading fetched
+// BEFORE the gate, and the blanket shortlist exemption must be gone. Structural, because the gate is
+// inline in the route — so it pins both halves: the fetch exists and precedes the filter, and the
+// exemption line does not.
+describe("sleeve-tagged shortlist buys get a real momentum reading before the data gate", () => {
+  const s = src("app/api/trade/route.ts");
+  test("the fetch precedes the gate, and the exemption is gone", () => {
+    const fetchAt = at(s, "await fetchMomentumInto(shortlistSleeveBuys, influencerMomentum)");
+    const gateAt = at(s, "could NOT establish a momentum/trend reading");
+    expect(fetchAt).toBeGreaterThan(-1);
+    expect(fetchAt).toBeLessThan(gateAt);
+    const gateBlock = s.slice(at(s, "const unpriced: string[] = [];"), gateAt);
+    expect(gateBlock).not.toContain("v1ShortlistSet.has(b.symbol)) return true");
+  });
+
+  test("only ABOVE-floor shortlist names are refetched; a sub-floor shortlist name keeps its old pass", () => {
+    // Fetching a sub-floor name could drop it as "could NOT establish …" — an ineligible buy
+    // misreported as a data outage. The net-floor guard rejects it with the true reason instead.
+    const gateBlock = s.slice(at(s, "const unpriced: string[] = [];"), at(s, "could NOT establish a momentum/trend reading"));
+    expect(gateBlock).toContain("if (v1ShortlistSet.has(b.symbol) && !aboveFloor(b)) return true;");
+    expect(s).toMatch(/const shortlistSleeveBuys = decision\.buys\s*\.filter\(b => isInfluencerBuy\(b\) && v1ShortlistSet\.has\(b\.symbol\) && aboveFloor\(b\)/);
+  });
+
+  test("the net-floor guard was NOT moved — reordering it changes what gets bought (owner decision)", () => {
+    expect(at(s, "// ── Pre-buy net-score guard")).toBeGreaterThan(at(s, "// ── Pre-buy momentum guard"));
   });
 });

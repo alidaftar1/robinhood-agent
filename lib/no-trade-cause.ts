@@ -35,22 +35,58 @@ export const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED)\b|off-rails/;
  *  this file exists to prevent, and the reason a 2026-10-22 sleeve drop was reported as a sector
  *  concentration decision when the real cause was that the name was off-index with no data at all.
  *
- *  This predicate is module-private and classifyNoTradeState is its only consumer, so widening it
- *  re-claims nothing else. It moves affected days from "explained" to "data-failure", which SURFACES
- *  them in the report rather than logging them away — the fail-safe direction for a diagnostic. */
+ *  It moves affected days from "explained" to "data-failure", which SURFACES them in the report
+ *  rather than logging them away — the fail-safe direction for a diagnostic. But it DID re-claim
+ *  something: the autopilot's message went on telling the reader every data-failure was a missing
+ *  earnings date and to check FINNHUB_API_KEY (also dispatching the paid cloud fixer at Finnhub) for
+ *  what could be a Yahoo momentum outage or a missing sector row. So the DECISION (this predicate)
+ *  and the CLAIM (unestablishedInputOf below, which names the input and its source) are now
+ *  separate — widening one cannot widen the other. */
 const UNESTABLISHED = /could NOT establish|could not be parsed/;
+
+/** WHICH input could not be established, read from one data-failure note. The claim half of the
+ *  split above: changing when a day counts as a data failure cannot change what it is blamed on.
+ *  An unrecognised wording maps to "unrecognised input", never to a guess — a new gate must not
+ *  inherit another gate's diagnosis. Order matters: the sector-BUDGET note also says "sector". */
+export type UnestablishedInput =
+  "earnings date" | "portfolio total value" | "sector" | "momentum reading" | "unrecognised input";
+export function unestablishedInputOf(note: string): UnestablishedInput {
+  if (/earnings date/.test(note)) return "earnings date";
+  if (/sector budget \(total value unreadable\)/.test(note)) return "portfolio total value";
+  if (/establish its sector/.test(note)) return "sector";
+  if (/momentum\/trend reading/.test(note)) return "momentum reading";
+  return "unrecognised input";
+}
+
+const INPUT_SOURCE: Record<UnestablishedInput, string> = {
+  "earnings date": "Finnhub key/quota/timeouts — check FINNHUB_API_KEY and the earnings lookup",
+  "portfolio total value": "the account total-value read — check the Robinhood portfolio snapshot for this run",
+  "sector": "our sector data has no row for the name — check the sector lookup, not the market",
+  "momentum reading": "the Yahoo price/momentum fetch (fetchMomentum, lib/market-data) failed or returned nothing",
+  "unrecognised input": "a fail-closed gate whose wording lib/no-trade-cause does not recognise — read the run's buySizingAdjustments",
+};
+
+/** The human/cloud-fixer message for a data-failure day. Names every failed input with its own
+ *  source, so the reader is sent to the system that actually broke. */
+export function dataFailureMessage(cash: number, r: { unestablished: number; inputs: readonly UnestablishedInput[] }): string {
+  const what = r.inputs.map(i => `${i} (${INPUT_SOURCE[i]})`).join("; ");
+  return `No trades executed with $${cash.toFixed(2)} on hand, and ${r.unestablished} buy(s) were withheld because an input could NOT be established: ${what}. That is a DATA failure, not a strategy decision.`;
+}
 
 export function classifyNoTradeState(notes: readonly string[]): {
   cause: NoTradeCause;
   unestablished: number;
+  /** Distinct failed inputs, in first-seen order. Empty unless cause is "data-failure". */
+  inputs: UnestablishedInput[];
   note?: string;
 } {
   const unestablished = notes.filter(n => UNESTABLISHED.test(n));
   if (unestablished.length > 0) {
-    return { cause: "data-failure", unestablished: unestablished.length, note: unestablished[0] };
+    const inputs = [...new Set(unestablished.map(unestablishedInputOf))];
+    return { cause: "data-failure", unestablished: unestablished.length, inputs, note: unestablished[0] };
   }
   const note = notes.find(n => GUARD_DROP.test(n));
   return note
-    ? { cause: "explained", unestablished: 0, note }
-    : { cause: "unexplained", unestablished: 0 };
+    ? { cause: "explained", unestablished: 0, inputs: [], note }
+    : { cause: "unexplained", unestablished: 0, inputs: [] };
 }

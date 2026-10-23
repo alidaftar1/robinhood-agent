@@ -715,6 +715,12 @@ export const MOMENTUM_FLOOR_PCT = -8;
 export const DIST_FROM_HIGH_FLOOR = -15;
 
 export interface MomentumSignal { change1d: number; change5d: number; distFromHigh: number; aboveShortMA: boolean }
+/** The ONE mapping from a fetchMomentum reading to the signal the screens read. It was copied inline
+ *  at every fetch site; a field added to MomentumSignal (as aboveShortMA once was) and missed in one
+ *  copy would hand the screens a partial reading. */
+export function toMomentumSignal(m: MomentumSignal): MomentumSignal {
+  return { change1d: m.change1d, change5d: m.change5d, distFromHigh: m.distFromHigh, aboveShortMA: m.aboveShortMA };
+}
 
 // True if the pick is a falling knife we should NOT buy. A pick that's flagged
 // (down >8% over 5d, or >15% off its recent high) is normally rejected — UNLESS it's

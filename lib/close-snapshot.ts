@@ -1,8 +1,8 @@
 /**
  * CLOSING-BELL SNAPSHOT — a second observation of the book, taken after the US equity close.
  *
- * WHY THIS EXISTS. The trade cron fires at 14:30 UTC (10:30 ET) and the run it writes is the only
- * observation of the portfolio, so the stored "daily return" series is measured 10:30→10:30. The
+ * WHY THIS EXISTS. The trade cron fires at 10:30 ET (14:30 UTC under EDT, 15:30 under EST) and the run it
+ * writes is the only observation of the portfolio, so the stored "daily return" series is measured 10:30→10:30. The
  * 28-year backtest (scripts/full-period.ts) is measured close→close, like every published SPY
  * statistic. Those are not the same series: over the 29 stored days, SPY's 10:30-sampled returns
  * correlate only 0.668 with its close-to-close returns. Until the clocks match, any verdict on

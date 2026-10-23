@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { requireCronEtWindow } from "@/lib/cron-clock";
 import { dashboardPublicUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
@@ -31,6 +32,8 @@ export const maxDuration = 300;
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;
+  const offHour = await requireCronEtWindow(request, { claimOnce: true });
+  if (offHour) return offHour;
 
   const today = new Date().toISOString().split("T")[0];
 

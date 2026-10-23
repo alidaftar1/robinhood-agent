@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { requireCronEtWindow } from "@/lib/cron-clock";
 import { refreshInsiderCache } from "@/lib/insider";
 
 export const maxDuration = 300;
@@ -6,6 +7,8 @@ export const maxDuration = 300;
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;
+  const offHour = await requireCronEtWindow(request);
+  if (offHour) return offHour;
   try {
     const data = await refreshInsiderCache();
     const symbolsWithBuys = Object.keys(data).length;

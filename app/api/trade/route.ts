@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { requireCronEtWindow } from "@/lib/cron-clock";
 import * as Sentry from "@sentry/nextjs";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
@@ -6,7 +7,7 @@ import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebala
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
-import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, netScores, INFLUENCER_BUY_FLOOR, type MomentumSignal } from "@/lib/influencer-signals";
+import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, netScores, INFLUENCER_BUY_FLOOR, toMomentumSignal, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta, SECTOR_CAP_PCT } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
@@ -58,9 +59,25 @@ const fetchAgenticBuyingPower = fetchAgenticBalance;
 // Pre-flight buy sizing lives in lib/buy-sizing.ts (pure + unit-tested in evals).
 
 
+/** Fetch momentum for `symbols` in parallel into `momentum` (and `priceMap`, when given). A symbol
+ *  whose fetch fails or returns nothing is simply absent from the map — callers that need a reading
+ *  must check for it, which is what the sleeve's pre-buy DATA gate does. One copy, so the fetch
+ *  sites (candidate list, data-gate refetch, and their dry-run mirrors) cannot drift apart. */
+async function fetchMomentumInto(symbols: string[], momentum: Map<string, MomentumSignal>, priceMap?: Map<string, number>): Promise<void> {
+  if (symbols.length === 0) return;
+  const moms = await Promise.allSettled(symbols.map(t => fetchMomentum(t).then(m => ({ t, m }))));
+  for (const r of moms) {
+    if (r.status !== "fulfilled" || !r.value.m) continue;
+    priceMap?.set(r.value.t, r.value.m.price);
+    momentum.set(r.value.t, toMomentumSignal(r.value.m));
+  }
+}
+
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;
+  const offHour = await requireCronEtWindow(request, { claimOnce: true });
+  if (offHour) return offHour;
 
   const url = new URL(request.url);
   const dryRun = url.searchParams.get("dryRun") === "1";
@@ -128,8 +145,7 @@ export async function GET(request: Request) {
           .filter(t => !isSleeveEligible(t))
           .sort((a, b) => (dryNet[b] ?? 0) - (dryNet[a] ?? 0))
           .map(t => `${t}(${dryNet[t] ?? 0})`);
-        const moms = await Promise.allSettled(topTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
-        for (const r of moms) if (r.status === "fulfilled" && r.value.m) { priceMap.set(r.value.t, r.value.m.price); influencerMomentum.set(r.value.t, { change1d: r.value.m.change1d, change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA }); }
+        await fetchMomentumInto(topTickers, influencerMomentum, priceMap);
         influencerSection = formatInfluencerSignals(influencerCache, priceMap, influencerMomentum);
       }
 
@@ -183,10 +199,24 @@ export async function GET(request: Request) {
       const dryShortlistSet = new Set(dryBuy.map(s => s.symbol)); // buy-allowlist (retained ◆HELD names excluded)
       const dryInfluencerCandidates = new Set(influencerMomentum.keys());
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) => b.strategy === "influencer" || (dryInfluencerCandidates.has(b.symbol) && !dryShortlistSet.has(b.symbol));
+      // Mirror the live path's momentum DATA gate (search "Pre-buy DATA gate"): a sleeve buy at or
+      // above the net floor gets its reading fetched if missing, and one that still has none is
+      // DROPPED live — so the preview must not show it as executable.
+      // Same set as live: only above-floor SHORTLIST names are re-fetched there (a top-12 candidate
+      // whose first fetch failed is not retried live, so retrying it here would preview a buy live
+      // drops). Same pass rule too: a SUB-floor shortlist name passes the live data gate (the
+      // net-floor guard rejects it later); every other sleeve buy without a reading is dropped.
+      const dryNetAll = influencerCache ? netScores(influencerCache) : {};
+      const dryAboveFloor = (b: { symbol: string }) => (dryNetAll[b.symbol] ?? 0) >= INFLUENCER_BUY_FLOOR;
+      await fetchMomentumInto(
+        decision.buys.filter(b => isInfluencerBuy(b) && dryAboveFloor(b) && dryShortlistSet.has(b.symbol) && !influencerMomentum.has(b.symbol)).map(b => b.symbol),
+        influencerMomentum,
+      );
       const annotatedBuys = decision.buys.map(b => {
         const mom = influencerMomentum.get(b.symbol);
         const downtrendRejected = isInfluencerBuy(b) && isInfluencerDowntrend(mom);
-        return { ...b, resolvedStrategy: isInfluencerBuy(b) ? "influencer" : "main", momentum: mom ?? null, downtrendRejected };
+        const noMomentumDropped = isInfluencerBuy(b) && !mom && !(dryShortlistSet.has(b.symbol) && !dryAboveFloor(b));
+        return { ...b, resolvedStrategy: isInfluencerBuy(b) ? "influencer" : "main", momentum: mom ?? null, downtrendRejected, noMomentumDropped };
       });
       const influencerBuys = annotatedBuys.filter(b => b.resolvedStrategy === "influencer");
       const allowedNew = Math.max(0, 2 - keptInfluencer);
@@ -296,13 +326,7 @@ export async function GET(request: Request) {
               : ".");
       }
       topInfluencerTickers.forEach(t => influencerCandidateSet.add(t));
-      const moms = await Promise.allSettled(topInfluencerTickers.map(t => fetchMomentum(t).then(m => ({ t, m }))));
-      for (const r of moms) {
-        if (r.status === "fulfilled" && r.value.m) {
-          priceMap.set(r.value.t, r.value.m.price);
-          influencerMomentum.set(r.value.t, { change1d: r.value.m.change1d, change5d: r.value.m.change5d, distFromHigh: r.value.m.distFromHigh, aboveShortMA: r.value.m.aboveShortMA });
-        }
-      }
+      await fetchMomentumInto(topInfluencerTickers, influencerMomentum, priceMap);
       // Section is BUILT once below, after recentEarnings is fetched, so the 📊REPORTED flag is included.
     }
 
@@ -965,15 +989,32 @@ export async function GET(request: Request) {
     {
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
         b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
+      // A name ON the main shortlist that the model tagged "influencer" (MU and TGT are standing
+      // examples of names in BOTH lists) is booked into the SLEEVE — sleeve stop, sleeve slot — but
+      // influencerMomentum only ever holds the top-12 sleeve candidates, so it usually has no
+      // reading. It used to be waved through here on the grounds that the main rails had screened
+      // it; they screen LONG-horizon momentum, not the short-term falling knife the ⛔DOWNTREND
+      // screen below exists for, and that screen reads a missing entry as a pass. Fetch its reading
+      // instead, so the screen runs on real data; only a fetch that fails drops it, like any other
+      // sleeve name. (Dropping without fetching would withhold a screenable buy for a reason that
+      // is not true — the reason the exemption existed.)
+      //
+      // Scoped to shortlist names ABOVE the net floor. A sub-floor shortlist name keeps its old pass
+      // here: the net-floor guard below rejects it with the true reason, whereas fetching it could
+      // turn an ineligible buy into a "could NOT establish" data-failure day. (Moving the net-floor
+      // guard ahead of this gate was tried and reverted 2026-10-23: it frees sleeve slots and
+      // sector budget for other buys, which changes WHAT is bought and how big — an owner decision,
+      // not part of this fix.)
+      const aboveFloor = (b: { symbol: string }) => (influencerNet[b.symbol] ?? 0) >= INFLUENCER_BUY_FLOOR;
+      const shortlistSleeveBuys = decision.buys
+        .filter(b => isInfluencerBuy(b) && v1ShortlistSet.has(b.symbol) && aboveFloor(b) && !influencerMomentum.has(b.symbol))
+        .map(b => b.symbol);
+      // Parallel, each fetch with its own 5s timeout — at most a couple of names.
+      await fetchMomentumInto(shortlistSleeveBuys, influencerMomentum);
       const unpriced: string[] = [];
       decision.buys = decision.buys.filter(b => {
         if (!isInfluencerBuy(b)) return true;              // main buys are railed by the shortlist
-        // A name ON the main shortlist has already been screened by the quality/momentum rails and
-        // carries a price from the shortlist, so it is not unscreened — even if the model tagged it
-        // "influencer" (MU and TGT are standing examples of names in BOTH lists). Without this the
-        // gate would drop a fully-screened main-rails buy for lacking an entry in a map that only
-        // ever holds the top-12 SLEEVE candidates, which withholds for a reason that is not true.
-        if (v1ShortlistSet.has(b.symbol)) return true;
+        if (v1ShortlistSet.has(b.symbol) && !aboveFloor(b)) return true; // net-floor guard rejects it below
         if (influencerMomentum.has(b.symbol)) return true; // momentum established — screens can run
         unpriced.push(b.symbol);
         influencerGuardNotes.push(

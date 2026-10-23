@@ -1,3 +1,5 @@
+import { etParts } from "@/lib/close-snapshot";
+import { parseEtAt, TRADE_ET_AT } from "@/lib/cron-clock";
 import { STALE_DAYS } from "@/lib/strategy";
 import { isMainRebalanceDay } from "@/lib/strategy";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -31,7 +33,26 @@ export interface ReviewResult {
   error?: string;
 }
 
-const SCHEDULED_TRADE_CRON_UTC = "14:30 UTC (7:30am PT)";
+/** The trade cron's scheduled instant for `date`, as one concrete UTC time. ET-anchored (lib/cron-clock
+ *  gates the DST twin), so the UTC stamp moves by an hour at DST — computed HERE, not left to the
+ *  model: a reviewer told "14:30 under EDT, 15:30 under EST" can apply the wrong one and report a
+ *  normal 15:30Z run as an hour late, i.e. a silent recovery, which opens the paid cloud fixer. */
+export function scheduledTradeCron(date: string): string {
+  const target = parseEtAt(TRADE_ET_AT)[0];
+  const et = `${String(Math.floor(target / 60)).padStart(2, "0")}:${String(target % 60).padStart(2, "0")} ET`;
+  // ET is UTC-4 (EDT) or UTC-5 (EST); whichever lands on the target is today's instant.
+  // A prompt line must never take the reviewer down: any failure (a target that crosses UTC
+  // midnight, a malformed run date) falls back to the bare ET time.
+  try {
+    for (const offset of [4, 5]) {
+      const utcMin = target + offset * 60;
+      if (utcMin >= 24 * 60) continue;
+      const utc = `${String(Math.floor(utcMin / 60)).padStart(2, "0")}:${String(utcMin % 60).padStart(2, "0")}`;
+      if (etParts(new Date(`${date}T${utc}:00Z`)).minutes === target) return `${utc} UTC (${et})`;
+    }
+  } catch { /* fall through */ }
+  return et;
+}
 
 // Feed the reviewer the FULL run summary. It's bounded by the analysis call's
 // max_tokens (~3k tokens ≈ ≤12k chars), so this captures the entire thesis plus
@@ -200,7 +221,7 @@ function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[], verify?: Ve
     // as a bypassed guardrail rather than as history.
     .map((r) => compactRun(r, buysOpenFor(r)));
 
-  return `SCHEDULED trade cron time: ${SCHEDULED_TRADE_CRON_UTC}. A today timestamp materially later than that implies the morning failed at least once and silently recovered.
+  return `SCHEDULED trade cron time today: ${scheduledTradeCron(todayRun.date)}. A today timestamp materially later than that implies the morning failed at least once and silently recovered.
 
 ${formatVerify(verify)}
 

@@ -57,7 +57,7 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     lesson:
       "The trade cron 529'd (Anthropic overloaded) at 7:30am and the 8:01am retry 529'd too; the run only succeeded on a later attempt. Because both autopilots inspect the recovered run, they reported HEALTHY and never surfaced that the pipeline failed twice and no success report went out.",
     check:
-      "Is the run's timestamp far later than the 14:30 UTC (7:30am PT) scheduled cron? A run stamped ~15:01 UTC or later means the morning failed at least once and silently recovered — say so explicitly even though the end state is fine.",
+      "Is the run's timestamp far later than the SCHEDULED trade cron time given at the top of the prompt (10:30 ET; its UTC stamp moves by an hour at DST, so use the computed one)? A run stamped ~30+ minutes after that means the morning failed at least once and silently recovered — say so explicitly even though the end state is fine.",
   },
   {
     date: "2026-06-22",

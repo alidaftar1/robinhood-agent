@@ -1,4 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
+import { requireCronEtWindow } from "@/lib/cron-clock";
 import { refreshInfluencerSignals } from "@/lib/influencer-signals";
 import { recordPicks } from "@/lib/influencer-ledger";
 
@@ -7,6 +8,8 @@ export const maxDuration = 300; // transcripts (Supadata, incl. Whisper fallback
 export async function GET(request: Request) {
   const unauth = requireCronAuth(request);
   if (unauth) return unauth;
+  const offHour = await requireCronEtWindow(request);
+  if (offHour) return offHour;
 
   if (!process.env.YOUTUBE_API_KEY) {
     return Response.json({ skipped: true, reason: "YOUTUBE_API_KEY not configured" });

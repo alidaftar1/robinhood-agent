@@ -105,7 +105,7 @@ function CaptureCard({ status, error }: { status: CaptureStatus | null; error?: 
           ) : (
             <p style={{ color: "#8b949e", fontSize: 12, marginTop: 10 }}>
               No missing trading days in the last 30. Weekends, market holidays, and today are
-              excluded — today's capture lands with the 14:30 UTC run.
+              excluded — today's capture lands with the 10:30 ET run.
             </p>
           )}
         </>
