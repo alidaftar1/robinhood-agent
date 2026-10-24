@@ -1,3 +1,4 @@
+import { sectorMaxNames } from "./sector-cap";
 import { SP500_UNIVERSE } from "./strategy";
 import { STOCK_INDUSTRY } from "./stock-industry";
 import { formatNewsTag } from "./news-tag";
@@ -333,12 +334,12 @@ export function momentumScore(changePct: number, tradingDays: number, annualized
 // ── V1 Quality-Momentum shortlist (the deterministic "rails") ────────────────────────────────────────
 // Given the universe + the quality-eligible set, returns the main-book candidate shortlist the LLM may
 // pick from: quality-eligible names with POSITIVE 12-1 momentum, ranked by that momentum, capped so no
-// sector exceeds the 40% cap of an N-name book. Because the shortlist itself is sector-capped, ANY N the
-// LLM picks from it respects the 40% cap by construction. See docs/strategy-quality-momentum.md.
+// sector exceeds its cap (≤3x its S&P weight in names, lib/sector-cap). Because the shortlist itself is
+// sector-capped, ANY N the LLM picks from it respects that cap by construction. See docs/strategy-quality-momentum.md.
 // Returns two lists with DIFFERENT roles (kept separate deliberately):
 //   buy      = the sector-capped top-`size` candidates. This is the BUY-ALLOWLIST — the ONLY names
 //              the main book may buy/add — and it stays sector-capped-by-construction, so buys still
-//              respect the 40% cap. The degenerate-data floor check must count THIS list only.
+//              respect the sector cap. The degenerate-data floor check must count THIS list only.
 //   retained = HELD names still eligible with positive momentum that got squeezed below the buy
 //              cutoff. RENDER-ONLY (marked ◆HELD) — shown to the LLM so it does NOT churn-sell them,
 //              but NOT buyable (kept out of the buy-allowlist so they can't bypass the sector cap or
@@ -364,17 +365,19 @@ export function buildV1Shortlist(
   opts: { N?: number; shortlistSize?: number; held?: Set<string>; qualityUnknown?: Set<string> } = {},
 ): { buy: StockData[]; retained: StockData[] } {
   const N = opts.N ?? TARGET_MAIN_POSITIONS;
-  // SECTOR RISK — unchanged, and deliberately NOT derived from the list size. This is the only
-  // sector control on buys (there is no second check at buy time), so it stays pinned to the
-  // TARGET POSITION COUNT: ≤2 buyable names per sector out of ~6 held ≈ the 40% cap.
-  const maxPerSector = Math.max(1, Math.floor(0.4 * N)); // N=6 → 2/sector
+  // SECTOR RISK — per sector, ≤3x its S&P weight in names (lib/sector-cap; replaced the flat
+  // floor(0.4 x N) = 2/sector on 2026-10-23). Pinned to the TARGET POSITION COUNT, not the list
+  // size, and shared with the buy-time dollar budget so the two cannot disagree. At N=7: Tech 4,
+  // Financials/Health Care 2, every other sector 1.
+  const maxPerSector = (sec: string) => sectorMaxNames(sec, N);
   // CHOICE SET — widened from a hardcoded 12 (2026-09-18). The model could previously pick ~6 names
   // from 12, and half that list was already-held names, so its real latitude was a few slots.
   // DERIVED, not a literal: the list can never hold more than maxPerSector × (number of sectors),
   // so this is the exact saturation point and raising it further changes nothing. Deriving it also
   // keeps that true if N changes — at N=8 the ceiling is 33, and a hardcoded 22 would silently
-  // re-truncate. Strictly more candidates at identical sector risk; no limit is relaxed.
-  const size = opts.shortlistSize ?? maxPerSector * Object.keys(SECTOR_ETFS).length;
+  // re-truncate. (Since the 3x-S&P cap, 2026-10-23, this sums the per-sector limits: 4+2+2+8x1 = 16 at N=7, down
+  // from 22 under the flat 2/sector — fewer candidates, by design, in the small sectors.)
+  const size = opts.shortlistSize ?? Object.keys(SECTOR_ETFS).reduce((n, sec) => n + maxPerSector(sec), 0);
   const held = opts.held ?? new Set<string>();
   const ranked = stocks
     .filter((s) => typeof s.mom12_1 === "number" && (s.mom12_1 as number) > 0 && eligible.has(s.symbol))
@@ -384,7 +387,7 @@ export function buildV1Shortlist(
   for (const s of ranked) {
     if (buy.length >= size) break;
     const sec = STOCK_SECTOR[s.symbol] ?? "?";
-    if ((perSector[sec] ?? 0) >= maxPerSector) continue;
+    if ((perSector[sec] ?? 0) >= maxPerSector(sec)) continue;
     buy.push(s);
     perSector[sec] = (perSector[sec] ?? 0) + 1;
   }

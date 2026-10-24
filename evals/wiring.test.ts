@@ -133,10 +133,17 @@ describe("wiring: ORDER of operations between components", () => {
     expect(sector).toBeLessThan(mainCap);
     // Built from EVERY held position — a main-only subset would reinstate the original blind spot.
     expect(s).toContain("for (const p of portfolioCtx?.positions ?? []) {");
-    // ONE definition of where the line is: the soft-cap warning in risk-metrics and this hard gate
-    // must not disagree, so the percentage is imported, never re-typed.
-    expect(s).toContain("capPct: SECTOR_CAP_PCT / 100");
-    expect(s).not.toMatch(/capPct: 0\.4\b/);
+    // ONE definition of where the line is: since 2026-10-23 the buy cap is per sector (3x its S&P
+    // weight, lib/sector-cap), and the shortlist's name count and this dollar gate must read the
+    // SAME rule at the SAME position count — so both import it, neither re-types it.
+    // (The 40% SECTOR_CAP_PCT soft nudge in risk-metrics is SELL-side and deliberately separate.)
+    expect(s).toContain("capPctOf: (sec) => sectorBudgetFraction(sec, TARGET_MAIN_POSITIONS),");
+    // The SELL-side nudge reads the same module, so it can never sit below the buy budget.
+    expect(s).toContain("formatSectorExposure(computeSectorSlices(valued), (etf) => sectorSoftTrimPct(etf, TARGET_MAIN_POSITIONS))");
+    expect(s).not.toMatch(/capPct: (0\.4\b|SECTOR_CAP_PCT)/);
+    const md = src("lib/market-data.ts");
+    expect(md).toContain("const maxPerSector = (sec: string) => sectorMaxNames(sec, N);");
+    expect(md).not.toMatch(/Math\.floor\(0\.4 \* N\)/);
   });
 
   test("a WITHHELD return is not alerted as an uncomputable one", () => {

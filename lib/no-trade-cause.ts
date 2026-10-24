@@ -52,8 +52,11 @@ export type UnestablishedInput =
   "earnings date" | "portfolio total value" | "sector" | "momentum reading" | "unrecognised input";
 export function unestablishedInputOf(note: string): UnestablishedInput {
   if (/earnings date/.test(note)) return "earnings date";
-  if (/sector budget \(total value unreadable\)/.test(note)) return "portfolio total value";
+  // "its sector" FIRST: that note also says "against a sector budget".
   if (/establish its sector/.test(note)) return "sector";
+  // Both withhold notes from applySectorBudget: the total-value one, and a per-sector cap that came
+  // out non-finite / <= 0 — whose only realistic cause is a corrupt total-value read upstream.
+  if (/establish the sector budget/.test(note)) return "portfolio total value";
   if (/momentum\/trend reading/.test(note)) return "momentum reading";
   return "unrecognised input";
 }

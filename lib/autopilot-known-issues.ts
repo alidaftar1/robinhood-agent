@@ -113,7 +113,7 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     lesson:
       "The book quietly drifted to ~79% financials. A 40% soft cap is now in the prompt, but the autopilot never independently measured concentration, so drift was invisible until a commenter pointed it out.",
     check:
-      "From the current positions, does any single sector look like it exceeds ~40% of equity? Flag concentration drift even though the cap is 'soft'.",
+      "From the current positions, does any sector exceed its cap? Since 2026-10-23 the BUY cap is per sector, 3x its S&P 500 weight (lib/sector-cap): Technology up to 4 positions, Financials and Health Care 2, every other sector 1 (~20% of the book). A sector over its cap must receive NO new buys — flag any buy into one. Holding over the cap is NOT itself a defect (the cap is buy-side only and never forces a sale); flag it as drift, and separately flag any sector over the 40% SELL-side soft nudge (Technology's nudge is higher, at its buy budget).",
   },
   {
     date: "2026-07-14",
@@ -329,7 +329,7 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     lesson:
       "The reviewer reported Tech ~43% and attributed it to 'influencer-sleeve names (NVDA, AVGO) that cannot be sold', concluding no main-book sell was warranted. It had listed MRVL in the sum and then dropped it from the conclusion. MRVL was $386 — the single LARGEST position in the book, main-book, fully trimmable, and 36% of the semiconductor block. Describing the whole exposure as locked turns a CHOICE into a CONSTRAINT and removes the one action actually available. Two further things the framing hid: XLK and SEMICONDUCTORS were the same 44.5% — there was no non-semi tech, so 'Tech 43%' read as diversified sector exposure when it was a single-industry bet in three names; and the exposure was built by three independent compliant paths (main bought MRVL, the sleeve bought NVDA and AVGO on its own 2 slots with NO sector awareness, the owner topped up MRVL four times), so no single guard was breached and none would catch it.",
     check:
-      "When reporting a sector or industry concentration, SPLIT it by sleeve and name the trimmable share in dollars before drawing any conclusion about what can be done. A position is sleeve-locked only if it appears in that run's influencerPositions — check, do not infer it from the name being a well-known sleeve pick. Also report the narrowest grouping that is true: if every holding in a sector is one industry, say the industry, because the sector label understates it. And remember the sleeve's 2 slots carry NO sector budget, so two individually-compliant sleeves can stack one industry past the 40% cap with nothing breached.",
+      "When reporting a sector or industry concentration, SPLIT it by sleeve and name the trimmable share in dollars before drawing any conclusion about what can be done. A position is sleeve-locked only if it appears in that run's influencerPositions — check, do not infer it from the name being a well-known sleeve pick. Also report the narrowest grouping that is true: if every holding in a sector is one industry, say the industry, because the sector label understates it. Since 2026-10-14 the sector budget counts BOTH sleeves, and since 2026-10-23 it is per sector (3x its S&P weight: Tech 4 positions, Financials/Health Care 2, every other sector 1) — so a sleeve holding can use up the main book's only slot in a small sector, and vice versa; that is the rule working, not a breach.",
   },
   {
     date: "2026-10-22",

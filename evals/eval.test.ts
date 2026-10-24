@@ -1,3 +1,4 @@
+import { sectorMaxNames } from "@/lib/sector-cap";
 import { describe, it, expect, afterAll } from "bun:test";
 import { resolveDropCheckExits } from "@/lib/stopouts";
 import { requireCronAuth } from "@/lib/auth";
@@ -644,9 +645,11 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
   // assertion here passed for the wrong reason at ANY shortlistSize. These tests also no longer
   // pin shortlistSize, so they exercise the PRODUCTION default (derived, not a literal).
   //
-  // Two names per sector across all 11 sectors = the 22-name ceiling, plus AAPL as a THIRD XLK
-  // name with the lowest momentum — so the SECTOR CAP (not the list length) pushes it out of
-  // `buy`. Holding it is the anti-churn case: still positive momentum, must be RETAINED.
+  // Two names per sector across all 11 sectors, plus AAPL as a third XLK name. Since 2026-10-23 the
+  // cap is per sector (lib/sector-cap, 3x S&P weight): at N=7 Tech takes 4, Financials/Health Care
+  // 2, every other sector 1. So CVX — the SECOND Energy name, positive momentum, below XOM — is
+  // what the SECTOR CAP (not the list length) pushes out of `buy`. Holding it is the anti-churn
+  // case: still positive momentum, must be RETAINED.
   const SYMS = [
     "NVDA", "MSFT",   // XLK
     "LLY", "JNJ",     // XLV
@@ -659,7 +662,7 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
     "AMT", "PLD",     // XLRE
     "NEE", "SO",      // XLU
     "GOOGL", "META",  // XLC
-    "AAPL",           // XLK #3 — squeezed out by the 2/sector cap, not by list length
+    "AAPL",           // XLK #3 — fits Tech's 4-name cap
   ];
   const mk = (syms: string[], mom: (i: number) => number) =>
     syms.map((symbol, i) => ({
@@ -672,7 +675,12 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
 
   it("the default shortlist is the full sector ceiling, not a truncated 12", () => {
     const { buy } = buildV1Shortlist(stocks, eligible, { held: new Set() });
-    expect(buy.length).toBe(22);            // 11 sectors x 2 — the derived saturation point
+    // Every sector filled to min(its cap, names offered): XLK 3 (cap 4), XLV 2, XLF 2, 8 others x 1.
+    const offered: Record<string, number> = {};
+    for (const s of SYMS) offered[STOCK_SECTOR[s]] = (offered[STOCK_SECTOR[s]] ?? 0) + 1;
+    const ceiling = Object.entries(offered).reduce((n, [sec, k]) => n + Math.min(k, sectorMaxNames(sec, 7)), 0);
+    expect(ceiling).toBe(15);
+    expect(buy.length).toBe(ceiling);
     expect(buy.length).toBeGreaterThan(12); // the old hardcoded cut would have stopped here
   });
 
@@ -683,29 +691,30 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
       const sec = STOCK_SECTOR[s.symbol] ?? "?";
       perSector[sec] = (perSector[sec] ?? 0) + 1;
     }
-    expect(Math.max(...Object.values(perSector))).toBe(2);
+    for (const [sec, k] of Object.entries(perSector)) expect(k).toBeLessThanOrEqual(sectorMaxNames(sec, 7));
+    expect(perSector.XLE).toBe(1);   // Energy: 3.7% of the S&P -> 1 name, the case that motivated the rule
   });
 
   it("a held name below the buy-cutoff is NOT in the buy-allowlist", () => {
-    const { buy } = buildV1Shortlist(stocks, eligible, { held: new Set(["AAPL"]) });
-    expect(buy.map((s) => s.symbol)).not.toContain("AAPL"); // render-only → not buyable
+    const { buy } = buildV1Shortlist(stocks, eligible, { held: new Set(["CVX"]) });
+    expect(buy.map((s) => s.symbol)).not.toContain("CVX"); // render-only → not buyable
   });
 
   it("RETAINS a held name below the buy-cutoff (still positive momentum) as render-only", () => {
-    const { retained } = buildV1Shortlist(stocks, eligible, { held: new Set(["AAPL"]) });
-    expect(retained.map((s) => s.symbol)).toContain("AAPL"); // ◆HELD → retained, not churned
+    const { retained } = buildV1Shortlist(stocks, eligible, { held: new Set(["CVX"]) });
+    expect(retained.map((s) => s.symbol)).toContain("CVX"); // ◆HELD → retained, not churned
   });
 
   it("does NOT retain a held name whose momentum went negative (genuine decay → sell)", () => {
-    const decayed = stocks.map((s) => s.symbol === "AAPL" ? { ...s, mom12_1: -3 } : s);
-    const { buy, retained } = buildV1Shortlist(decayed, eligible, { held: new Set(["AAPL"]) });
-    expect([...buy, ...retained].map((s) => s.symbol)).not.toContain("AAPL"); // real decay: neither list
+    const decayed = stocks.map((s) => s.symbol === "CVX" ? { ...s, mom12_1: -3 } : s);
+    const { buy, retained } = buildV1Shortlist(decayed, eligible, { held: new Set(["CVX"]) });
+    expect([...buy, ...retained].map((s) => s.symbol)).not.toContain("CVX"); // real decay: neither list
   });
 
   it("marks retained holdings ◆HELD in the rendered table", () => {
-    const { buy, retained } = buildV1Shortlist(stocks, eligible, { held: new Set(["AAPL"]) });
-    const table = formatV1Shortlist([...buy, ...retained], {}, {}, {}, new Set(["AAPL"]));
-    expect(table).toMatch(/AAPL.*◆HELD/);
+    const { buy, retained } = buildV1Shortlist(stocks, eligible, { held: new Set(["CVX"]) });
+    const table = formatV1Shortlist([...buy, ...retained], {}, {}, {}, new Set(["CVX"]));
+    expect(table).toMatch(/CVX.*◆HELD/);
   });
 });
 

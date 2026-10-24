@@ -1,3 +1,4 @@
+import { SOFT_TRIM_PCT } from "./sector-cap";
 import { STOCK_SECTOR, SECTOR_ETFS } from "./market-data";
 import type { TradeRun } from "./run-store";
 
@@ -105,15 +106,23 @@ export function computeBetaBreakdown(run: TradeRun): BetaBucket[] {
   });
 }
 
-export const SECTOR_CAP_PCT = 40;
+// The SELL-side soft nudge. Defined once, in lib/sector-cap, beside the per-sector buy cap it must
+// never sit below.
+export const SECTOR_CAP_PCT = SOFT_TRIM_PCT;
 
-// Renders the current sector mix + a soft-cap nudge for the analysis prompt.
-export function formatSectorExposure(slices: SectorSlice[]): string {
+// Renders the current sector mix + a soft-cap nudge for the analysis prompt. This is the SELL-side
+// nudge, and the only one. As before 2026-10-23 it checks the LARGEST sector only — widening it to
+// every sector would add new sell pressure, which a buy-side-only change must not. The one change:
+// the trade route passes lib/sector-cap sectorSoftTrimPct, which keeps 40% for every sector except
+// where the 3x-S&P BUY budget is higher (Technology). Approximate, not exact: this % is of INVESTED
+// value while the buy budget is of the whole book incl. cash (see sectorSoftTrimPct). Default: 40%.
+export function formatSectorExposure(slices: SectorSlice[], softCapPctOf: (etf: string) => number = () => SECTOR_CAP_PCT): string {
   if (slices.length === 0) return "";
   const lines = slices.map((s) => `  • ${s.name}: ${s.pct.toFixed(0)}%`).join("\n");
   const top = slices[0];
-  const over = top && top.pct > SECTOR_CAP_PCT
-    ? `\n⚠ You are ${top.pct.toFixed(0)}% in ${top.name} — OVER the ${SECTOR_CAP_PCT}% soft cap. Lean toward trimming it and redeploying into an underweight sector, unless you explicitly justify keeping the concentration.`
+  const line = top ? softCapPctOf(top.etf) : SECTOR_CAP_PCT;
+  const over = top && top.pct > line
+    ? `\n⚠ You are ${top.pct.toFixed(0)}% in ${top.name} — OVER the ${line.toFixed(0)}% soft cap. Lean toward trimming it and redeploying into an underweight sector, unless you explicitly justify keeping the concentration.`
     : "";
   return `\nSECTOR EXPOSURE (current holdings, by value):\n${lines}${over}\n`;
 }

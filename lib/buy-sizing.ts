@@ -187,8 +187,9 @@ export interface SectorBudgetOpts {
   sectorOf: (symbol: string) => string | null;
   /** Denominator for the cap — the whole book, cash included. */
   totalValue: number;
-  /** Fraction, e.g. 0.40. */
-  capPct: number;
+  /** Cap for one sector as a FRACTION of totalValue (lib/sector-cap: 3x its S&P weight). Per
+   *  sector since 2026-10-23; was a single flat 0.40. */
+  capPctOf: (sector: string) => number;
   minBuy?: number;
 }
 
@@ -198,11 +199,10 @@ export function applySectorBudget<T extends { symbol: string; dollarAmount: numb
 ): { buys: T[]; notes: string[] } {
   const notes: string[] = [];
   const minBuy = opts.minBuy ?? MIN_BUY_DOLLARS;
-  const budget = opts.totalValue * opts.capPct;
   // Mutable running total so two buys in the SAME sector in one decision cannot each pass against
   // the same headroom — the classic way a per-item check lets a batch through.
   const running = new Map(opts.heldValueBySector);
-  if (!(budget > 0)) {
+  if (!(opts.totalValue > 0)) {
     // No usable denominator means no budget can be established. WITHHOLD rather than wave the
     // batch through: an unestablished limit is not an absent one.
     return {
@@ -215,13 +215,22 @@ export function applySectorBudget<T extends { symbol: string; dollarAmount: numb
     if (sector == null) {
       // Same direction as the earnings gate: a name whose sector we cannot establish cannot be
       // budgeted, and dropping the CHECK rather than the BUY is the fail-open branch.
-      notes.push(`${b.symbol} buy DROPPED — could NOT establish its sector, so it cannot be counted against the ${(opts.capPct * 100).toFixed(0)}% sector budget. This says our sector data is missing, NOT that ${b.symbol} is over-concentrated.`);
+      notes.push(`${b.symbol} buy DROPPED — could NOT establish its sector, so it cannot be counted against a sector budget. This says our sector data is missing, NOT that ${b.symbol} is over-concentrated.`);
       return [];
     }
+    const capPct = opts.capPctOf(sector);
+    if (!(Number.isFinite(capPct) && capPct > 0)) {
+      // A per-sector cap that is NaN/Infinity/<=0 is not a budget. Infinity would wave every buy
+      // through and NaN would skip every comparison below — withhold, the same as an unreadable total.
+      notes.push(`${b.symbol} buy DROPPED — could NOT establish the sector budget for ${sector} (cap ${String(capPct)}). Withheld rather than buying against an unknown limit.`);
+      return [];
+    }
+    const budget = opts.totalValue * capPct;
+    const capLabel = `${(capPct * 100).toFixed(0)}%`;
     const held = running.get(sector) ?? 0;
     const room = budget - held;
     if (room <= 0) {
-      notes.push(`${b.symbol} buy DROPPED — ${sector} is already $${held.toFixed(0)} of a $${budget.toFixed(0)} budget (${(held / opts.totalValue * 100).toFixed(1)}% vs a ${(opts.capPct * 100).toFixed(0)}% cap), counting BOTH sleeves. No new money into this sector until it falls back under.`);
+      notes.push(`${b.symbol} buy DROPPED — ${sector} is already $${held.toFixed(0)} of a $${budget.toFixed(0)} budget (${(held / opts.totalValue * 100).toFixed(1)}% vs its ${capLabel} cap), counting BOTH sleeves. No new money into this sector until it falls back under.`);
       return [];
     }
     if (b.dollarAmount <= room) {
@@ -232,7 +241,7 @@ export function applySectorBudget<T extends { symbol: string; dollarAmount: numb
       notes.push(`${b.symbol} buy DROPPED — only $${room.toFixed(0)} of ${sector} budget remains, below the $${minBuy} minimum buy.`);
       return [];
     }
-    notes.push(`${b.symbol} buy trimmed $${b.dollarAmount.toFixed(0)}→$${room.toFixed(0)} — would take ${sector} past its ${(opts.capPct * 100).toFixed(0)}% budget, counting BOTH sleeves.`);
+    notes.push(`${b.symbol} buy trimmed $${b.dollarAmount.toFixed(0)}→$${room.toFixed(0)} — would take ${sector} past its ${capLabel} budget, counting BOTH sleeves.`);
     running.set(sector, held + room);
     return [{ ...b, dollarAmount: Number(room.toFixed(2)) }];
   });
