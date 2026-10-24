@@ -204,6 +204,10 @@ const VARIANTS: StrategyVariant[] = [
     const w = indexWeights(d.date);
     return limited(LIVE_PROXY.pick(d, LIVE_PROXY.config), s => Math.max(1, Math.floor(3 * (w.get(s) ?? 0) * N + 1e-9)));
   }, 4),
+  mk("3x-spy-max3", "≤ 3× S&P weight, max 3 names/sector (Tech 60%)", (d) => {
+    const w = indexWeights(d.date);
+    return limited(LIVE_PROXY.pick(d, LIVE_PROXY.config), s => Math.min(3, Math.max(1, Math.floor(3 * (w.get(s) ?? 0) * N + 1e-9))));
+  }, 3),
   mk("spy-matched", "slots ∝ S&P sector weight", (d) => matched(LIVE_PROXY.pick(d, LIVE_PROXY.config), indexWeights(d.date)), 4),
 ];
 

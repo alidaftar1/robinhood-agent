@@ -375,7 +375,7 @@ export function buildV1Shortlist(
   // DERIVED, not a literal: the list can never hold more than maxPerSector × (number of sectors),
   // so this is the exact saturation point and raising it further changes nothing. Deriving it also
   // keeps that true if N changes — at N=8 the ceiling is 33, and a hardcoded 22 would silently
-  // re-truncate. (Since the 3x-S&P cap, 2026-10-23, this sums the per-sector limits: 4+2+2+8x1 = 16 at N=7, down
+  // re-truncate. (Since the 3x-S&P cap, 2026-10-23, this sums the per-sector limits: 3+2+2+8x1 = 15 at N=7, down
   // from 22 under the flat 2/sector — fewer candidates, by design, in the small sectors.)
   const size = opts.shortlistSize ?? Object.keys(SECTOR_ETFS).reduce((n, sec) => n + maxPerSector(sec), 0);
   const held = opts.held ?? new Set<string>();

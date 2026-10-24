@@ -102,15 +102,26 @@ describe("the sector budget counts both sleeves and refuses safely", () => {
 // the invested part) with APA, TRGP and a VLO buy the flat 40% cap trimmed but allowed.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("each sector is capped at 3x its S&P weight, in names and in dollars", () => {
-  test("at 7 names: Tech 4, Financials/Health Care 2, everything else 1; unknown is strictest", () => {
-    expect(sectorMaxNames("XLK", 7)).toBe(4);   // 3 x 37.6% x 7 = 7.9 -> the 4-name bound
+  test("at 7 names: Tech 3, Financials/Health Care 2, everything else 1; unknown is strictest", () => {
+    expect(sectorMaxNames("XLK", 7)).toBe(3);   // 3 x 37.6% x 7 = 7.9 -> the 3-name bound (lowered from 4, 2026-10-24)
     expect(sectorMaxNames("XLF", 7)).toBe(2);
     expect(sectorMaxNames("XLV", 7)).toBe(2);
     expect(sectorMaxNames("XLE", 7)).toBe(1);   // 3 x 3.7% x 7 = 0.8 -> min 1
     expect(sectorMaxNames("XLU", 7)).toBe(1);
     expect(sectorMaxNames("?", 7)).toBe(1);     // missing from the table: never uncapped
     expect(sectorBudgetFraction("XLE", 7)).toBeCloseTo(0.2);   // 1 name = 1 full position
-    expect(sectorBudgetFraction("XLK", 7)).toBeCloseTo(0.8);
+    expect(sectorBudgetFraction("XLK", 7)).toBeCloseTo(0.6);
+  });
+
+  test("Tech's budget is 60%, not the first rule's 80%: a buy that would take Tech past 60% is trimmed", () => {
+    // $1,300 Tech held of $2,364.51 = 55%; the 60% budget is $1,418.71, so a $300 buy fits only $118.
+    const r = applySectorBudget([buy("NVDA", 300)], {
+      heldValueBySector: new Map([["XLK", 1300]]), sectorOf: () => "XLK",
+      totalValue: 2364.51, capPctOf: (sec) => sectorBudgetFraction(sec, 7),
+    });
+    expect(r.buys.length).toBe(1);
+    expect(r.buys[0].dollarAmount).toBeLessThan(120);
+    expect(r.buys[0].dollarAmount).toBeGreaterThan(117);
   });
 
   test("every sector code the stock map uses has a weight — none silently falls to the 1-name minimum", () => {
@@ -160,7 +171,7 @@ describe("each sector is capped at 3x its S&P weight, in names and in dollars", 
 
   test("the budget does NOT loosen on a small account (no $400-floor inheritance)", () => {
     // At $1,600 maxPositionDollars hits its $400 floor (25%); the sector budget must stay 20%/name.
-    expect(sectorBudgetFraction("XLK", 7)).toBeCloseTo(0.8);
+    expect(sectorBudgetFraction("XLK", 7)).toBeCloseTo(0.6);
     expect(sectorBudgetFraction("XLE", 7)).toBeCloseTo(0.2);
   });
 
@@ -190,13 +201,15 @@ describe("each sector is capped at 3x its S&P weight, in names and in dollars", 
   test("the SELL nudge stays 40% everywhere except where the buy budget is higher (Tech)", () => {
     expect(sectorSoftTrimPct("XLE", 7)).toBe(40);   // never LOWERED by the tighter buy cap
     expect(sectorSoftTrimPct("XLV", 7)).toBe(40);
-    expect(sectorSoftTrimPct("XLK", 7)).toBeCloseTo(80);
+    expect(sectorSoftTrimPct("XLK", 7)).toBeCloseTo(60);
     const slices = [
       { etf: "XLK", name: "Technology", value: 500, pct: 50 },
       { etf: "XLE", name: "Energy", value: 440, pct: 44 },
     ];
     const out = formatSectorExposure(slices, (etf) => sectorSoftTrimPct(etf, 7));
-    expect(out).not.toContain("OVER");   // Tech is the largest and within its 80% buy budget
+    expect(out).not.toContain("OVER");   // Tech is the largest and within its 60% buy budget
+    expect(formatSectorExposure([{ etf: "XLK", name: "Technology", value: 650, pct: 65 }], (etf) => sectorSoftTrimPct(etf, 7)))
+      .toContain("OVER");                 // ...and past 60% it IS nudged (was silent up to 80%)
     // Largest-sector-only, as before: a non-largest sector over 40% gets NO new nudge.
     // Energy as the LARGEST sector keeps the unchanged 40% line.
     const energyTop = formatSectorExposure([{ etf: "XLE", name: "Energy", value: 440, pct: 44 }, { etf: "XLV", name: "Health Care", value: 300, pct: 30 }],
@@ -217,6 +230,6 @@ describe("each sector is capped at 3x its S&P weight, in names and in dollars", 
   });
 
   test("the prompt line is generated from the rule", () => {
-    expect(sectorCapSummary(7)).toBe("Technology ≤4 names (4 full positions); Financials, Health Care ≤2 names (2 full positions); every other sector ≤1 name (1 full position)");
+    expect(sectorCapSummary(7)).toBe("Technology ≤3 names (3 full positions); Financials, Health Care ≤2 names (2 full positions); every other sector ≤1 name (1 full position)");
   });
 });

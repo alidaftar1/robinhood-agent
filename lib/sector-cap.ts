@@ -3,7 +3,7 @@
 // (lib/strategy) all need it, and the two gates must read ONE rule or they will disagree.
 
 /**
- * MAIN-BOOK SECTOR CAP: a sector may hold at most 3x its S&P 500 weight (min 1 name, max 4).
+ * MAIN-BOOK SECTOR CAP: a sector may hold at most 3x its S&P 500 weight (min 1 name, max 3).
  *
  * Replaced the flat 40% cap on 2026-10-23 (owner decision), from
  * `bun scripts/sector-cap-backtest.ts` — 1999-2026, 6 names, historical sectors for every variant,
@@ -24,14 +24,25 @@
  *
  * At 6 names 3x-SPY beat the flat cap in both halves; at 7 it LOSES 1999-2012 and its whole edge is
  * the tech-led 2013-2026 half, with a ~6pp deeper drawdown. The owner chose it on 2026-10-23 knowing
- * that: it is, in effect, a bet that a tech-heavy book keeps paying. If tech leadership ends, this
- * rule concentrates the book in the wrong place — revisit then. Further limits of the evidence: few
+ * that: it is, in effect, a bet that a tech-heavy book keeps paying.
+ *
+ * TECH LOWERED TO 3 NAMES (60%) on 2026-10-24 (owner decision: 80% in one sector was too much), from
+ * `--n 7 --only count-2,3x-spy,3x-spy-max3` — the 4th Tech name bought ~0.65pp/yr for ~6pp of drawdown:
+ *
+ *      rule              CAGR   Sharpe    IR   maxDD   yrs>SPY   1999-2012 vs SPY   2013-2026 vs SPY
+ *      flat (2/sector)  +9.01%   0.45   0.13  -77.3%   18/28       -2.54%             +3.68%
+ *      3x SPY, max 4   +12.08%   0.52   0.26  -83.5%   17/28       -3.98%            +12.38%
+ *      3x SPY, max 3   +11.43%   0.52   0.23  -77.5%   17/28       -2.89%             +9.51%   <- live
+ *
+ * (The backtest's max 3 binds every sector; at today's weights only Tech reaches it, historically
+ * Financials did too around 2006.) Still a tech-tilted bet, just a smaller one: if tech leadership
+ * ends, this rule concentrates the book in the wrong place — revisit then. Further limits of the evidence: few
  * rules on one 28-year path (the best is partly luck); no LLM layer; and the strategy lost to SPY in
  * 1999-2012 under EVERY rule, so the sector rule is not the strategy's main risk.
  *
  * WHAT IT DOES TO THE BOOK: big sectors loosen, everything else tightens. At 7 names, Technology may
- * hold 4 names; Financials and Health Care 2; every other sector 1. In DOLLARS a sector gets that
- * many full positions (FULL_POSITION_FRACTION, 20% of the book): 80% / 40% / 20%. So a
+ * hold 3 names; Financials and Health Care 2; every other sector 1. In DOLLARS a sector gets that
+ * many full positions (FULL_POSITION_FRACTION, 20% of the book): 60% / 40% / 20%. So a
  * sector the market barely holds (Energy, 3.7%) can no longer become 40% of this one.
  *
  * The backtest is equal-weight by name; live adds the dollar budget (one name = one full position),
@@ -61,9 +72,9 @@ export const SPY_SECTOR_WEIGHTS: Readonly<Record<string, number>> = Object.freez
 });
 
 export const SECTOR_CAP_MULTIPLE = 3;
-/** The tested rule ran under the backtest's hard 4-names-per-sector bound; kept, so the live rule
- *  is the one that was measured rather than a looser one (Tech at 3x would otherwise be ~113%). */
-export const SECTOR_MAX_NAMES = 4;
+/** Hard per-sector bound on top of the 3x rule (Tech at 3x alone would be ~113%). 3, not the first
+ *  rule's 4: lowered 2026-10-24 by the owner and re-backtested at that value (header table). */
+export const SECTOR_MAX_NAMES = 3;
 
 /** Most names a sector may hold in an N-name book. A sector missing from the table (or `?`) gets
  *  the minimum, 1 — the strictest reading, never an uncapped one. */
@@ -92,7 +103,7 @@ export function sectorBudgetFraction(sector: string, n: number): number {
 export const SOFT_TRIM_PCT = 40;
 
 /** SELL-side soft-nudge threshold for a sector: the long-standing 40%, raised to the sector's buy
- *  budget where that is higher (only Technology today), so the nudge does not sit far below what the
+ *  budget where that is higher (only Technology today, 60%), so the nudge does not sit far below what the
  *  buy gate allows. NOT an exact match: the nudge is a share of INVESTED value, the budget a share of
  *  the WHOLE book incl. cash (the same pre-existing base mismatch the flat 40% had), so with cash on
  *  hand the two can still disagree by the cash share. Never LOWERED: tightening the buy cap does not
