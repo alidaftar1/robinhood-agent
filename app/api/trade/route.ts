@@ -611,7 +611,7 @@ export async function GET(request: Request) {
     // shortlist is too small to form a book, DO NOT trade — a data glitch must NEVER drive a mass
     // rotation/liquidation. Skip the run, leaving the existing book (and its −5% stops) untouched.
     const UNIVERSE_FLOOR = 350;   // normal ~432
-    const SHORTLIST_FLOOR = 4;    // absolute floor; normal is ≤16 at N=7 under the 3x-S&P sector cap (derived), so this trips on a ~75% collapse
+    const SHORTLIST_FLOOR = 4;    // absolute floor; normal is ≤15 at N=7 under the 3x-S&P sector cap (derived), so this trips on a ~75% collapse
     // Count the BUY candidates only — retained ◆HELD names must not pad this floor (they could
     // mask a collapsed opportunity set and let the run trade on degenerate data).
     if (marketData.stocks.length < UNIVERSE_FLOOR || v1Buy.length < SHORTLIST_FLOOR) {

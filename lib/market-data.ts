@@ -367,7 +367,7 @@ export function buildV1Shortlist(
   const N = opts.N ?? TARGET_MAIN_POSITIONS;
   // SECTOR RISK — per sector, ≤3x its S&P weight in names (lib/sector-cap; replaced the flat
   // floor(0.4 x N) = 2/sector on 2026-10-23). Pinned to the TARGET POSITION COUNT, not the list
-  // size, and shared with the buy-time dollar budget so the two cannot disagree. At N=7: Tech 4,
+  // size, and shared with the buy-time dollar budget so the two cannot disagree. At N=7: Tech 3,
   // Financials/Health Care 2, every other sector 1.
   const maxPerSector = (sec: string) => sectorMaxNames(sec, N);
   // CHOICE SET — widened from a hardcoded 12 (2026-09-18). The model could previously pick ~6 names

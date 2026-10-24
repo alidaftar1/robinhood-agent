@@ -645,8 +645,8 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
   // assertion here passed for the wrong reason at ANY shortlistSize. These tests also no longer
   // pin shortlistSize, so they exercise the PRODUCTION default (derived, not a literal).
   //
-  // Two names per sector across all 11 sectors, plus AAPL as a third XLK name. Since 2026-10-23 the
-  // cap is per sector (lib/sector-cap, 3x S&P weight): at N=7 Tech takes 4, Financials/Health Care
+  // Two names per sector across all 11 sectors, plus AAPL and ORCL as a third and fourth XLK name. Since 2026-10-23 the
+  // cap is per sector (lib/sector-cap, 3x S&P weight): at N=7 Tech takes 3, Financials/Health Care
   // 2, every other sector 1. So CVX — the SECOND Energy name, positive momentum, below XOM — is
   // what the SECTOR CAP (not the list length) pushes out of `buy`. Holding it is the anti-churn
   // case: still positive momentum, must be RETAINED.
@@ -662,7 +662,8 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
     "AMT", "PLD",     // XLRE
     "NEE", "SO",      // XLU
     "GOOGL", "META",  // XLC
-    "AAPL",           // XLK #3 — fits Tech's 4-name cap
+    "AAPL",           // XLK #3 — fills Tech's 3-name cap
+    "ORCL",           // XLK #4 — over the cap: must NOT reach the buy list
   ];
   const mk = (syms: string[], mom: (i: number) => number) =>
     syms.map((symbol, i) => ({
@@ -670,12 +671,12 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
       beta: 1, change1d: 0, change5d: 0, change14d: 0, change30d: 0, distFrom52wHigh: 0,
       volatility30d: 0.2, sharpe5d: 0, sharpe14d: 0, relStrength1d: 0, earningsDate: null,
     })) as unknown as import("@/lib/market-data").StockData[];
-  const stocks = mk(SYMS, (i) => 100 - i * 2);   // descending; AAPL lowest, all positive
+  const stocks = mk(SYMS, (i) => 100 - i * 2);   // descending; ORCL lowest, all positive
   const eligible = new Set(SYMS);
 
   it("the default shortlist is the full sector ceiling, not a truncated 12", () => {
     const { buy } = buildV1Shortlist(stocks, eligible, { held: new Set() });
-    // Every sector filled to min(its cap, names offered): XLK 3 (cap 4), XLV 2, XLF 2, 8 others x 1.
+    // Every sector filled to min(its cap, names offered): XLK 3 (cap 3), XLV 2, XLF 2, 8 others x 1.
     const offered: Record<string, number> = {};
     for (const s of SYMS) offered[STOCK_SECTOR[s]] = (offered[STOCK_SECTOR[s]] ?? 0) + 1;
     const ceiling = Object.entries(offered).reduce((n, [sec, k]) => n + Math.min(k, sectorMaxNames(sec, 7)), 0);
@@ -693,6 +694,8 @@ describe("hysteresis: buildV1Shortlist retention band for held names", () => {
     }
     for (const [sec, k] of Object.entries(perSector)) expect(k).toBeLessThanOrEqual(sectorMaxNames(sec, 7));
     expect(perSector.XLE).toBe(1);   // Energy: 3.7% of the S&P -> 1 name, the case that motivated the rule
+    expect(perSector.XLK).toBe(3);   // Tech: 4 offered, capped at 3 since 2026-10-24
+    expect(buy.map(s => s.symbol)).not.toContain("ORCL");
   });
 
   it("a held name below the buy-cutoff is NOT in the buy-allowlist", () => {

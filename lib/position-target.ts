@@ -35,5 +35,5 @@
  *  position count moves it 22pp monotonically. Concentration is where this book's risk lives.
  *
  *  The sector cap is DERIVED from N: since 2026-10-23 it is ≤3x the sector's S&P weight in names
- *  (lib/sector-cap — at N=7: Tech 4, Financials/Health Care 2, others 1); before, floor(0.4 x N). */
+ *  (lib/sector-cap — at N=7: Tech 3, Financials/Health Care 2, others 1); before, floor(0.4 x N). */
 export const TARGET_MAIN_POSITIONS = 7;
