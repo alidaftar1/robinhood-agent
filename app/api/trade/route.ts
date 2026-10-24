@@ -405,7 +405,7 @@ export async function GET(request: Request) {
       // BuysToBudget below runs on the raw buyingPower and applies the same broker buffer, so the two
       // stay in sync.
       portfolioCtx = {
-        buyingPower: `$${usableNotionalBudget(agenticBalance.buyingPower).toFixed(2)} (settled, buffer-reserved spend limit)`,
+        buyingPower: `$${usableNotionalBudget(agenticBalance.spendable).toFixed(2)} (spendable without borrowing, buffer-reserved spend limit)`,
         totalValue: `$${agenticBalance.totalValue.toFixed(2)} (live from Robinhood)`,
         positions: positions.map(p => ({
           symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost,
@@ -429,7 +429,7 @@ export async function GET(request: Request) {
       // The USABLE figure, matching what the prompt budgets against and what fitNotionalBuysToBudget
       // will actually spend — opening the window on a raw number the buffer then eats would offer a
       // buy that cannot be placed.
-      settledCash: agenticBalance ? usableNotionalBudget(agenticBalance.buyingPower) : null,
+      settledCash: agenticBalance ? usableNotionalBudget(agenticBalance.spendable) : null,
       // Regime only — no same-day selloff floor. See mainBuysOpen: measured against SPY 1997-2026,
       // a down day INSIDE an uptrend paid more than an up day at every horizon, so a floor blocked
       // the better days. Name-level falling-knife risk is handled by the drop-check bar and the
@@ -1378,9 +1378,10 @@ export async function GET(request: Request) {
     // (sells today settle T+1 → they don't fund today's buys; size against real BP). Notional has
     // no indivisible whole-share to strand — cash deploys down to the last ~$50, nothing idle.
     if (decision.buys.length > 0 && agenticBalance) {
-      const { sized, adjustments } = fitNotionalBuysToBudget(decision.buys, agenticBalance.buyingPower);
+      // `spendable`, not `buyingPower`: the never-borrow limit (lib/robinhood-balance).
+      const { sized, adjustments } = fitNotionalBuysToBudget(decision.buys, agenticBalance.spendable);
       if (adjustments.length > 0) {
-        console.log("BUY_SIZING_ADJUSTED", { settledBuyingPower: agenticBalance.buyingPower, adjustments });
+        console.log("BUY_SIZING_ADJUSTED", { spendable: agenticBalance.spendable, adjustments });
         buySizingAdjustments.push(...adjustments); // append — don't clobber the cap-guard notes above
       }
       decision.buys = sized;
@@ -1846,6 +1847,10 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
 
     let positions: PositionSnapshot[];
     let cashAfter: number;
+    // Did cashAfter come from the LIVE post-trade balance? Only then is a measured unsettled the
+    // complement of it. The reconstruction branch below starts from the PRE-trade balance, which
+    // lacks this run's sell proceeds — there a measured ~0 would drop them from totalValue.
+    let cashFromLiveAfter = false;
 
     if (liveBalanceAfter !== null && livePositionsAfter !== null) {
       // Fill in a live MARKET price for any held symbol the priceMap doesn't already carry
@@ -1861,6 +1866,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
         price: String(priceMap.get(p.symbol) ?? parseFloat(p.avgCost)),
       }));
       cashAfter = liveBalanceAfter.buyingPower;
+      cashFromLiveAfter = true;
 
       // Infer sells that executed on Robinhood but weren't recorded (e.g. sell session
       // timed out after orders were already placed). Compare pre-trade vs post-trade positions.
@@ -1976,9 +1982,16 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       // path. A sell stored at avgPrice "0" would understate unsettledAfter and totalValue by the
       // full proceeds, which becomes tomorrow's baseline and reads as a phantom deposit.
       .reduce((s, t) => s + (parseFloat(t.quantity) || 0) * (parseFloat(t.avgPrice) || priceMap.get(t.symbol) || 0), 0);
-    const unsettledAfter = (liveBalanceAfter?.unsettled ?? 0) > 0
+    // A MEASURED live unsettled — including a measured 0 — is the answer. On limited margin
+    // (2026-10-24) sell proceeds are already inside cashAfter and unsettled is genuinely 0; adding
+    // sellProceeds on top double-counted them into totalValue, and the next run read the excess
+    // back out as a phantom withdrawal. The estimate is for when the live cash was NOT read.
+    const unsettledMeasured = cashFromLiveAfter && liveBalanceAfter?.cashKnown === true;
+    const unsettledAfter = unsettledMeasured
       ? liveBalanceAfter!.unsettled
-      : (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0);
+      : (liveBalanceAfter?.unsettled ?? 0) > 0
+        ? liveBalanceAfter!.unsettled
+        : (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0);
 
     const equityAfter = positions.reduce((s, p) => s + parseFloat(p.quantity) * parseFloat(p.price), 0);
     const portfolioAfter = {
@@ -1986,6 +1999,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       cash: cashAfter.toFixed(2),
       equity: equityAfter.toFixed(2),
       unsettledCash: unsettledAfter.toFixed(2),
+      ...(unsettledMeasured ? { unsettledMeasured: true } : {}),
     };
     console.log("SNAPSHOT_BUILT", { cash: cashAfter, unsettled: unsettledAfter, positions: positions.length, trades: trades.length });
 

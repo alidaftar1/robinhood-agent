@@ -481,6 +481,13 @@ export function computeT1Settling(run: TradeRun): { amount: number; pct: number 
   // dashboard passes the latest-by-timestamp run. Use stored directly; only fall back to
   // summing today's recorded sells for old runs that predate live-unsettled capture.
   // (The sell-sum is less accurate — it uses recorded/placeholder prices.)
+  // A MEASURED stored value is authoritative even at 0 (limited margin, 2026-10-24: proceeds are
+  // spendable at once, so 0 is real). Only an unmeasured 0 falls back to the sell-sum.
+  if (run.portfolioAfter?.unsettledMeasured && isFinite(stored)) {
+    if (stored <= 0) return null;
+    const t = parseFloat(run.portfolioAfter?.totalValue ?? "") || 0;
+    return { amount: stored, pct: t > 0 ? (stored / t) * 100 : 0 };
+  }
   const hasStored = isFinite(stored) && stored > 0;
   const amount = hasStored ? stored : sold;
   if (!isFinite(amount) || amount <= 0) return null;

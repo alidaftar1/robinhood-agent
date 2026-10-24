@@ -89,6 +89,10 @@ export interface TradeRun {
     cash: string;
     equity: string;
     unsettledCash?: string; // unsettled sell proceeds (T+1) — captured from 2026-06-21
+    /** true when unsettledCash was READ from the live broker balance alongside cash (2026-10-24).
+     *  On limited margin a measured "0.00" is real; without this flag readers treat 0 as "not
+     *  captured" and re-add the day's sells. Absent on older runs. */
+    unsettledMeasured?: boolean;
   } | null;
   positions: PositionSnapshot[];
   market: {

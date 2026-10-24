@@ -1,3 +1,4 @@
+import { spendableFromPortfolio } from "@/lib/robinhood-balance";
 import { requireCronAuth } from "@/lib/auth";
 import { recordSell } from "@/lib/stopouts";
 import Anthropic from "@anthropic-ai/sdk";
@@ -126,7 +127,9 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
   // Cash discrepancy
   let cashDiff: number | null = null;
   if (liveBalance && cashRun?.portfolioAfter) {
-    const liveCash = parseFloat(liveBalance.buyingPower);
+    // Same normalisation the snapshot writer uses (lib/robinhood-balance): min(buying_power, cash),
+    // so margin capacity in buying_power can never read as a cash mismatch.
+    const liveCash = spendableFromPortfolio(liveBalance)?.buyingPower ?? parseFloat(liveBalance.buyingPower);
     const storedCash = parseFloat(cashRun.portfolioAfter.cash);
     cashDiff = liveCash - storedCash;
     if (Math.abs(cashDiff) > 10) {

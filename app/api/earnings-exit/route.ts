@@ -84,7 +84,7 @@ export async function GET(request: Request) {
       .map((p) => ({ symbol: p.symbol, quantity: p.quantity }))
       .filter((s) => (parseFloat(s.quantity) || 0) > 0);
 
-    let portfolioAfter: { totalValue: string; cash: string; equity: string; unsettledCash?: string } | null = null;
+    let portfolioAfter: { totalValue: string; cash: string; equity: string; unsettledCash?: string; unsettledMeasured?: boolean } | null = null;
     let positions: PositionSnapshot[] = [];
     const trades: TradeSnapshot[] = [];
 
@@ -191,7 +191,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     const sellProceeds = trades.filter((t) => t.side === "sell").reduce((s, t) => s + parseFloat(t.quantity) * parseFloat(t.avgPrice), 0);
     const live = await fetchAgenticBalance(anthropic, accessToken);
     if (live) {
-      portfolioAfter = { totalValue: (live.buyingPower + live.unsettled + equity).toFixed(2), cash: live.buyingPower.toFixed(2), equity: equity.toFixed(2), unsettledCash: live.unsettled.toFixed(2) };
+      portfolioAfter = { totalValue: (live.buyingPower + live.unsettled + equity).toFixed(2), cash: live.buyingPower.toFixed(2), equity: equity.toFixed(2), unsettledCash: live.unsettled.toFixed(2), ...(live.cashKnown ? { unsettledMeasured: true } : {}) };
     } else {
       const cash = parseFloat(previousRun?.portfolioAfter?.cash ?? "0");
       portfolioAfter = { totalValue: (cash + equity).toFixed(2), cash: cash.toFixed(2), equity: equity.toFixed(2), unsettledCash: (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0).toFixed(2) };

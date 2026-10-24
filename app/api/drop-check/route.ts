@@ -248,7 +248,7 @@ List only the names to HOLD on sympathy; every stop-loss not listed will be SOLD
       .map((e) => ({ symbol: e.position.symbol, quantity: e.position.quantity }))
       .filter((s) => (parseFloat(s.quantity) || 0) > 0);
 
-    let portfolioAfter: { totalValue: string; cash: string; equity: string; unsettledCash?: string } | null = null;
+    let portfolioAfter: { totalValue: string; cash: string; equity: string; unsettledCash?: string; unsettledMeasured?: boolean } | null = null;
     let positions: PositionSnapshot[] = [];
     const trades: TradeSnapshot[] = [];
 
@@ -514,6 +514,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
         cash: live.buyingPower.toFixed(2),
         equity: equity.toFixed(2),
         unsettledCash: live.unsettled.toFixed(2),
+        ...(live.cashKnown ? { unsettledMeasured: true } : {}),
       };
     } else {
       const cash = parseFloat(previousRun?.portfolioAfter?.cash ?? "0");
