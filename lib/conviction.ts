@@ -140,7 +140,7 @@ export function formatConviction(
 
   const statusOf = (sym: string): { tag: string; usable: boolean } => {
     const blockedOn = ctx.earningsBlocked?.get(sym) ?? ctx.earningsBlocked?.get(sym.toUpperCase());
-    if (blockedOn) return { tag: `reports earnings ${blockedOn} — NOT buyable this run (no buys within the imminent-earnings window)`, usable: false };
+    if (blockedOn) return { tag: `reports earnings ${blockedOn} — NOT buyable this run (no buys within the imminent-earnings window); if you hold it, that is not a signal to sell`, usable: false };
     if (hasSym(ctx.mainShortlist, sym)) {
       return ctx.isRebalanceDay
         // Honest about the one gate not modelled here: a name sold or stopped inside the cooldown
