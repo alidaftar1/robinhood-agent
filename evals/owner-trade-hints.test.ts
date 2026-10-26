@@ -28,9 +28,10 @@ describe("likely-owner-trade hint", () => {
 
 describe("wiring: the hint never touches discrepancies or status", () => {
   const verify = readFileSync(`${import.meta.dir}/../app/api/verify/route.ts`, "utf8");
-  const hintBlock = verify.slice(verify.indexOf("const ownerTradeHints"), verify.indexOf('const status = discrepancies.length === 0 ? "ok"'));
+  const hintBlock = verify.slice(verify.indexOf("const tradeRun = "), verify.indexOf('const status = discrepancies.length === 0 ? "ok"'));
   test("the hint block only reads — no discrepancy/uncaptured/positionIssue mutation", () => {
-    expect(hintBlock).toContain("likelyOwnerBuys(uncapturedOrders, cashRun, today)");
+    expect(hintBlock).toContain("likelyOwnerBuys(uncapturedOrders, tradeRun, today)");
+    expect(hintBlock).toContain('typeof r.mainBuysOpen === "boolean"');   // anchored to the TRADE run only
     expect(hintBlock).not.toMatch(/discrepancies\.(splice|push|pop|shift|length\s*=)|uncapturedOrders\s*=|positionIssues\.splice/);
   });
   test("the email and the reviewer both receive it", () => {
@@ -38,6 +39,11 @@ describe("wiring: the hint never touches discrepancies or status", () => {
     const review = readFileSync(`${import.meta.dir}/../lib/autopilot-review.ts`, "utf8");
     expect(autopilot).toContain("Probably your own trade:");
     expect(autopilot).toContain("ownerTradeHints: verifyResult.ownerTradeHints ?? []");
-    expect(review).toContain("LIKELY OWNER TRADES among them");
+    expect(review).toContain("POSSIBLE OWNER TRADES among them — UNCONFIRMED");
+    expect(review).toContain("STILL state that if the owner did not make them they are an unrecorded capture gap");
+  });
+  test("the order read has room for the longer line (truncation would silently disable capture)", () => {
+    const orders = verify.slice(verify.indexOf("LIVE_ORDERS:["), verify.indexOf("const liveOrders"));
+    expect(orders).toContain("2048, 30_000");
   });
 });

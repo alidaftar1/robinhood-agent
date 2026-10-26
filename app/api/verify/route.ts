@@ -85,7 +85,9 @@ Use instrument_symbol, quantity, average_buy_price. If none, output LIVE_POSITIO
 LIVE_ORDERS:[{"symbol":"XX","side":"buy|sell","quantity":"X.XX","avgPrice":"XX.XX","state":"filled|cancelled|pending","createdAt":"YYYY-MM-DD","createdAtTs":"<created_at exactly as returned>"}]
 Include only the 20 most recent orders. Use instrument_symbol, side, quantity, average_price, state fields. For createdAt, use the date portion of created_at (first 10 chars). For createdAtTs, copy the full created_at value unchanged. Output nothing else.`,
       `Fetch recent orders for account ${ACCOUNT}.`,
-      1024, 30_000
+      // 2048, not 1024: with createdAtTs, 20 orders run ~1,100-1,300 tokens. A truncated line fails
+      // JSON.parse → liveOrders null → NO uncaptured-order checks and NO capture, silently.
+      2048, 30_000
     ),
   ]);
 
@@ -351,7 +353,12 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
 
   // HINT ONLY (lib/run-store likelyOwnerBuys): which still-uncaptured buys look like the owner's own
   // trade. Changes no discrepancy and no status — read by the email and the reviewer as context.
-  const ownerTradeHints = likelyOwnerBuys(uncapturedOrders, cashRun, today).map(({ order: o, at }) =>
+  // Anchored to today's TRADE run — the only route that places buys (mainBuysOpen is written only by
+  // /api/trade). If that run did not save, there is no anchor and no hint: a drop-check run saved
+  // earlier would otherwise date the agent's own unrecorded buys as "after the run".
+  const tradeRun = [...runs].filter(r => r.date === today && typeof r.mainBuysOpen === "boolean")
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0] ?? null;
+  const ownerTradeHints = likelyOwnerBuys(uncapturedOrders, tradeRun, today).map(({ order: o, at }) =>
     `${o.side} ${o.symbol} ×${o.quantity} @$${o.avgPrice} was placed at ${at} ET, after today's run could place orders — most likely your own trade, which is recorded on the next run (the cash and ${o.symbol} share differences above would then be that trade). If you did not trade, it is a capture gap.`);
 
   const status = discrepancies.length === 0 ? "ok"
