@@ -362,7 +362,11 @@ export function buildV1Shortlist(
    *  reason to exit and which lib/strategy names as a valid sell trigger. So an unmeasurable name is
    *  kept out of BUY (it can never be bought on quality we don't have) while still being RETAINED if
    *  already held — unbuyable, but never a liquidation signal. */
-  opts: { N?: number; shortlistSize?: number; held?: Set<string>; qualityUnknown?: Set<string> } = {},
+  /** `skipForBuy` — names that cannot be bought today (lib/earnings-skip: a KNOWN earnings date
+   *  inside the imminent window). Skipped while filling the buy slots so they do not occupy a
+   *  sector's few places and hide the next eligible name. NEVER applied to a HELD name: a held name
+   *  missing from the shortlist reads as "fell off the shortlist", a sell reason. */
+  opts: { N?: number; shortlistSize?: number; held?: Set<string>; qualityUnknown?: Set<string>; skipForBuy?: Set<string> } = {},
 ): { buy: StockData[]; retained: StockData[] } {
   const N = opts.N ?? TARGET_MAIN_POSITIONS;
   // SECTOR RISK — per sector, ≤3x its S&P weight in names (lib/sector-cap; replaced the flat
@@ -379,6 +383,7 @@ export function buildV1Shortlist(
   // from 22 under the flat 2/sector — fewer candidates, by design, in the small sectors.)
   const size = opts.shortlistSize ?? Object.keys(SECTOR_ETFS).reduce((n, sec) => n + maxPerSector(sec), 0);
   const held = opts.held ?? new Set<string>();
+  const skip = opts.skipForBuy ?? new Set<string>();
   const ranked = stocks
     .filter((s) => typeof s.mom12_1 === "number" && (s.mom12_1 as number) > 0 && eligible.has(s.symbol))
     .sort((a, b) => (b.mom12_1 as number) - (a.mom12_1 as number));
@@ -386,6 +391,7 @@ export function buildV1Shortlist(
   const perSector: Record<string, number> = {};
   for (const s of ranked) {
     if (buy.length >= size) break;
+    if (skip.has(s.symbol) && !held.has(s.symbol)) continue;
     const sec = STOCK_SECTOR[s.symbol] ?? "?";
     if ((perSector[sec] ?? 0) >= maxPerSector(sec)) continue;
     buy.push(s);

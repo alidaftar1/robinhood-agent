@@ -27,7 +27,8 @@ import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
 import { getValuations, formatValuations } from "@/lib/valuation";
 import { formatConviction, convictionAuditNote, loadConvictionRun } from "@/lib/conviction";
-import { fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, screenImminentEarningsBuys, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
+import { shortlistAroundEarnings, emptyEarningsLookup, mergeEarningsLookups, recordEarningsSkipShadow } from "@/lib/earnings-skip";
+import { IMMINENT_EARNINGS_DAYS, fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, screenImminentEarningsBuys, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { inferSellStrategy } from "@/lib/run-store";
 import { fetchAgenticBalance, fetchAgenticPositions } from "@/lib/robinhood-balance";
@@ -523,7 +524,18 @@ export async function GET(request: Request) {
     // qualityUnknown keeps an unmeasurable name out of BUY without making a HELD one read as
     // "fell off the shortlist" — see buildV1Shortlist and lib/quality's `withheld`.
     const qualityUnknown = new Set(quality?.withheld ?? []);
-    const { buy: v1Buy, retained: v1Retained } = buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols, qualityUnknown });
+    // Names reporting within the imminent window are skipped while filling the sector slots, so they
+    // do not hide the next eligible name (lib/earnings-skip; held names are never skipped).
+    const shortlistEarn = await shortlistAroundEarnings(
+      (skip) => buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols, qualityUnknown, skipForBuy: skip }),
+      (syms) => fetchEarningsForSymbols(syms),
+      heldMainSymbols, today,
+    );
+    const { buy: v1Buy, retained: v1Retained } = shortlistEarn;
+    if (shortlistEarn.skipped.length) {
+      contextWarnings.push(`CONTEXT — not shortlisted today, earnings ≤${IMMINENT_EARNINGS_DAYS}d (unbuyable under the no-buy rule), so the next eligible name in each sector took the slot: ${shortlistEarn.skipped.map(k => `${k.symbol} (${k.earningsDate})`).join(", ")}. Logged to the earnings-skip shadow to measure whether the rule helps.`);
+      console.log("EARNINGS_SKIP", shortlistEarn.skipped);
+    }
     const v1ShortlistSet = new Set(v1Buy.map(s => s.symbol)); // buy-allowlist — retained names excluded on purpose
 
     // RELIABLE per-symbol earnings for the names that actually drive the ⚠⚠ judgment (shortlist +
@@ -535,10 +547,12 @@ export async function GET(request: Request) {
     // shortlist + held + influencer candidates. Influencer candidates were the blind spot: a fresh
     // post-earnings pop read as durable momentum (PLTR +28% 1d bought via the sleeve). Fail-safe.
     const earnSymbols = [...v1Buy.map(s => s.symbol), ...v1Retained.map(s => s.symbol), ...heldMainSymbols, ...influencerHeld, ...influencerCandidateSet];
-    const { upcoming: perSymbolEarnings, upcomingHour: perSymbolEarningsHour, recent: recentEarnings, lastReport: perSymbolLastReport, asked: earningsAsked } = await fetchEarningsForSymbols(earnSymbols)
+    // Names the shortlist pass already asked about are not asked twice; the two answers are merged.
+    const mainEarnings = await fetchEarningsForSymbols(earnSymbols.filter(s => !shortlistEarn.attempted.has(s)))
       // An empty `asked` on the failure path is the POINT: it means we established nothing, and the
       // imminent-earnings buy gate below withholds rather than buying blind.
-      .catch(() => ({ upcoming: new Map<string, string>(), upcomingHour: new Map<string, string | undefined>(), recent: new Map<string, RecentEarnings>(), lastReport: new Map<string, { date: string; hour?: string }>(), asked: new Set<string>() }));
+      .catch(() => emptyEarningsLookup());
+    const { upcoming: perSymbolEarnings, upcomingHour: perSymbolEarningsHour, recent: recentEarnings, lastReport: perSymbolLastReport, asked: earningsAsked } = mergeEarningsLookups(shortlistEarn.earnings, mainEarnings);
     for (const s of marketData.stocks) {
       const d = perSymbolEarnings.get(s.symbol);
       if (d && (!s.earningsDate || d < s.earningsDate)) s.earningsDate = d; // nearest upcoming wins
@@ -2155,6 +2169,18 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       console.log("GIVEBACK_SHADOW", { triggered: gbTrig.length, symbols: gbTrig.map(h => `${h.symbol}(${h.change5d.toFixed(1)}%)`), logged: gbRec.logged, skipped: gbRec.skipped ?? false });
     } catch (e) {
       console.warn("GIVEBACK_SHADOW_SKIP", e);
+    }
+
+    // EARNINGS-SKIP SHADOW (lib/earnings-skip): log the names the imminent-earnings rule kept off the
+    // shortlist, with today's price, so /api/earnings-skip-shadow can score whether skipping helped.
+    // Only on days main-book buys were OPEN — on a closed day the rule cost nothing. FAIL-SAFE.
+    if (buysOpen && shortlistEarn.skipped.length) {
+      try {
+        const esRec = await recordEarningsSkipShadow(shortlistEarn.skipped, today);
+        console.log("EARNINGS_SKIP_SHADOW", { logged: esRec.logged, skipped: esRec.skipped ?? false });
+      } catch (e) {
+        console.warn("EARNINGS_SKIP_SHADOW_SKIP", e);
+      }
     }
 
     // Compute transfer-adjusted daily return.
