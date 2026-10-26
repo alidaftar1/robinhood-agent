@@ -19,6 +19,8 @@ import { sendAlert } from "@/lib/alert";
 interface VerifyResult {
   status: string;
   discrepancies: string[];
+  /** Hint only: uncaptured buys that look like the owner's own post-run trades. */
+  ownerTradeHints?: string[];
   diff: {
     cashDiff: number | null;
     valueDiff: number | null;
@@ -532,6 +534,7 @@ export async function GET(request: Request) {
           valueDiff: verifyResult.diff?.valueDiff ?? null,
           positionIssues: (verifyResult.diff?.positionIssues ?? []).length,
           uncapturedOrders: (verifyResult.diff?.uncapturedOrders ?? []).length,
+          ownerTradeHints: verifyResult.ownerTradeHints ?? [],
         }
       : null;
     const review = await reviewRun(anthropic, todayRun, runs, verifyContext);
@@ -839,6 +842,7 @@ export async function GET(request: Request) {
     <strong>Live Robinhood verify: ${verifyResult.status.toUpperCase()}</strong>
     ${verifyResult.diff?.cashDiff != null ? `<p style="margin:6px 0 0;font-size:13px">Cash diff: ${verifyResult.diff.cashDiff >= 0 ? "+" : ""}$${verifyResult.diff.cashDiff.toFixed(2)} | Value diff: ${verifyResult.diff.valueDiff != null ? `${verifyResult.diff.valueDiff >= 0 ? "+" : ""}$${verifyResult.diff.valueDiff.toFixed(2)}` : "—"}</p>` : ""}
     ${verifyResult.status !== "ok" && verifyResult.discrepancies.length > 0 ? `<ul style="margin:8px 0 0;padding-left:20px;font-size:13px">${verifyResult.discrepancies.map(d => `<li>${d}</li>`).join("")}</ul>` : ""}
+    ${verifyResult.ownerTradeHints?.length ? `<p style="margin:8px 0 0;font-size:13px;color:#374151"><strong>Probably your own trade:</strong></p><ul style="margin:4px 0 0;padding-left:20px;font-size:13px;color:#374151">${verifyResult.ownerTradeHints.map(d => `<li>${d}</li>`).join("")}</ul>` : ""}
     <p style="margin:6px 0 0;font-size:11px;color:#6b7280">MCP: balance=${verifyResult.mcpAvailable?.balance} positions=${verifyResult.mcpAvailable?.positions} orders=${verifyResult.mcpAvailable?.orders}</p>
   </div>` : `<div style="background:#f3f4f6;border-left:4px solid #9ca3af;padding:12px 16px;margin-bottom:16px;border-radius:4px"><strong>Live verify:</strong> skipped — endpoint unavailable</div>`}
 

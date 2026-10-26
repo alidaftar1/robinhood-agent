@@ -186,6 +186,8 @@ export interface VerifyContext {
   valueDiff: number | null;
   positionIssues: number;
   uncapturedOrders: number;
+  /** Uncaptured buys that look like the owner's own post-run trades (verify ownerTradeHints). */
+  ownerTradeHints?: string[];
 }
 
 function formatVerify(v?: VerifyContext | null): string {
@@ -199,7 +201,7 @@ function formatVerify(v?: VerifyContext | null): string {
 - value diff: ${v.valueDiff == null ? "n/a" : `$${v.valueDiff.toFixed(2)}`} (intraday price drift — informational)
 - position issues: ${v.positionIssues}
 - uncaptured orders: ${v.uncapturedOrders}
-${reconciled
+${v.ownerTradeHints?.length ? `- LIKELY OWNER TRADES among them (placed after today's run could place orders; check whether they account for the cash/share differences before looking for another cause, and say so plainly — do not attribute them to an unrelated symbol):\n${v.ownerTradeHints.map(l => `    · ${l}`).join("\n")}\n` : ""}${reconciled
   ? "→ Stored cash, positions, holdings and totalValue composition are CONFIRMED CORRECT against live Robinhood. Do NOT raise cash-reconciliation, missing-position, or composition-mismatch concerns."
   : "→ Reconciliation flagged the discrepancies above; the deterministic layer already patches these — only corroborate, don't duplicate."}`;
 }

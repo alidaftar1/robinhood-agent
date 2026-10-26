@@ -1261,7 +1261,41 @@ export function buildInferredSells(
 /** A filled order as /api/verify reads it back from the broker. */
 export type LiveOrder = {
   symbol: string; side: string; quantity: string; avgPrice: string; state: string; createdAt?: string;
+  /** Full created_at timestamp, transcribed by an LLM — a HINT input only, never a gate. */
+  createdAtTs?: string;
 };
+
+/** A run cannot place an order later than its start + the function's hard maximum (5 min) + slack. */
+export const RUN_MAX_MS = 6 * 60_000;
+
+/**
+ * Uncaptured BUYS that LOOK like the owner's own trade: placed after today's latest run could have
+ * placed anything. A HINT for the email and the reviewer, nothing more — it removes no discrepancy
+ * and changes no status, because the timestamp is LLM-transcribed and the "latest run" may not be
+ * the run that placed the buys (a lost save). 2026-10-26: the owner's $150 MU buy at 10:51 ET read
+ * as an uncaptured order + a -$150 cash gap, and the reviewer hunted for the missing $150 elsewhere.
+ * An attempt to RELABEL such fills as non-discrepancies was dropped after two reviews showed it
+ * could hide the agent's own unrecorded buys.
+ */
+export function likelyOwnerBuys(
+  uncaptured: readonly LiveOrder[],
+  run: { timestamp: string; date: string } | null | undefined,
+  today: string,
+): Array<{ order: LiveOrder; at: string }> {
+  if (!run || run.date !== today) return [];
+  const runStart = Date.parse(run.timestamp);
+  if (!Number.isFinite(runStart)) return [];
+  const out: Array<{ order: LiveOrder; at: string }> = [];
+  for (const o of uncaptured) {
+    if (o.side !== "buy" || o.state !== "filled" || !o.createdAtTs) continue;
+    if (!/(Z|[+-]\d\d:?\d\d)$/.test(o.createdAtTs)) continue;
+    const t = Date.parse(o.createdAtTs);
+    if (!Number.isFinite(t) || t <= runStart + RUN_MAX_MS) continue;
+    if (o.createdAt && new Date(t).toISOString().slice(0, 10) !== o.createdAt) continue;
+    out.push({ order: o, at: new Date(t).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) });
+  }
+  return out;
+}
 
 /**
  * Filled broker orders from `today` that no stored trade accounts for.

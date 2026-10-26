@@ -4,7 +4,7 @@ import { recordSell } from "@/lib/stopouts";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { getRuns, mergeRunsByDate, planCapture, findUncapturedOrders, type LiveOrder, updateRunByDate, computeDailyReturn, computeSleeveReturns, sleeveReturnsForStorage } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate, planCapture, findUncapturedOrders, likelyOwnerBuys, type LiveOrder, updateRunByDate, computeDailyReturn, computeSleeveReturns, sleeveReturnsForStorage } from "@/lib/run-store";
 
 export const maxDuration = 90;
 
@@ -82,8 +82,8 @@ Use instrument_symbol, quantity, average_buy_price. If none, output LIVE_POSITIO
     haiku(
       anthropic, accessToken,
       `Call get_equity_orders for account ${ACCOUNT} to get the most recent orders. Output exactly one line:
-LIVE_ORDERS:[{"symbol":"XX","side":"buy|sell","quantity":"X.XX","avgPrice":"XX.XX","state":"filled|cancelled|pending","createdAt":"YYYY-MM-DD"}]
-Include only the 20 most recent orders. Use instrument_symbol, side, quantity, average_price, state fields. For createdAt, use the date portion of created_at (first 10 chars). Output nothing else.`,
+LIVE_ORDERS:[{"symbol":"XX","side":"buy|sell","quantity":"X.XX","avgPrice":"XX.XX","state":"filled|cancelled|pending","createdAt":"YYYY-MM-DD","createdAtTs":"<created_at exactly as returned>"}]
+Include only the 20 most recent orders. Use instrument_symbol, side, quantity, average_price, state fields. For createdAt, use the date portion of created_at (first 10 chars). For createdAtTs, copy the full created_at value unchanged. Output nothing else.`,
       `Fetch recent orders for account ${ACCOUNT}.`,
       1024, 30_000
     ),
@@ -105,7 +105,7 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
   const liveOrders = (() => {
     const m = ordersText?.match(/^LIVE_ORDERS:(.+)$/m);
     if (!m) return null;
-    try { return JSON.parse(m[1]) as Array<{ symbol: string; side: string; quantity: string; avgPrice: string; state: string; createdAt?: string }>; } catch { return null; }
+    try { return JSON.parse(m[1]) as LiveOrder[]; } catch { return null; }
   })();
 
   // Fetch stored run data. Reconcile orders/positions against the MERGED run (unions all
@@ -349,6 +349,11 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
     }
   }
 
+  // HINT ONLY (lib/run-store likelyOwnerBuys): which still-uncaptured buys look like the owner's own
+  // trade. Changes no discrepancy and no status — read by the email and the reviewer as context.
+  const ownerTradeHints = likelyOwnerBuys(uncapturedOrders, cashRun, today).map(({ order: o, at }) =>
+    `${o.side} ${o.symbol} ×${o.quantity} @$${o.avgPrice} was placed at ${at} ET, after today's run could place orders — most likely your own trade, which is recorded on the next run (the cash and ${o.symbol} share differences above would then be that trade). If you did not trade, it is a capture gap.`);
+
   const status = discrepancies.length === 0 ? "ok"
     : (liveBalance === null || livePositions === null) ? "partial"
     : "discrepancy";
@@ -380,6 +385,7 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
       uncapturedOrders,
     },
     discrepancies,
+    ownerTradeHints,
     mcpAvailable: {
       balance: liveBalance !== null,
       positions: livePositions !== null,
