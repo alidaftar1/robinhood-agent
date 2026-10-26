@@ -530,13 +530,20 @@ export async function GET(request: Request) {
       (skip) => buildV1Shortlist(marketData.stocks, eligible, { held: heldMainSymbols, qualityUnknown, skipForBuy: skip }),
       (syms) => fetchEarningsForSymbols(syms),
       heldMainSymbols, today,
+      // The bulk-calendar dates too, as the buy gate reads them (earningsDatesMap), so a print known
+      // only to the bulk calendar also frees its slot instead of being dropped at the gate.
+      Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string])),
     );
     const { buy: v1Buy, retained: v1Retained } = shortlistEarn;
     if (shortlistEarn.skipped.length) {
       contextWarnings.push(`CONTEXT — not shortlisted today, earnings ≤${IMMINENT_EARNINGS_DAYS}d (unbuyable under the no-buy rule), so the next eligible name in each sector took the slot: ${shortlistEarn.skipped.map(k => `${k.symbol} (${k.earningsDate})`).join(", ")}. Logged to the earnings-skip shadow to measure whether the rule helps.`);
       console.log("EARNINGS_SKIP", shortlistEarn.skipped);
     }
-    const v1ShortlistSet = new Set(v1Buy.map(s => s.symbol)); // buy-allowlist — retained names excluded on purpose
+    // buy-allowlist — retained names excluded on purpose. The earnings-SKIPPED names stay in it: they
+    // were on the list before the backfill, and the set also classifies an untagged buy as main vs
+    // influencer — dropping them would let a skipped name read as a SLEEVE buy and take a sleeve slot
+    // before the earnings gate drops it. Keeping them restores the pre-backfill path exactly.
+    const v1ShortlistSet = new Set([...v1Buy.map(s => s.symbol), ...shortlistEarn.skipped.map(k => k.symbol)]);
 
     // RELIABLE per-symbol earnings for the names that actually drive the ⚠⚠ judgment (shortlist +
     // held). The bulk calendar's 1500-row cap drops near-term dates in peak season (PLTR 08-03 was
@@ -2173,8 +2180,8 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
 
     // EARNINGS-SKIP SHADOW (lib/earnings-skip): log the names the imminent-earnings rule kept off the
     // shortlist, with today's price, so /api/earnings-skip-shadow can score whether skipping helped.
-    // Only on days main-book buys were OPEN — on a closed day the rule cost nothing. FAIL-SAFE.
-    if (buysOpen && shortlistEarn.skipped.length) {
+    // Only on days main-book buys were OPEN and not quality-blocked — otherwise the rule cost nothing.
+    if (buysOpen && !mainBuysBlocked && shortlistEarn.skipped.length) {
       try {
         const esRec = await recordEarningsSkipShadow(shortlistEarn.skipped, today);
         console.log("EARNINGS_SKIP_SHADOW", { logged: esRec.logged, skipped: esRec.skipped ?? false });

@@ -71,6 +71,8 @@ export async function shortlistAroundEarnings(
   lookup: (symbols: string[]) => Promise<EarningsLookup>,
   held: Set<string>,
   today: string,
+  /** Dates from the bulk calendar, which the buy gate also reads; per-symbol answers override. */
+  baseDates: Record<string, string> = {},
   rounds = EARNINGS_SKIP_ROUNDS,
 ): Promise<{ buy: StockData[]; retained: StockData[]; skipped: EarningsSkipped[]; earnings: EarningsLookup; attempted: Set<string> }> {
   let earnings = emptyEarningsLookup();
@@ -84,13 +86,15 @@ export async function shortlistAroundEarnings(
       for (const s of need) attempted.add(s);
       earnings = mergeEarningsLookups(earnings, await lookup(need).catch(() => emptyEarningsLookup()));
     }
-    // The gate's own predicate, so "imminent" here can never mean something else than at the gate.
-    const { imminent } = screenImminentEarningsBuys(cands, Object.fromEntries(earnings.upcoming), earnings.asked, today);
+    // The gate's predicate over the gate's date sources (bulk calendar, overridden per symbol). Only
+    // `imminent` skips — `unknown` keeps its slot (see the header).
+    const dates = { ...baseDates, ...Object.fromEntries(earnings.upcoming) };
+    const { imminent } = screenImminentEarningsBuys(cands, dates, earnings.asked, today);
     const fresh = imminent.filter(s => !skipped.has(s));
     if (!fresh.length) break;
     for (const sym of fresh) {
       const st = cands.find(s => s.symbol === sym)!;
-      skipped.set(sym, { symbol: sym, earningsDate: earnings.upcoming.get(sym)!, price: st.price });
+      skipped.set(sym, { symbol: sym, earningsDate: dates[sym], price: st.price });
     }
     res = build(new Set(skipped.keys()));
   }
@@ -118,16 +122,17 @@ async function shadowGet(): Promise<EarningsSkipDay[] | null> {
   } catch { return null; }                            // read FAILED — caller skips the write
 }
 
-async function shadowSet(days: EarningsSkipDay[]): Promise<void> {
+async function shadowSet(days: EarningsSkipDay[]): Promise<boolean> {
   const url = process.env.UPSTASH_REDIS_REST_URL, token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return;
+  if (!url || !token) return false;
   try {
-    await fetch(`${url}/pipeline`, {
+    const res = await fetch(`${url}/pipeline`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify([["SET", SHADOW_KEY, JSON.stringify(days.slice(-SHADOW_MAX_DAYS))]]),
     });
-  } catch { /* best-effort */ }
+    return res.ok;
+  } catch { return false; }
 }
 
 /** Append today's skipped names. Idempotent per date. FAIL-SAFE — never throws, never clobbers
@@ -137,7 +142,7 @@ export async function recordEarningsSkipShadow(skipped: EarningsSkipped[], today
     const days = await shadowGet();
     if (days === null) return { logged: 0, skipped: true };
     const merged = [...days.filter(d => d.date !== today), { date: today, skipped }].sort((a, b) => a.date.localeCompare(b.date));
-    await shadowSet(merged);
+    if (!(await shadowSet(merged))) return { logged: 0, skipped: true };
     return { logged: skipped.length };
   } catch {
     return { logged: 0, skipped: true };

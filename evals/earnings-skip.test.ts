@@ -79,8 +79,14 @@ describe("imminent-earnings names do not occupy shortlist slots", () => {
     expect(new Set(asked).size).toBe(asked.length);
     expect(asked).not.toContain("MU");
     expect([...r.attempted].sort()).toEqual([...new Set(asked)].sort());
-    const one = await shortlistAroundEarnings(build, lookupWith({ SNDK: "2026-10-29", STX: "2026-10-27", DELL: "2026-10-28" }), HELD, TODAY, 1);
+    const one = await shortlistAroundEarnings(build, lookupWith({ SNDK: "2026-10-29", STX: "2026-10-27", DELL: "2026-10-28" }), HELD, TODAY, {}, 1);
     expect(one.skipped.map(k => k.symbol).sort()).toEqual(["SNDK", "STX"]);   // 1 round: DELL promoted, not screened
+  });
+
+  test("a print known only to the BULK calendar also frees the slot (the gate reads it too)", async () => {
+    const r = await shortlistAroundEarnings(build, lookupWith({}), HELD, TODAY, { SNDK: "2026-10-28" });
+    expect(r.skipped).toEqual([{ symbol: "SNDK", earningsDate: "2026-10-28", price: 100 }]);
+    expect(r.buy.map(s => s.symbol)).not.toContain("SNDK");
   });
 
   test("merge unions disjoint lookups", () => {
@@ -103,6 +109,9 @@ describe("wiring: /api/trade builds the shortlist through the backfill", () => {
     expect(route).toContain("mergeEarningsLookups(shortlistEarn.earnings, mainEarnings)");
   });
   test("the shadow is recorded only on buy-open days", () => {
-    expect(route).toMatch(/if \(buysOpen && shortlistEarn\.skipped\.length\)/);
+    expect(route).toMatch(/if \(buysOpen && !mainBuysBlocked && shortlistEarn\.skipped\.length\)/);
+  });
+  test("skipped names stay in the allowlist that classifies main vs influencer buys", () => {
+    expect(route).toContain("...shortlistEarn.skipped.map(k => k.symbol)]);");
   });
 });
