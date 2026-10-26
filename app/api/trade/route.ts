@@ -739,7 +739,10 @@ export async function GET(request: Request) {
       // is the top 12 by net REGARDLESS of value, but a buy below the floor is rejected in code.
       const convictionInfluencer = new Set(
         [...influencerCandidateSet].filter(t => (influencerNet[t] ?? 0) >= INFLUENCER_BUY_FLOOR));
-      const convictionCtx = { mainShortlist: v1ShortlistSet, influencerCandidates: convictionInfluencer, isRebalanceDay: buysOpen };
+      // The SHOWN shortlist, not v1ShortlistSet: that set also holds the earnings-skipped names (for
+      // buy classification), and labelling one "buyable this run" here would nudge the model into a
+      // buy the earnings gate drops — after it has already used up sector budget.
+      const convictionCtx = { mainShortlist: new Set(v1Buy.map(s => s.symbol)), influencerCandidates: convictionInfluencer, isRebalanceDay: buysOpen };
       convictionSection = formatConviction(convictionRun, today, convictionCtx);
       const auditNote = convictionAuditNote(convictionRun, today, convictionCtx);
       if (auditNote) convictionNotes.push(auditNote);   // so the run records WHAT research it saw

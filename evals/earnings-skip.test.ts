@@ -111,6 +111,10 @@ describe("wiring: /api/trade builds the shortlist through the backfill", () => {
   test("the shadow is recorded only on buy-open days", () => {
     expect(route).toMatch(/if \(buysOpen && !mainBuysBlocked && shortlistEarn\.skipped\.length\)/);
   });
+  test("the conviction block is told the SHOWN shortlist, never the skipped names", () => {
+    expect(route).toContain("mainShortlist: new Set(v1Buy.map(s => s.symbol))");
+    expect(route).not.toContain("mainShortlist: v1ShortlistSet");
+  });
   test("skipped names stay in the allowlist that classifies main vs influencer buys", () => {
     expect(route).toContain("...shortlistEarn.skipped.map(k => k.symbol)]);");
   });
