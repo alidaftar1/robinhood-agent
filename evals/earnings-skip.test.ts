@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { buildV1Shortlist, type StockData } from "@/lib/market-data";
+import { formatConviction } from "@/lib/conviction";
 import { shortlistAroundEarnings, emptyEarningsLookup, mergeEarningsLookups, type EarningsLookup } from "@/lib/earnings-skip";
 
 // 2026-10-26: the Tech slots (cap 3) went to MU (held), SNDK and STX — both reporting within 3 days,
@@ -98,6 +99,21 @@ describe("imminent-earnings names do not occupy shortlist slots", () => {
   });
 });
 
+describe("conviction labels never call an earnings-skipped name buyable", () => {
+  const run = { runDate: "2026-10-20", picks: [{ symbol: "MU", rank: 1, thesis: "t" }, { symbol: "WDC", rank: 2, thesis: "t" }] } as any;
+  const base = { mainShortlist: new Set(["WDC"]), influencerCandidates: new Set(["MU"]), earningsBlocked: new Map([["MU", "2026-10-28"]]) };
+  test.each([true, false])("a skipped name that is ALSO an influencer candidate is NOT buyable (rebalance day: %p)", (isRebalanceDay) => {
+    const out = formatConviction(run, TODAY, { ...base, isRebalanceDay });
+    const muLine = out.split("\n").find(l => l.includes("MU (rank 1"))!;
+    expect(muLine).toContain("NOT buyable this run");
+    expect(muLine).not.toContain("influencer set");
+  });
+  test("CONTROL: without the block, the same name reads as a usable sleeve pick", () => {
+    const out = formatConviction(run, TODAY, { ...base, earningsBlocked: undefined, isRebalanceDay: true });
+    expect(out.split("\n").find(l => l.includes("MU (rank 1"))).toContain("influencer set");
+  });
+});
+
 describe("wiring: /api/trade builds the shortlist through the backfill", () => {
   const route = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
   test("the live shortlist passes skipForBuy via shortlistAroundEarnings, with held names protected", () => {
@@ -113,6 +129,7 @@ describe("wiring: /api/trade builds the shortlist through the backfill", () => {
   });
   test("the conviction block is told the SHOWN shortlist, never the skipped names", () => {
     expect(route).toContain("mainShortlist: new Set(v1Buy.map(s => s.symbol))");
+    expect(route).toContain("earningsBlocked: new Map(shortlistEarn.skipped.map(k => [k.symbol, k.earningsDate]))");
     expect(route).not.toContain("mainShortlist: v1ShortlistSet");
   });
   test("skipped names stay in the allowlist that classifies main vs influencer buys", () => {

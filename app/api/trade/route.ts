@@ -742,7 +742,10 @@ export async function GET(request: Request) {
       // The SHOWN shortlist, not v1ShortlistSet: that set also holds the earnings-skipped names (for
       // buy classification), and labelling one "buyable this run" here would nudge the model into a
       // buy the earnings gate drops — after it has already used up sector budget.
-      const convictionCtx = { mainShortlist: new Set(v1Buy.map(s => s.symbol)), influencerCandidates: convictionInfluencer, isRebalanceDay: buysOpen };
+      const convictionCtx = {
+        mainShortlist: new Set(v1Buy.map(s => s.symbol)), influencerCandidates: convictionInfluencer, isRebalanceDay: buysOpen,
+        earningsBlocked: new Map(shortlistEarn.skipped.map(k => [k.symbol, k.earningsDate])),
+      };
       convictionSection = formatConviction(convictionRun, today, convictionCtx);
       const auditNote = convictionAuditNote(convictionRun, today, convictionCtx);
       if (auditNote) convictionNotes.push(auditNote);   // so the run records WHAT research it saw

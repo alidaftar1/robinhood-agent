@@ -111,13 +111,18 @@ export function daysSince(runDate: string, today: string): number | null {
  *  off-rails filter: that filter is not the last gate, and a label that over-promises is the
  *  dangerous direction — it invites a buy the model will watch get dropped. */
 export interface ConvictionContext {
-  /** The main-book buy allowlist (v1ShortlistSet). Excludes ◆HELD retained names ON PURPOSE. */
+  /** The SHOWN main-book buy list (v1Buy). Excludes ◆HELD retained names ON PURPOSE, and the
+   *  earnings-skipped names (see earningsBlocked). */
   mainShortlist: Set<string>;
   /** Off-shortlist names the sleeve may buy, ALREADY filtered to those clearing the net-score
    *  floor — a name below it is hard-rejected in code, so listing it as buyable over-promises. */
   influencerCandidates: Set<string>;
   /** Main-book buys only run in the weekly rebalance window — 2 of 5 weekdays. */
   isRebalanceDay: boolean;
+  /** Names kept off the shortlist because they report within the imminent window (lib/earnings-skip),
+   *  symbol → date. Checked FIRST: the earnings gate drops such a buy whatever sleeve it is tagged
+   *  to, so no other membership may label it buyable. */
+  earningsBlocked?: Map<string, string>;
 }
 
 const hasSym = (set: Set<string>, sym: string) => set.has(sym) || set.has(sym.toUpperCase());
@@ -134,6 +139,8 @@ export function formatConviction(
   if (age > CONVICTION_SHELF_LIFE_DAYS) return "";             // past its own horizon: stop serving it
 
   const statusOf = (sym: string): { tag: string; usable: boolean } => {
+    const blockedOn = ctx.earningsBlocked?.get(sym) ?? ctx.earningsBlocked?.get(sym.toUpperCase());
+    if (blockedOn) return { tag: `reports earnings ${blockedOn} — NOT buyable this run (no buys within the imminent-earnings window)`, usable: false };
     if (hasSym(ctx.mainShortlist, sym)) {
       return ctx.isRebalanceDay
         // Honest about the one gate not modelled here: a name sold or stopped inside the cooldown
