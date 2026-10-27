@@ -615,7 +615,11 @@ export async function GET(request: Request) {
   // = the transcript source is down or over quota, whether it fails from the start or trips mid-run.
   const cov = influencerCache?.transcriptCoverage;
   const yt = influencerCache?.youtubeHealth;
-  const influencerEmptyReason = !influencerCache
+  // The OUTAGE reasons are computed apart from the empty-digest fallback because title-only insights
+  // still render when transcripts are down (2026-10-27: Supadata plan quota exhausted, 0/25 transcripts,
+  // 0 tickers, yet 5 insights made the digest non-empty and the outage never showed). An outage must
+  // be shown whether or not anything else in the section rendered.
+  const influencerOutage: string | null = !influencerCache
     ? "the weekly cache is unavailable — the 6am refresh may have failed"
     // Only claim the emptiness is UNINFORMATIVE when the quota actually starved the run. A partial
     // exhaustion (3 of 9 channels) can still leave 40 videos seen, in which case an empty sleeve
@@ -631,7 +635,8 @@ export async function GET(request: Request) {
           ? "no candidate videos were found this week — verify the upstream YouTube fetch isn't failing"
           : cov && cov.withTranscript < cov.videos / 2
             ? `low transcript coverage (${cov.withTranscript}/${cov.videos} videos) — the transcript source (Supadata) looks down or over its plan quota, so the sleeve ran mostly blind on titles only`
-            : "creators named no qualifying picks this week — an empty sleeve is a valid outcome";
+            : null;
+  const influencerEmptyReason = influencerOutage ?? "creators named no qualifying picks this week — an empty sleeve is a valid outcome";
 
   // ─── Email ────────────────────────────────────────────────────────────────────
 
@@ -747,6 +752,7 @@ export async function GET(request: Request) {
   ${hasInfluencerDigest
     ? `<div style="background:#fefce8;border-left:4px solid #eab308;padding:12px 16px;margin-bottom:16px;border-radius:4px">
     <strong>🎬 Influencer signals this week:</strong>
+    ${influencerOutage ? `<p style="margin:6px 0 0;font-size:13px;color:#b45309"><strong>⚠ Degraded:</strong> ${escapeHtml(influencerOutage.replace(/\.$/, ""))}. Buys/avoids may be missing or incomplete — read this as an outage, not a quiet week.</p>` : ""}
     ${topBuys.length > 0 ? `<p style="margin:6px 0 0;font-size:13px"><strong style="color:#059669">Buys:</strong> ${topBuys.map(([t, s]) => `${t} (${s})`).join(", ")}</p>` : ""}
     ${topAvoids.length > 0 ? `<p style="margin:6px 0 0;font-size:13px"><strong style="color:#dc2626">Avoid:</strong> ${topAvoids.map(([t, s]) => `${t} (${s})`).join(", ")}</p>` : ""}
     ${insights.length > 0 ? `<p style="margin:8px 0 2px;font-size:13px"><strong>Insights:</strong></p><ul style="margin:0;padding-left:20px;font-size:13px">${insights.map((i) => `<li><span style="color:#6b7280">[${escapeHtml(i.channel)}]</span> ${escapeHtml(i.text)}</li>`).join("")}</ul>` : ""}
@@ -754,7 +760,7 @@ export async function GET(request: Request) {
   </div>`
     : `<div style="background:#f9fafb;border-left:4px solid #9ca3af;padding:12px 16px;margin-bottom:16px;border-radius:4px">
     <strong>🎬 Influencer signals this week:</strong>
-    <p style="margin:6px 0 0;font-size:13px;color:#6b7280">None — ${influencerEmptyReason}.</p>
+    <p style="margin:6px 0 0;font-size:13px;color:#6b7280">None — ${influencerEmptyReason.replace(/\.$/, "")}.</p>
   </div>`}
 
   ${ledgerChannels.length === 0 && (ledgerPending.credits > 0 || ledgerFailed)
