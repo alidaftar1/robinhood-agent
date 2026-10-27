@@ -46,6 +46,8 @@ export interface ScoredShadowObservation extends ShadowObservation {
   correct: boolean | null;
 }
 
+export interface ShadowPrices { bySymbol: Map<string, number | null>; spyCloses: Map<string, number> }
+
 export interface ShadowStats {
   direction: "entry" | "exit";
   observations: number;      // raw rows captured
@@ -130,18 +132,23 @@ export async function scoreShadowObservations(
   observations: ShadowObservation[],
   today: string,
   direction: "entry" | "exit",
-): Promise<{ scored: ScoredShadowObservation[]; stats: ShadowStats }> {
-  if (observations.length === 0) return { scored: [], stats: { ...UNMEASURABLE, direction } };
+  /** Quotes from an earlier call over a SUPERSET of these observations, so a caller scoring
+   *  subsets (e.g. per bucket) reads the SAME prices as its total and makes no extra fetches. */
+  prices?: ShadowPrices,
+): Promise<{ scored: ScoredShadowObservation[]; stats: ShadowStats; prices: ShadowPrices }> {
+  if (observations.length === 0) return { scored: [], stats: { ...UNMEASURABLE, direction }, prices: prices ?? { bySymbol: new Map(), spyCloses: new Map() } };
 
   const symbols = [...new Set(observations.map(o => o.symbol))];
-  const priceBySymbol = new Map<string, number | null>();
+  const priceBySymbol = new Map<string, number | null>(prices?.bySymbol);
+  const missing = symbols.filter(sym => !priceBySymbol.has(sym));
   const BATCH = 8;
-  for (let i = 0; i < symbols.length; i += BATCH) {
-    await Promise.all(symbols.slice(i, i + BATCH).map(async sym => {
+  for (let i = 0; i < missing.length; i += BATCH) {
+    await Promise.all(missing.slice(i, i + BATCH).map(async sym => {
       priceBySymbol.set(sym, (await fetchQuoteLite(sym).catch(() => null))?.price ?? null);
     }));
   }
-  const spyCloses = await fetchSpyCloses();
+  const spyCloses = prices?.spyCloses ?? await fetchSpyCloses();
+  const fetched: ShadowPrices = { bySymbol: priceBySymbol, spyCloses };
   const spyNow = spyCloseOnOrBefore(spyCloses, today);
 
   const scored: ScoredShadowObservation[] = observations.map(o => {
@@ -176,7 +183,7 @@ export async function scoreShadowObservations(
   const matured = measurable.filter(s => s.daysElapsed >= MIN_DAYS_ELAPSED);
   if (matured.length === 0) {
     return {
-      scored,
+      scored, prices: fetched,
       stats: {
         ...UNMEASURABLE, direction,
         observations: observations.length, distinctSymbols: symbols.length, measurable: measurable.length,
@@ -218,7 +225,7 @@ export async function scoreShadowObservations(
   const hitRatePct = judged.length ? (judged.filter(p => p.correct).length / judged.length) * 100 : 0;
 
   return {
-    scored,
+    scored, prices: fetched,
     stats: {
       direction,
       observations: observations.length,

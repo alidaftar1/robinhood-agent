@@ -20,7 +20,7 @@
 //    was RIGHT for a name that then underperformed (it is scored as an EXIT-direction signal: not
 //    buying avoided that move). ZERO capital — the log places no orders and changes no behavior.
 // ─────────────────────────────────────────────────────────────────────────────
-import { screenImminentEarningsBuys, type RecentEarnings } from "./earnings";
+import { screenImminentEarningsBuys, type EarningsBeatRecord, type RecentEarnings } from "./earnings";
 import type { StockData } from "./market-data";
 
 export interface EarningsLookup {
@@ -54,6 +54,23 @@ export interface EarningsSkipped {
   symbol: string;
   earningsDate: string;
   price: number;
+  /** Beat record at skip time (added 2026-10-27), so the shadow can score serial beaters apart from
+   *  the rest — the held-side rule already lets a serial beater ride through its print, and whether
+   *  the buy side should do the same is unmeasured. Absent = not fetched or Finnhub had < 2 quarters. */
+  beat?: EarningsBeatRecord;
+}
+
+/** The prompt's one reading of 📈EARN-RECORD (lib/strategy: "beat ≥3/4, avg ≥ +5%"). "unknown" is
+ *  its own bucket, never folded into "other": a failed fetch is not evidence of a weak record. */
+export type BeatClass = "serial" | "other" | "unknown";
+export function beatClass(b: EarningsBeatRecord | undefined): BeatClass {
+  if (!b || b.total <= 0) return "unknown";
+  return b.beats / b.total >= 0.75 && b.avgSurprisePct >= 5 ? "serial" : "other";
+}
+
+/** Attach beat records to skipped names. Pure; a name without a record is left untagged. */
+export function tagBeatRecords(skipped: EarningsSkipped[], records: Map<string, EarningsBeatRecord>): EarningsSkipped[] {
+  return skipped.map(k => (records.has(k.symbol) ? { ...k, beat: records.get(k.symbol) } : k));
 }
 
 /** Bounded: each round can only promote names, and one more round costs a few per-symbol lookups.
@@ -141,7 +158,11 @@ export async function recordEarningsSkipShadow(skipped: EarningsSkipped[], today
   try {
     const days = await shadowGet();
     if (days === null) return { logged: 0, skipped: true };
-    const merged = [...days.filter(d => d.date !== today), { date: today, skipped }].sort((a, b) => a.date.localeCompare(b.date));
+    // A same-day re-run whose beat fetch failed must not erase the morning's tags: keep a prior
+    // record for any name now logged without one.
+    const prior = new Map((days.find(d => d.date === today)?.skipped ?? []).map(k => [k.symbol, k.beat]));
+    const kept = skipped.map(k => (k.beat || !prior.get(k.symbol) ? k : { ...k, beat: prior.get(k.symbol) }));
+    const merged = [...days.filter(d => d.date !== today), { date: today, skipped: kept }].sort((a, b) => a.date.localeCompare(b.date));
     if (!(await shadowSet(merged))) return { logged: 0, skipped: true };
     return { logged: skipped.length };
   } catch {

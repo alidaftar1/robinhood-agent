@@ -1,5 +1,5 @@
 import { requireCronAuth } from "@/lib/auth";
-import { getEarningsSkipShadowOrNull } from "@/lib/earnings-skip";
+import { getEarningsSkipShadowOrNull, beatClass, type BeatClass } from "@/lib/earnings-skip";
 import { scoreShadowObservations } from "@/lib/shadow-scoring";
 
 // Read-only view of the imminent-earnings SKIP shadow (lib/earnings-skip, zero capital): the names
@@ -24,11 +24,21 @@ export async function GET(request: Request) {
   let scoring: unknown = null;
   if (wantScoring) {
     const today = new Date().toISOString().slice(0, 10);
-    const observations = days.flatMap(d => (d.skipped ?? []).map(k => ({ symbol: k.symbol, price: k.price, date: d.date })));
+    const tagged = days.flatMap(d => (d.skipped ?? []).map(k => ({ cls: beatClass(k.beat), obs: { symbol: k.symbol, price: k.price, date: d.date } })));
+    const observations = tagged.map(t => t.obs);
     // Fail-safe: scoring is an observability aid — it must never break the capture's own view.
     try {
-      const { scored, stats } = await scoreShadowObservations(observations, today, "exit");
-      scoring = { ...stats, scored };
+      const { scored, stats, prices } = await scoreShadowObservations(observations, today, "exit");
+      // BY BEAT RECORD: does the rule help less (or hurt) on serial beaters, the names the HOLD side
+      // already lets ride through? Same scoring per bucket. Entries logged before 2026-10-27 carry no
+      // record and land in "unknown" — read the split only on tagged days.
+      const byBeatRecord: Partial<Record<BeatClass, unknown>> = {};
+      for (const cls of ["serial", "other", "unknown"] as const) {
+        const obs = tagged.filter(t => t.cls === cls).map(t => t.obs);
+        // Same prices as the total (no refetch), so the buckets are consistent with it.
+        if (obs.length) byBeatRecord[cls] = (await scoreShadowObservations(obs, today, "exit", prices)).stats;
+      }
+      scoring = { ...stats, byBeatRecord, scored };
     } catch {
       scoring = { error: "scoring unavailable" };
     }

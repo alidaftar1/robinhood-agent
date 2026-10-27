@@ -204,3 +204,21 @@ describe("one vote per name, and only matured rows vote", () => {
     expect(stats.verdict).toMatch(/no .*forward window yet|nothing to measure/i);
   });
 });
+
+describe("subset scoring reuses the total's prices (earnings-skip buckets, 2026-10-27)", () => {
+  test("passing prices makes NO quote or SPY fetch and gives the same per-row numbers", async () => {
+    spyMode = "flat";
+    const all = [obs("UP", 100, "2026-09-01"), obs("DOWN", 100, "2026-09-01")];
+    const total = await scoreShadowObservations(all, TODAY, "exit");
+    quoteCalls.n = 0;
+    const saved = globalThis.fetch;
+    let spyFetches = 0;
+    globalThis.fetch = (async (...a: any[]) => { spyFetches++; return (saved as any)(...a); }) as any;
+    try {
+      const sub = await scoreShadowObservations([all[1]], TODAY, "exit", total.prices);
+      expect(quoteCalls.n).toBe(0);
+      expect(spyFetches).toBe(0);
+      expect(sub.scored[0].forwardReturnPct).toBe(total.scored[1].forwardReturnPct);
+    } finally { globalThis.fetch = saved; }
+  });
+});

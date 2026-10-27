@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { buildV1Shortlist, type StockData } from "@/lib/market-data";
 import { formatConviction } from "@/lib/conviction";
-import { shortlistAroundEarnings, emptyEarningsLookup, mergeEarningsLookups, type EarningsLookup } from "@/lib/earnings-skip";
+import { shortlistAroundEarnings, emptyEarningsLookup, mergeEarningsLookups, beatClass, tagBeatRecords, type EarningsLookup } from "@/lib/earnings-skip";
 
 // 2026-10-26: the Tech slots (cap 3) went to MU (held), SNDK and STX — both reporting within 3 days,
 // so the buy gate dropped them — and DELL/WDC, eligible and unblocked, were never shown. Nothing was
@@ -134,5 +134,63 @@ describe("wiring: /api/trade builds the shortlist through the backfill", () => {
   });
   test("skipped names stay in the allowlist that classifies main vs influencer buys", () => {
     expect(route).toContain("...shortlistEarn.skipped.map(k => k.symbol)]);");
+  });
+});
+
+describe("beat-record tagging on the shadow (2026-10-27)", () => {
+  test("serial = the prompt's bar (beat >=3/4, avg >= +5%); a missing record is UNKNOWN, never 'other'", () => {
+    expect(beatClass({ beats: 4, total: 4, avgSurprisePct: 15 })).toBe("serial");      // PLTR
+    expect(beatClass({ beats: 3, total: 4, avgSurprisePct: 5 })).toBe("serial");       // the bar itself
+    expect(beatClass({ beats: 6, total: 8, avgSurprisePct: 5 })).toBe("serial");
+    expect(beatClass({ beats: 2, total: 4, avgSurprisePct: 20 })).toBe("other");       // too few beats
+    expect(beatClass({ beats: 4, total: 4, avgSurprisePct: 4.9 })).toBe("other");      // surprise too small
+    expect(beatClass(undefined)).toBe("unknown");
+    expect(beatClass({ beats: 0, total: 0, avgSurprisePct: 0 })).toBe("unknown");
+  });
+  test("tagging attaches records where present and leaves the rest untouched", () => {
+    const sk = [{ symbol: "SNDK", earningsDate: "2026-10-29", price: 100 }, { symbol: "STX", earningsDate: "2026-10-27", price: 50 }];
+    const out = tagBeatRecords(sk, new Map([["SNDK", { beats: 4, total: 4, avgSurprisePct: 12 }]]));
+    expect(out[0].beat).toEqual({ beats: 4, total: 4, avgSurprisePct: 12 });
+    expect("beat" in out[1]).toBe(false);
+    expect(sk[0]).not.toHaveProperty("beat");   // pure
+  });
+  test("wiring: the trade route records TAGGED names; the shadow route scores by bucket", () => {
+    const route = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
+    expect(route).toContain("recordEarningsSkipShadow(tagBeatRecords(shortlistEarn.skipped, esBeat), today)");
+    expect(route).toContain("fetchEarningsBeatHistory(shortlistEarn.skipped.map(k => k.symbol)).catch(");
+    const shadow = readFileSync(`${import.meta.dir}/../app/api/earnings-skip-shadow/route.ts`, "utf8");
+    expect(shadow).toContain("cls: beatClass(k.beat)");
+    expect(shadow).toContain('for (const cls of ["serial", "other", "unknown"] as const)');
+  });
+});
+
+describe("a same-day re-run cannot erase beat tags (2026-10-27 review)", () => {
+  test("a name re-logged WITHOUT a record keeps the morning's record; a fresh record wins", async () => {
+    const { recordEarningsSkipShadow } = await import("@/lib/earnings-skip");
+    const env = { u: process.env.UPSTASH_REDIS_REST_URL, t: process.env.UPSTASH_REDIS_REST_TOKEN };
+    process.env.UPSTASH_REDIS_REST_URL = "https://stub.invalid"; process.env.UPSTASH_REDIS_REST_TOKEN = "stub";
+    let stored: string | null = JSON.stringify([{ date: TODAY, skipped: [
+      { symbol: "SNDK", earningsDate: "2026-10-29", price: 100, beat: { beats: 4, total: 4, avgSurprisePct: 12 } },
+      { symbol: "STX", earningsDate: "2026-10-27", price: 50, beat: { beats: 1, total: 4, avgSurprisePct: -2 } },
+    ] }]);
+    const saved = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init?: any) => {
+      if (String(url).includes("/get/")) return new Response(JSON.stringify({ result: stored }), { status: 200 });
+      stored = JSON.parse(init.body)[0][2];
+      return new Response("[]", { status: 200 });
+    }) as any;
+    try {
+      await recordEarningsSkipShadow([
+        { symbol: "SNDK", earningsDate: "2026-10-29", price: 101 },                                        // fetch failed
+        { symbol: "STX", earningsDate: "2026-10-27", price: 51, beat: { beats: 2, total: 4, avgSurprisePct: 1 } }, // fresh
+      ], TODAY);
+      const day = JSON.parse(stored!).find((d: any) => d.date === TODAY);
+      expect(day.skipped.find((k: any) => k.symbol === "SNDK").beat).toEqual({ beats: 4, total: 4, avgSurprisePct: 12 });
+      expect(day.skipped.find((k: any) => k.symbol === "STX").beat).toEqual({ beats: 2, total: 4, avgSurprisePct: 1 });
+      expect(day.skipped.find((k: any) => k.symbol === "SNDK").price).toBe(101);
+    } finally {
+      globalThis.fetch = saved;
+      process.env.UPSTASH_REDIS_REST_URL = env.u; process.env.UPSTASH_REDIS_REST_TOKEN = env.t;
+    }
   });
 });

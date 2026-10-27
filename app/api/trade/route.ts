@@ -27,7 +27,7 @@ import { fetchNewsSignals } from "@/lib/news";
 import { getEarningsReleaseAnalyses, formatEarningsReleases, type EarningsReleaseAnalysis } from "@/lib/earnings-release";
 import { getValuations, formatValuations } from "@/lib/valuation";
 import { formatConviction, convictionAuditNote, loadConvictionRun } from "@/lib/conviction";
-import { shortlistAroundEarnings, emptyEarningsLookup, mergeEarningsLookups, recordEarningsSkipShadow } from "@/lib/earnings-skip";
+import { shortlistAroundEarnings, emptyEarningsLookup, mergeEarningsLookups, recordEarningsSkipShadow, tagBeatRecords } from "@/lib/earnings-skip";
 import { IMMINENT_EARNINGS_DAYS, fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, screenImminentEarningsBuys, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { inferSellStrategy } from "@/lib/run-store";
@@ -2189,7 +2189,10 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // Only on days main-book buys were OPEN and not quality-blocked — otherwise the rule cost nothing.
     if (buysOpen && !mainBuysBlocked && shortlistEarn.skipped.length) {
       try {
-        const esRec = await recordEarningsSkipShadow(shortlistEarn.skipped, today);
+        // Tag each with its beat record (one Finnhub call per skipped name, a handful at most) so the
+        // shadow can score serial beaters separately. Fail-safe: no records → logged untagged.
+        const esBeat = await fetchEarningsBeatHistory(shortlistEarn.skipped.map(k => k.symbol)).catch(() => new Map<string, EarningsBeatRecord>());
+        const esRec = await recordEarningsSkipShadow(tagBeatRecords(shortlistEarn.skipped, esBeat), today);
         console.log("EARNINGS_SKIP_SHADOW", { logged: esRec.logged, skipped: esRec.skipped ?? false });
       } catch (e) {
         console.warn("EARNINGS_SKIP_SHADOW_SKIP", e);
