@@ -325,6 +325,40 @@ function earnVariant(id: string) {
   }, 3);
 }
 
+/** The SAME-BUSINESS AVOID rule (lib/strategy 507f063, live briefly on 2026-10-27, reverted to a
+ *  tiebreaker after THIS run), approximated: at most ONE name from the memory/storage group in the book. SNDK1 = the old SanDisk (delisted 2016). The live rule is the
+ *  model's judgement of "same business" across ALL of Tech; this models only the named group. */
+const MEMORY_GROUP = new Set(["MU", "WDC", "STX", "SNDK", "SNDK1"]);
+/** Owner's follow-up (2026-10-27): at most one SEMICONDUCTOR. Sharadar `industry` from the historical
+ *  meta file, so delisted makers (ALTR1, BRCM, LLTC, NSM1…) are included. CHIPS = "Semiconductors";
+ *  CHIPS_EQ adds "Semiconductor Equipment & Materials" (AMAT, LRCX, KLAC, TER…, same capex cycle). */
+const iInd = mh.indexOf("industry");
+const CHIPS = new Set<string>(), CHIPS_EQ = new Set<string>();
+for (const l of metaLines.slice(1)) {
+  const f = parseCsvLine(l);
+  if (f[iInd] === "Semiconductors") { CHIPS.add(f[iTk]); CHIPS_EQ.add(f[iTk]); }
+  if (f[iInd] === "Semiconductor Equipment & Materials") CHIPS_EQ.add(f[iTk]);
+}
+if (CHIPS.size < 20) throw new Error(`only ${CHIPS.size} semiconductor tickers — industry column misread`);
+const groupStats = new Map<string, { calls: number; binding: number }>();
+/** Sector limit + at most ONE name from each group (a name in two groups counts against both). */
+function limitedGroups(id: string, ranked: VariantPick[], limit: (s: string) => number, groups: Set<string>[]): VariantPick[] {
+  const st = groupStats.get(id) ?? { calls: 0, binding: 0 }; groupStats.set(id, st); st.calls++;
+  const used = new Map<string, number>(), out: VariantPick[] = [], taken = groups.map(() => false);
+  let bound = false;
+  for (const p of ranked) {
+    if (out.length >= N) break;
+    const s = sectorOf(p.symbol);
+    if ((used.get(s) ?? 0) >= limit(s)) continue;
+    const hit = groups.map(g => g.has(p.symbol));
+    if (hit.some((h, k) => h && taken[k])) { bound = true; continue; }
+    hit.forEach((h, k) => { if (h) taken[k] = true; });
+    out.push(p); used.set(s, (used.get(s) ?? 0) + 1);
+  }
+  if (bound) st.binding++;
+  return out;
+}
+
 const mk = (id: string, description: string, pick: StrategyVariant["pick"], maxPerSector: number): StrategyVariant =>
   ({ ...LIVE_PROXY, id, description, config: { maxPositions: N, maxPerSector }, pick });
 
@@ -346,6 +380,14 @@ const VARIANTS: StrategyVariant[] = [
     const w = indexWeights(d.date);
     return limitedCorr(`3x3-corr${rho}`, d.date, LIVE_PROXY.pick(d, LIVE_PROXY.config), s => Math.min(3, Math.max(1, Math.floor(3 * (w.get(s) ?? 0) * N + 1e-9))), rho);
   }, 3)),
+  ...([3, 4] as const).flatMap(max => ([
+    ["mem1", [MEMORY_GROUP], "≤1 memory/storage"],
+    ["mem1-chip1", [MEMORY_GROUP, CHIPS], "≤1 memory/storage, ≤1 chip maker"],
+    ["mem1-semi1", [MEMORY_GROUP, CHIPS_EQ], "≤1 memory/storage, ≤1 chip maker OR equipment"],
+  ] as const).map(([tag, groups, label]) => mk(`3x${max}-${tag}`, `≤ 3× S&P weight, max ${max} names/sector, ${label}`, (d) => {
+    const w = indexWeights(d.date);
+    return limitedGroups(`3x${max}-${tag}`, LIVE_PROXY.pick(d, LIVE_PROXY.config), s => Math.min(max, Math.max(1, Math.floor(3 * (w.get(s) ?? 0) * N + 1e-9))), [...groups]);
+  }, max))),
   earnVariant("3x3-earn3"),
   mk("spy-matched", "slots ∝ S&P sector weight", (d) => matched(LIVE_PROXY.pick(d, LIVE_PROXY.config), indexWeights(d.date)), 4),
 ];
@@ -358,7 +400,7 @@ const sd = (x: number[]) => { const m = mean(x); return Math.sqrt(x.reduce((a, b
 
 console.log(`\nSECTOR-CAP EXPERIMENT — ${N} names, rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d, stop ${DEFAULT_BACKTEST.stopLossPct}% ${DEFAULT_BACKTEST.stopMode}, cost ${DEFAULT_BACKTEST.costBps}bps, quality ARY`);
 console.log(`Historical sectors for every variant (see header). Only the sector limit differs.\n`);
-console.log(`  ${"variant".padEnd(13)}${"CAGR".padStart(9)}${"Sharpe".padStart(8)}${"IR".padStart(7)}${"TE".padStart(8)}${"maxDD".padStart(9)}${"yrs>SPY".padStart(9)}${"trades".padStart(8)}`);
+console.log(`  ${"variant".padEnd(16)}${"CAGR".padStart(9)}${"Sharpe".padStart(8)}${"IR".padStart(7)}${"TE".padStart(8)}${"maxDD".padStart(9)}${"yrs>SPY".padStart(9)}${"trades".padStart(8)}`);
 console.log("  " + "─".repeat(71));
 let spyLine = "";
 const halves: string[] = []; let spyHalves = "";
@@ -391,19 +433,19 @@ for (const v of VARIANTS.filter(v => !only || only.includes(v.id))) {
     return { st: (Math.pow(ms[ms.length - 1].equity / ms[0].equity, 1 / y) - 1) * 100, sp: (Math.pow(s1 / s0, 1 / y) - 1) * 100 };
   };
   const h1 = TEST_FROM < "2013-01-01" ? half(TEST_FROM, "2012-12-31") : { st: NaN, sp: NaN }, h2 = half("2013-01-01", "2026-12-31");
-  halves.push(`  ${v.id.padEnd(13)}${pct(h1.st).padStart(9)}${pct(h1.st - h1.sp).padStart(10)}${pct(h2.st).padStart(11)}${pct(h2.st - h2.sp).padStart(10)}`);
-  if (!spyHalves) spyHalves = `  ${"SPY".padEnd(13)}${pct(h1.sp).padStart(9)}${"".padStart(10)}${pct(h2.sp).padStart(11)}`;
-  console.log(`  ${v.id.padEnd(13)}${pct(cagr).padStart(9)}${sharpe.toFixed(2).padStart(8)}${ir.toFixed(2).padStart(7)}${(te.toFixed(1) + "%").padStart(8)}${pct(r.maxDrawdownPct, 1).padStart(9)}${`${win}/${tot}`.padStart(9)}${String(r.trades).padStart(8)}${r.usable ? "" : "  ⛔ NOT USABLE"}`);
+  halves.push(`  ${v.id.padEnd(16)}${pct(h1.st).padStart(9)}${pct(h1.st - h1.sp).padStart(10)}${pct(h2.st).padStart(11)}${pct(h2.st - h2.sp).padStart(10)}`);
+  if (!spyHalves) spyHalves = `  ${"SPY".padEnd(16)}${pct(h1.sp).padStart(9)}${"".padStart(10)}${pct(h2.sp).padStart(11)}`;
+  console.log(`  ${v.id.padEnd(16)}${pct(cagr).padStart(9)}${sharpe.toFixed(2).padStart(8)}${ir.toFixed(2).padStart(7)}${(te.toFixed(1) + "%").padStart(8)}${pct(r.maxDrawdownPct, 1).padStart(9)}${`${win}/${tot}`.padStart(9)}${String(r.trades).padStart(8)}${r.usable ? "" : "  ⛔ NOT USABLE"}`);
   if (!spyLine) {
     const sF = s.find(x => x != null) as number, sL = [...s].reverse().find(x => x != null) as number;
     const spyCagr = (Math.pow(sL / sF, 1 / yrs) - 1) * 100;
     const spySharpe = sd(rb) > 0 ? mean(rb) / sd(rb) * Math.sqrt(252) : 0;
-    spyLine = `  ${"SPY".padEnd(13)}${pct(spyCagr).padStart(9)}${spySharpe.toFixed(2).padStart(8)}${"—".padStart(7)}${"—".padStart(8)}${pct(r.spyMaxDrawdownPct ?? NaN, 1).padStart(9)}`;
+    spyLine = `  ${"SPY".padEnd(16)}${pct(spyCagr).padStart(9)}${spySharpe.toFixed(2).padStart(8)}${"—".padStart(7)}${"—".padStart(8)}${pct(r.spyMaxDrawdownPct ?? NaN, 1).padStart(9)}`;
   }
 }
 console.log(spyLine);
 console.log(`\nBY HALF — CAGR and excess over SPY`);
-console.log(`  ${"variant".padEnd(13)}${`${TEST_FROM.slice(0, 4)}-2012`.padStart(9)}${"vs SPY".padStart(10)}${"2013-2026".padStart(11)}${"vs SPY".padStart(10)}`);
+console.log(`  ${"variant".padEnd(16)}${`${TEST_FROM.slice(0, 4)}-2012`.padStart(9)}${"vs SPY".padStart(10)}${"2013-2026".padStart(11)}${"vs SPY".padStart(10)}`);
 for (const l of halves) console.log(l);
 console.log(spyHalves);
 console.log(`\n  TE = tracking error vs SPY (annualised). yrs>SPY = calendar years the variant beat SPY.`);
@@ -417,6 +459,7 @@ for (const [id, st] of corrStats) {
   const seen = new Set<string>();
   for (const e of st.examples) { const pair = e.split(" ")[1].split(" ")[0]; if (seen.has(pair)) continue; seen.add(pair); console.log(`  ${e}`); if (seen.size >= 25) break; }
 }
+for (const [id, st] of groupStats) console.log(`\n${id}: group limit binding on ${st.binding}/${st.calls} pick-days (${(100 * st.binding / Math.max(1, st.calls)).toFixed(1)}%)`);
 const last = tradingDays[tradingDays.length - 1];
 const SEMI = ["MU", "WDC", "STX", "SNDK", "DELL", "NVDA", "AVGO", "AMD", "MRVL", "LRCX", "AAPL", "MSFT"].filter(t => series.has(t));
 console.log(`\n${CORR_DAYS}d CORRELATION as of ${last}:`);
