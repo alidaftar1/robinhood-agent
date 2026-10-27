@@ -86,35 +86,17 @@ describe("run store: post-trade persistence", () => {
 // ─── Personal account snapshot ────────────────────────────────────────────────
 
 describe("run store: personal account snapshot", () => {
-  it("latest run has personal account data with a positive total value", async () => {
+  // The personal-account comparison was REMOVED from /api/trade: the agentic MCP token is sandboxed
+  // to the agentic account (agentic_allowed:false on the individual account), so the snapshot could
+  // never be read and the fetch hung ~25s every run. Runs now store `personal: null` by design
+  // (app/api/trade/route.ts, "Personal-account comparison removed"). This pins that: a non-null
+  // snapshot would mean something is reading the personal account again, which must be deliberate.
+  it("latest run stores no personal-account snapshot (removed by design)", async () => {
     const res = await fetch(`${BASE}/api/runs?limit=1`, { headers: AUTH });
     expect(res.status).toBe(200);
-    const data = await res.json() as {
-      runs: Array<{ personal: { totalValue: string; cash: string; positions: unknown[] } | null }>
-    };
-    const personal = data.runs[0]?.personal;
-
-    expect(personal).not.toBeNull();
-    const totalValue = parseFloat(personal!.totalValue);
-    expect(totalValue).toBeGreaterThan(0);
-
-    console.log(`\nPersonal: $${personal!.totalValue} total, $${personal!.cash} cash, ${personal!.positions.length} positions`);
-  }, 15_000);
-
-  it("personal positions have valid prices (non-zero)", async () => {
-    const res = await fetch(`${BASE}/api/runs?limit=1`, { headers: AUTH });
-    const data = await res.json() as {
-      runs: Array<{ personal: { positions: Array<{ symbol: string; price: string }> } | null }>
-    };
-    const positions = data.runs[0]?.personal?.positions ?? [];
-
-    const zeroPriced = positions.filter((p) => parseFloat(p.price) <= 0);
-    if (zeroPriced.length > 0) {
-      console.log(`\nZero-priced positions: ${zeroPriced.map((p) => p.symbol).join(", ")}`);
-    }
-    // Positions not in S&P 500 priceMap (e.g. SERV) may have price 0 if Claude didn't report one
-    // Allow up to 1 zero-priced position (non-S&P 500 holdings)
-    expect(zeroPriced.length).toBeLessThanOrEqual(1);
+    const data = await res.json() as { runs: Array<{ personal?: unknown }> };
+    expect(data.runs.length).toBeGreaterThan(0);
+    expect(data.runs[0].personal ?? null).toBeNull();
   }, 15_000);
 });
 
@@ -159,7 +141,9 @@ describe("event routes: earnings-exit and drop-check", () => {
     const data = await res.json() as { skipped?: boolean; reason?: string; success?: boolean };
     if (data.skipped) {
       console.log(`\ndrop-check skipped: ${data.reason}`);
-      expect(["no positions held", "no severe drops", "market holiday"]).toContain(data.reason ?? "");
+      // "no exits triggered": held names checked, none hit the drop stop or the influencer +20%
+      // take-profit (added with that take-profit, 76cc3b3).
+      expect(["no positions held", "no exits triggered", "market holiday"]).toContain(data.reason ?? "");
     } else {
       console.log(`\ndrop-check triggered a real stop-loss session`);
       expect(data.success).toBe(true);
