@@ -14,6 +14,17 @@
  *   spy-matched   slots allocated to sectors in proportion to S&P weight (largest remainder) —
  *                 the closest a 6-name equal-weight book gets to mimicking SPY's sector mix
  *
+ * ADDED 2026-10-27 (owner questions), both ON TOP of the live rule (3x SPY, max 3), 7 names:
+ *   3x3-corr<rho>  a name whose 60d return correlation with an already-picked name exceeds rho is
+ *                  skipped (one slot per correlated cluster — e.g. MU/WDC/STX/SNDK).
+ *                  1999-2026: live +11.43% / Sharpe 0.52 / maxDD -77.5%; rho 0.8 +10.73% / 0.50 /
+ *                  -78.2%; 0.7 +9.84% / 0.47 / -80.2%; 0.6 +9.20% / 0.46 / -74.2%. Costs return at
+ *                  every threshold, no reliable drawdown benefit. NOT adopted.
+ *   3x3-earn3      skip non-held names reporting within 3 days (8-K Item 2.02 dates, Sharadar EVENTS,
+ *                  only from 2004-08 — run with --from 2004-09-01). 2004-2026: live +7.39% / -79.0%;
+ *                  earn3 +7.34% / -78.8%. 72 skips; their 20d return vs SPY -0.56% ±1.13 (47% beat
+ *                  SPY). No measurable effect either way.
+ *
  * Research only: reads the local Sharadar cache, writes nothing, touches no live code path.
  *
  * SECTORS ARE HISTORICAL, for every variant including the baseline. The registered baseline reads
@@ -37,7 +48,11 @@ import { parseFundamentalsCsv, buildFundamentalIndex, qualityAsOf } from "../lib
 import { STOCK_SECTOR } from "../lib/market-data";
 
 const CACHE = process.env.SHARADAR_CACHE_DIR ?? `${process.env.HOME}/.cache/sharadar`;
-const DATA_FROM = "1997-12-31", TEST_FROM = "1999-01-04", TEST_TO = "2026-09-29";
+const DATA_FROM = "1997-12-31", TEST_TO = "2026-09-29";
+// --from: the earnings variants need 8-K Item 2.02 dates, which exist only since 2004-08 (SEC rule).
+const TEST_FROM = process.argv.includes("--from") ? process.argv[process.argv.indexOf("--from") + 1] : "1999-01-04";
+const onlyArg = process.argv.indexOf("--only");
+const only = onlyArg !== -1 ? process.argv[onlyArg + 1].split(",") : null;
 const N = process.argv.includes("--n") ? parseInt(process.argv[process.argv.indexOf("--n") + 1], 10) : 6;
 
 // ── historical sectors ──────────────────────────────────────────────────────
@@ -191,6 +206,125 @@ function matched(ranked: VariantPick[], w: Map<string, number>): VariantPick[] {
   return out;
 }
 
+/** Trailing daily-return correlation of two names over the CORR_DAYS bars ending at `date` (adjusted
+ *  closes, aligned by date). null when they share too few days to say. Cached per (date, symbol). */
+const CORR_DAYS = 60;
+const retCache = new Map<string, Map<string, number> | null>();
+function trailingReturns(date: string, sym: string): Map<string, number> | null {
+  const k = `${date}|${sym}`;
+  if (retCache.has(k)) return retCache.get(k)!;
+  const i = dateIdx.get(date)?.get(sym), bars = series.get(sym);
+  let out: Map<string, number> | null = null;
+  if (i != null && bars && i >= CORR_DAYS) {
+    out = new Map();
+    for (let j = i - CORR_DAYS + 1; j <= i; j++) out.set(bars[j].date, bars[j].closeadj / bars[j - 1].closeadj - 1);
+  }
+  retCache.set(k, out);
+  return out;
+}
+function corrOf(date: string, a: string, b: string): number | null {
+  const ra = trailingReturns(date, a), rb = trailingReturns(date, b);
+  if (!ra || !rb) return null;
+  const xs: number[] = [], ys: number[] = [];
+  for (const [d, x] of ra) { const y = rb.get(d); if (y != null) { xs.push(x); ys.push(y); } }
+  if (xs.length < CORR_DAYS * 0.8) return null;
+  const mx = mean(xs), my = mean(ys);
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let t = 0; t < xs.length; t++) { sxy += (xs[t] - mx) * (ys[t] - my); sxx += (xs[t] - mx) ** 2; syy += (ys[t] - my) ** 2; }
+  return sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : null;
+}
+const corrStats = new Map<string, { rebalances: number; binding: number; skipped: number; examples: string[] }>();
+/** The live sector rule, plus: a name whose trailing correlation with an ALREADY-PICKED name exceeds
+ *  `rho` shares that name's slot (is skipped; the next-ranked name moves up). Unknown correlation
+ *  never skips (fail-open, like the earnings backfill). */
+function limitedCorr(id: string, date: string, ranked: VariantPick[], limit: (s: string) => number, rho: number): VariantPick[] {
+  const st = corrStats.get(id) ?? { rebalances: 0, binding: 0, skipped: 0, examples: [] };
+  corrStats.set(id, st);
+  const used = new Map<string, number>(), out: VariantPick[] = [];
+  let skippedToday = 0;
+  for (const p of ranked) {
+    if (out.length >= N) break;
+    const s = sectorOf(p.symbol);
+    if ((used.get(s) ?? 0) >= limit(s)) continue;
+    const twin = out.find(q => (corrOf(date, p.symbol, q.symbol) ?? -1) > rho);
+    if (twin) {
+      skippedToday++;
+      if (date >= "2025-01-01" && st.examples.length < 400) st.examples.push(`${date} ${p.symbol}~${twin.symbol} ${corrOf(date, p.symbol, twin.symbol)!.toFixed(2)}`);
+      continue;
+    }
+    out.push(p); used.set(s, (used.get(s) ?? 0) + 1);
+  }
+  st.rebalances++; if (skippedToday) st.binding++; st.skipped += skippedToday;
+  return out;
+}
+
+// ── historical earnings dates: 8-K Item 2.02 "Results of Operations" (Sharadar EVENTS code 22) ──
+// The filing date, which is almost always the announcement day (the release is furnished with the
+// 8-K). Exists only from 2004-08. The live rule knows the date in advance from a calendar; here the
+// realised date stands in for it.
+const EARN = new Map<string, string[]>();
+{
+  const f = Bun.file(`${CACHE}/events.csv`);
+  const wantEarn = !only || only.some(id => id.includes("earn"));
+  if (wantEarn && !(await f.exists())) throw new Error(`${CACHE}/events.csv missing — the earnings variant would silently equal the baseline. Fetch Sharadar EVENTS first.`);
+  if (await f.exists()) {
+    for (const l of (await f.text()).split("\n").slice(1)) {
+      const [t, d, codes] = l.split(",");
+      if (!codes || !codes.split("|").includes("22")) continue;
+      let a = EARN.get(t); if (!a) { a = []; EARN.set(t, a); } a.push(d);
+    }
+    for (const a of EARN.values()) a.sort();
+  }
+}
+/** A report dated 0..3 calendar days after `date` — the live screenImminentEarningsBuys window. */
+const IMMINENT_DAYS = 3;
+function reportsWithin(sym: string, date: string): string | null {
+  const a = EARN.get(sym); if (!a) return null;
+  const t0 = Date.parse(`${date}T00:00:00Z`);
+  for (const d of a) {
+    const dte = Math.floor((Date.parse(`${d}T00:00:00Z`) - t0) / 86_400_000);
+    if (dte > IMMINENT_DAYS) break;
+    if (dte >= 0) return d;
+  }
+  return null;
+}
+/** Skipped names, for the event study below (forward return vs SPY from the skip day's close). */
+const earnSkips: Array<{ date: string; symbol: string }> = [];
+/** The live rule + the earnings backfill: a name reporting within the window is skipped and the next
+ *  eligible name moves up — EXCEPT a name already held (live never skips held names: dropping one off
+ *  the list would sell it). The engine does not tell pick() its holdings, so "held" is the last
+ *  rebalance target (stop-outs since then still count as held: a slight under-count of skips). */
+function earnVariant(id: string) {
+  // The engine calls pick() DAILY but trades only on rebalance days: the first call, then every
+  // rebalanceEveryDays-th (lib/backtest — sinceRebalance starts at MAX, increments daily, resets on a
+  // rebalance, and a rebalance needs non-empty picks). Mirrored exactly below.
+  // Skips are recorded only on those calls, and "held" is the last REBALANCE target, so the study
+  // measures what the rule actually declined, from the close it was declined at. (Assumes no
+  // excluded-SPY days, which tradingDays already filters out.)
+  let since = Number.MAX_SAFE_INTEGER, held = new Set<string>();
+  return mk(id, `live rule + skip non-held names reporting within ${IMMINENT_DAYS}d`, (d) => {
+    const w = indexWeights(d.date);
+    const lim = (s: string) => Math.min(3, Math.max(1, Math.floor(3 * (w.get(s) ?? 0) * N + 1e-9)));
+    since++;                                   // engine: sinceRebalance++ BEFORE its check
+    const rebalance = since >= DEFAULT_BACKTEST.rebalanceEveryDays;
+    const used = new Map<string, number>(), out: VariantPick[] = [], daySkips: typeof earnSkips = [];
+    for (const p of LIVE_PROXY.pick(d, LIVE_PROXY.config)) {
+      if (out.length >= N) break;
+      const s = sectorOf(p.symbol);
+      if ((used.get(s) ?? 0) >= lim(s)) continue;
+      if (!held.has(p.symbol) && reportsWithin(p.symbol, d.date)) { if (rebalance) daySkips.push({ date: d.date, symbol: p.symbol }); continue; }
+      out.push(p); used.set(s, (used.get(s) ?? 0) + 1);
+    }
+    // The engine's own condition (lib/backtest): it rebalances only when picks are non-empty, and
+    // only then resets its counter — so an empty day is not a rebalance and its skips do not count.
+    // The engine buys only what it can price that day; a name it could not buy is not held. (Its
+    // applyVariantCaps sector pass reads STOCK_SECTOR, which this script overwrote with the same
+    // historical map `out` was built on, so that pass drops nothing here.)
+    if (rebalance && out.length) { held = new Set(out.filter(p => priceOf(d.date, p.symbol) != null).map(p => p.symbol)); earnSkips.push(...daySkips); since = 0; }
+    return out;
+  }, 3);
+}
+
 const mk = (id: string, description: string, pick: StrategyVariant["pick"], maxPerSector: number): StrategyVariant =>
   ({ ...LIVE_PROXY, id, description, config: { maxPositions: N, maxPerSector }, pick });
 
@@ -208,6 +342,11 @@ const VARIANTS: StrategyVariant[] = [
     const w = indexWeights(d.date);
     return limited(LIVE_PROXY.pick(d, LIVE_PROXY.config), s => Math.min(3, Math.max(1, Math.floor(3 * (w.get(s) ?? 0) * N + 1e-9))));
   }, 3),
+  ...[0.8, 0.7, 0.6].map(rho => mk(`3x3-corr${rho}`, `live rule + one slot per ${CORR_DAYS}d-correlated cluster (rho>${rho})`, (d) => {
+    const w = indexWeights(d.date);
+    return limitedCorr(`3x3-corr${rho}`, d.date, LIVE_PROXY.pick(d, LIVE_PROXY.config), s => Math.min(3, Math.max(1, Math.floor(3 * (w.get(s) ?? 0) * N + 1e-9))), rho);
+  }, 3)),
+  earnVariant("3x3-earn3"),
   mk("spy-matched", "slots ∝ S&P sector weight", (d) => matched(LIVE_PROXY.pick(d, LIVE_PROXY.config), indexWeights(d.date)), 4),
 ];
 
@@ -223,8 +362,6 @@ console.log(`  ${"variant".padEnd(13)}${"CAGR".padStart(9)}${"Sharpe".padStart(8
 console.log("  " + "─".repeat(71));
 let spyLine = "";
 const halves: string[] = []; let spyHalves = "";
-const onlyArg = process.argv.indexOf("--only");
-const only = onlyArg !== -1 ? process.argv[onlyArg + 1].split(",") : null;
 for (const v of VARIANTS.filter(v => !only || only.includes(v.id))) {
   console.error(`running ${v.id}`);
   const r = runBacktest(v, dayStream(), priceOf, (d) => spy.get(d) ?? null, DEFAULT_BACKTEST);
@@ -253,7 +390,7 @@ for (const v of VARIANTS.filter(v => !only || only.includes(v.id))) {
     const s0 = ms.find(m => m.spy != null)!.spy!, s1 = [...ms].reverse().find(m => m.spy != null)!.spy!;
     return { st: (Math.pow(ms[ms.length - 1].equity / ms[0].equity, 1 / y) - 1) * 100, sp: (Math.pow(s1 / s0, 1 / y) - 1) * 100 };
   };
-  const h1 = half("1999-01-01", "2012-12-31"), h2 = half("2013-01-01", "2026-12-31");
+  const h1 = TEST_FROM < "2013-01-01" ? half(TEST_FROM, "2012-12-31") : { st: NaN, sp: NaN }, h2 = half("2013-01-01", "2026-12-31");
   halves.push(`  ${v.id.padEnd(13)}${pct(h1.st).padStart(9)}${pct(h1.st - h1.sp).padStart(10)}${pct(h2.st).padStart(11)}${pct(h2.st - h2.sp).padStart(10)}`);
   if (!spyHalves) spyHalves = `  ${"SPY".padEnd(13)}${pct(h1.sp).padStart(9)}${"".padStart(10)}${pct(h2.sp).padStart(11)}`;
   console.log(`  ${v.id.padEnd(13)}${pct(cagr).padStart(9)}${sharpe.toFixed(2).padStart(8)}${ir.toFixed(2).padStart(7)}${(te.toFixed(1) + "%").padStart(8)}${pct(r.maxDrawdownPct, 1).padStart(9)}${`${win}/${tot}`.padStart(9)}${String(r.trades).padStart(8)}${r.usable ? "" : "  ⛔ NOT USABLE"}`);
@@ -266,7 +403,7 @@ for (const v of VARIANTS.filter(v => !only || only.includes(v.id))) {
 }
 console.log(spyLine);
 console.log(`\nBY HALF — CAGR and excess over SPY`);
-console.log(`  ${"variant".padEnd(13)}${"1999-2012".padStart(9)}${"vs SPY".padStart(10)}${"2013-2026".padStart(11)}${"vs SPY".padStart(10)}`);
+console.log(`  ${"variant".padEnd(13)}${`${TEST_FROM.slice(0, 4)}-2012`.padStart(9)}${"vs SPY".padStart(10)}${"2013-2026".padStart(11)}${"vs SPY".padStart(10)}`);
 for (const l of halves) console.log(l);
 console.log(spyHalves);
 console.log(`\n  TE = tracking error vs SPY (annualised). yrs>SPY = calendar years the variant beat SPY.`);
@@ -275,4 +412,41 @@ console.log(`\n  TE = tracking error vs SPY (annualised). yrs>SPY = calendar yea
 const w = indexWeights("2026-09-29");
 console.log(`\nREBUILT S&P SECTOR WEIGHTS, 2026-09 (Sharadar taxonomy) — compare to SPY's published GICS mix`);
 for (const [s, x] of [...w.entries()].sort((a, b) => b[1] - a[1])) console.log(`  ${s.padEnd(24)}${(x * 100).toFixed(1).padStart(6)}%`);
+for (const [id, st] of corrStats) {
+  console.log(`\n${id}: binding on ${st.binding}/${st.rebalances} pick-days (${(100 * st.binding / Math.max(1, st.rebalances)).toFixed(0)}%), ${st.skipped} skips; 2025+ examples (first 25 distinct pairs):`);
+  const seen = new Set<string>();
+  for (const e of st.examples) { const pair = e.split(" ")[1].split(" ")[0]; if (seen.has(pair)) continue; seen.add(pair); console.log(`  ${e}`); if (seen.size >= 25) break; }
+}
+const last = tradingDays[tradingDays.length - 1];
+const SEMI = ["MU", "WDC", "STX", "SNDK", "DELL", "NVDA", "AVGO", "AMD", "MRVL", "LRCX", "AAPL", "MSFT"].filter(t => series.has(t));
+console.log(`\n${CORR_DAYS}d CORRELATION as of ${last}:`);
+console.log("        " + SEMI.map(t => t.padStart(6)).join(""));
+for (const a of SEMI) console.log(`  ${a.padEnd(6)}` + SEMI.map(b => { const c = a === b ? 1 : corrOf(last, a, b); return (c == null ? "—" : c.toFixed(2)).padStart(6); }).join(""));
+if (earnSkips.length) {
+  // EVENT STUDY on what the rule declined: forward return of each skipped name from the skip day's
+  // close, minus SPY's. Positive = the rule cost money (the name beat SPY after we passed on it).
+  // Deduped per (symbol, report): a name skipped on several days before one print counts once, at
+  // its first skip.
+  const seen = new Set<string>(), rows: Array<{ year: string; r5: number; r20: number }> = [];
+  for (const k of earnSkips) {
+    const rep = reportsWithin(k.symbol, k.date)!, key = `${k.symbol}|${rep}`;
+    if (seen.has(key)) continue; seen.add(key);
+    const i = tradingDays.indexOf(k.date);
+    const fwd = (h: number) => {
+      const d1 = tradingDays[i + h]; if (!d1) return null;
+      const a = priceOf(k.date, k.symbol), b = priceOf(d1, k.symbol), s0 = spy.get(k.date), s1 = spy.get(d1);
+      return a && b && s0 && s1 ? (b / a - s1 / s0) * 100 : null;
+    };
+    const r5 = fwd(5), r20 = fwd(20);
+    if (r5 != null && r20 != null) rows.push({ year: k.date.slice(0, 4), r5, r20 });
+  }
+  const med = (x: number[]) => { const y = [...x].sort((a, b) => a - b); return y[Math.floor(y.length / 2)]; };
+  const se = (x: number[]) => sd(x) / Math.sqrt(x.length);
+  const line = (lab: string, rs: typeof rows) => rs.length === 0 ? console.log(`  ${lab.padEnd(11)}     0  (no skips)`) : console.log(`  ${lab.padEnd(11)}${String(rs.length).padStart(6)}${pct(mean(rs.map(r => r.r5))).padStart(10)} ±${se(rs.map(r => r.r5)).toFixed(2)}${pct(med(rs.map(r => r.r5))).padStart(9)}${pct(mean(rs.map(r => r.r20))).padStart(10)} ±${se(rs.map(r => r.r20)).toFixed(2)}${pct(med(rs.map(r => r.r20))).padStart(9)}${(100 * rs.filter(r => r.r20 > 0).length / rs.length).toFixed(0).padStart(7)}%`);
+  console.log(`\nSKIPPED NAMES — forward return vs SPY from the skip-day close (positive = the skip COST money)`);
+  console.log(`  ${"period".padEnd(11)}${"n".padStart(6)}${"5d mean".padStart(10)}${"".padStart(6)}${"median".padStart(9)}${"20d mean".padStart(10)}${"".padStart(6)}${"median".padStart(9)}${"20d>0".padStart(8)}`);
+  line("all", rows);
+  line("2004-2012", rows.filter(r => r.year <= "2012"));
+  line("2013-2026", rows.filter(r => r.year >= "2013"));
+}
 void maxDrawdown;
