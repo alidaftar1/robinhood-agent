@@ -959,6 +959,69 @@ export async function updateRunByDate(date: string, updater: (run: TradeRun) => 
   return true;
 }
 
+/**
+ * Owner sleeve label, applied to EVERY stored run from `fromDate` through the newest (inclusive).
+ *
+ * Why a range, not one date: sleeve membership carries forward from the previous run
+ * (app/api/trade), and lib/stopouts symbolsWithMainOwnership reads ALL stored runs — a buy not tagged
+ * "influencer", or any run holding the name outside influencerPositions, keeps it on the MAIN-book
+ * stop. So every run that holds it must agree. Refusals (each would otherwise report a success that
+ * does not hold): a run BEFORE fromDate that already marks the name as main (re-run from that date);
+ * no run in the range ending with the requested membership; a run saved between read and write
+ * (a cron mid-flight would be erased); a write not visible on re-read.
+ */
+export async function tagSleeveFrom(fromDate: string, symbol: string, sleeve: "influencer" | "main"): Promise<{ ok: true; detail: string[] } | { ok: false; reason: string }> {
+  const all = await getRuns(MAX_RUNS);
+  if (!all.length) return { ok: false, reason: "no runs stored" };
+  if (fromDate > all[0].date) return { ok: false, reason: `${fromDate} is after the newest stored date (${all[0].date})` };
+  if (sleeve === "influencer") {
+    // Mirrors symbolsWithMainOwnership: a main buy counts in ANY run (even pre-tracking); a holding
+    // outside the sleeve counts only in runs that track the sleeve.
+    const marksMain = (r: TradeRun) =>
+      (r.trades ?? []).some(t => t.symbol === symbol && t.side === "buy" && t.strategy !== "influencer") ||
+      (r.influencerPositions != null && (r.positions ?? []).some(p => p.symbol === symbol)
+        && !r.influencerPositions.some(p => p.symbol === symbol));
+    const earlier = all.filter(r => r.date < fromDate && marksMain(r));
+    if (earlier.length) {
+      // Start of THIS holding: walk back from fromDate while consecutive runs still hold it. Evidence
+      // inside it means fromDate was too late; evidence before it is a CLOSED earlier holding, and
+      // relabelling that would rewrite old sleeve history — so refuse rather than suggest it.
+      const before = all.filter(r => r.date < fromDate);           // newest first
+      let start = fromDate;
+      for (const r of before) { if (r.influencerPositions == null || !(r.positions ?? []).some(p => p.symbol === symbol)) break; start = r.date; }
+      const first = earlier.map(r => r.date).sort()[0];
+      return first >= start
+        ? { ok: false, reason: `this holding started ${start}, before ${fromDate}, and runs from then mark ${symbol} as main — re-run from ${start}` }
+        : { ok: false, reason: `an earlier, CLOSED main-book holding of ${symbol} (from ${first}) is still in the stored history; drop-check reads it and would keep the main-book stop, so the label cannot take effect — not applied` };
+    }
+  }
+  // A pre-tracking run INSIDE the range cannot be relabelled (applySleeveTag leaves it alone), yet a
+  // main buy there still counts for drop-check — so a success would not hold. Refuse instead.
+  const untrackedHit = all.find(r => r.date >= fromDate && r.influencerPositions == null &&
+    ((r.positions ?? []).some(p => p.symbol === symbol) || (r.trades ?? []).some(t => t.symbol === symbol)));
+  if (untrackedHit) return { ok: false, reason: `${symbol} appears in a run from before sleeve tracking (${untrackedHit.date}); that run cannot be relabelled — not applied` };
+  const head = all[0].timestamp, len = all.length;
+  const detail: string[] = [];
+  let reached = 0, changed = 0;
+  for (const r of all) {
+    if (r.date < fromDate) continue;
+    const res = applySleeveTag(r, symbol, sleeve);
+    detail.push(`${r.date} ${r.timestamp?.slice(11, 16) ?? "?"}Z: ${res.buys} buy(s), ${res.membership}`);
+    if (res.buys || res.membership === "added" || res.membership === "removed") changed++;
+    const has = (r.influencerPositions ?? []).some(p => p.symbol === symbol);
+    const held = (r.positions ?? []).some(p => p.symbol === symbol);
+    if (held && res.membership !== "untracked" && has === (sleeve === "influencer")) reached++;
+  }
+  if (!reached) return { ok: false, reason: `no run from ${fromDate} on holds ${symbol} in a tracked snapshot — nothing would carry forward [${detail.join("; ")}]` };
+  if (!changed) return { ok: true, detail: [...detail, "already labelled — nothing written"] };
+  const now = await getRuns(MAX_RUNS);
+  if (now.length !== len || now[0]?.timestamp !== head) return { ok: false, reason: "a run was saved meanwhile — retry when no cron is running" };
+  await redisPost("pipeline", [["DEL", RUNS_KEY], ...all.map(r => ["RPUSH", RUNS_KEY, JSON.stringify(r)])]);
+  const after = await getRuns(MAX_RUNS);
+  if (after.length !== len || JSON.stringify(after[0]) !== JSON.stringify(all[0])) return { ok: false, reason: "write not visible on re-read — check the run store before retrying" };
+  return { ok: true, detail };
+}
+
 // Idempotency guard for the autopilot email — one send per calendar date.
 const AUTOPILOT_SENT_PREFIX = "robinhood:autopilot:sent:";
 
@@ -1663,6 +1726,43 @@ export function applyActorTag(
     }
   }
   return { actors, dates };
+}
+
+/**
+ * Put a symbol's position into a sleeve on ONE run, by the owner's say-so.
+ *
+ * Owner trades are captured the next morning with the sleeve the symbol ALREADY had
+ * (inferSellStrategy), so a brand-new name always lands in "main" — there was no way to say
+ * "this one is an influencer pick" (2026-10-27: owner bought AMZN and asked for it in the sleeve;
+ * PLTR got the label only because the sleeve already held it). This sets `strategy` on that run's
+ * BUYS of the symbol and adds/removes it from `influencerPositions`, which every later run carries
+ * forward (app/api/trade derives membership from the previous run's influencerPositions). Sells
+ * are left alone: a sell's sleeve is the sleeve it left, which this does not rewrite.
+ * Sleeve RETURNS are not touched here — run ?recomputeSleeves after, so one function owns them.
+ */
+export function applySleeveTag(run: TradeRun, symbol: string, sleeve: "influencer" | "main"): { buys: number; membership: "added" | "removed" | "unchanged" | "not-held" | "untracked" } {
+  if (run.influencerPositions == null) return { buys: 0, membership: "untracked" };
+  let buys = 0;
+  for (const t of run.trades ?? []) {
+    if (t.symbol !== symbol || t.side !== "buy") continue;
+    // An untagged buy already reads as main everywhere (inferSellStrategy, stopouts): not a change.
+    const isInfl = t.strategy === "influencer";
+    if (sleeve === "influencer" ? !isInfl : isInfl) { t.strategy = sleeve; buys++; }
+  }
+  // (checked above: a run without the field predates sleeve tracking, and lib/stopouts reads that as
+  // "no evidence" — a one-name sleeve there would turn its other positions into main-book evidence)
+  const infl = run.influencerPositions;
+  const inSleeve = infl.some(p => p.symbol === symbol);
+  if (sleeve === "influencer") {
+    if (inSleeve) return { buys, membership: "unchanged" };
+    const pos = (run.positions ?? []).find(p => p.symbol === symbol);
+    if (!pos) return { buys, membership: "not-held" };
+    run.influencerPositions = [...infl, { ...pos }];
+    return { buys, membership: "added" };
+  }
+  if (!inSleeve) return { buys, membership: "unchanged" };
+  run.influencerPositions = infl.filter(p => p.symbol !== symbol);
+  return { buys, membership: "removed" };
 }
 
 /** Write back a whole run list, newest-first. Used only by backfills. */

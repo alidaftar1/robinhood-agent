@@ -4,7 +4,7 @@ import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { prunePicksByFirstSeen, resetLedger } from "@/lib/influencer-ledger";
-import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, sleeveReturnsForStorage, applyActorTag } from "@/lib/run-store";
+import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, sleeveReturnsForStorage, applyActorTag, tagSleeveFrom } from "@/lib/run-store";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -392,6 +392,23 @@ export async function GET(request: Request) {
           + `(${tags.map(t => `${t.side} ${t.symbol}${t.actor ? "=" + t.actor : ""}${t.tradedOn ? "@" + t.tradedOn : ""}`).join(", ")}). `
           + (force ? "FORCED — existing values were replaced." : "Fields already recorded are never overwritten.")
         : `no run found for ${date}`;
+    }
+  }
+
+  // ?tagSleeve=FROMDATE:SYMBOL:influencer|main — owner labels a position's sleeve on every run from
+  // FROMDATE (the first day it was held) through the newest; see tagSleeveFrom for the refusals.
+  // Follow with ?recomputeSleeves=1 so the sleeve returns match the new membership.
+  const tagSleeve = url.searchParams.get("tagSleeve");
+  if (tagSleeve) {
+    const [date, rawSymbol, sleeve] = tagSleeve.split(":");
+    const symbol = (rawSymbol ?? "").toUpperCase();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? "") || !symbol || (sleeve !== "influencer" && sleeve !== "main")) {
+      results.tagSleeve = "bad format — use FROMDATE:SYMBOL:influencer|main";
+    } else {
+      const res = await tagSleeveFrom(date, symbol, sleeve);
+      results.tagSleeve = res.ok
+        ? `${symbol} → ${sleeve} from ${date}: [${res.detail.join("; ")}]. Run ?recomputeSleeves=1 next.`
+        : `NOT applied — ${res.reason}`;
     }
   }
 
