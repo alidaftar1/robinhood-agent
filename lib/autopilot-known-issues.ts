@@ -355,6 +355,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Does today's run hold a position that is NEW versus the previous run (absent yesterday, present today) with NO corresponding buy trade recorded in today's trades? That is the signature of a fill the verification step missed. Name the symbol and quantity. Also flag an UNVERIFIABLE note in buySizingAdjustments — it means the broker check failed and the account may not match the stored run. TWO BENIGN TWINS, do NOT flag: (a) a LONG-HELD position whose buy aged out of the retained run window — it was in yesterday's positions too, so the new-versus-yesterday test already excludes it; (b) a share-count change from a deposit/transfer-in or corporate action rather than an order.",
   },
+  {
+    date: "2026-10-28",
+    title: "Imminent-earnings buys: serial beaters are now ALLOWED (rule change, not a violation)",
+    lesson:
+      "Owner decision 2026-10-28: the blanket no-buy-within-3-days rule tested neutral (2004-2026 backtest), so the buy side now uses the hold side's bar — a name with a SERIAL beat record (>=4 quarters of history, beat >=3/4 of them AND avg surprise >= +5%, lib/earnings beatClass) may be bought into its print, main book and sleeve alike. Enforced in CODE by screenImminentEarningsBuys (lib/earnings) with the run's beatHistory: it leaves an 'ALLOWED into ⚠⚠ IMMINENT EARNINGS … serial beater (x/y beats, avg …)' note in buySizingAdjustments. A mixed or MISSING record is still dropped (fail closed). The shortlist backfill (lib/earnings-skip) likewise keeps serial beaters instead of skipping them.",
+    check:
+      "Do NOT flag an imminent-earnings buy as a rule violation when buySizingAdjustments carries its 'ALLOWED … serial beater' note. DO flag (HIGH) any executed buy with earnings ≤3 days away that has NO such note, or whose noted record is not serial (fewer than 4 quarters, beats/total < 0.75, or avg < +5%) — that means the gate was bypassed. And check the thesis named the record for any such buy.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

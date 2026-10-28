@@ -31,7 +31,7 @@ const cache = (ticker: string) => ({
 
 describe("formatEarningsRecord", () => {
   test("renders beats, total and a signed average", () => {
-    expect(formatEarningsRecord(SERIAL_BEATER)).toBe("  📈EARN-RECORD beat 4/4, avg +12% surprise");
+    expect(formatEarningsRecord(SERIAL_BEATER)).toBe("  📈EARN-RECORD beat 4/4, avg +12% surprise ✓SERIAL");
   });
 
   test("rounds before signing so a tiny negative never prints as -0%", () => {

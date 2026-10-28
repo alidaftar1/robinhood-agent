@@ -189,12 +189,27 @@ export interface ImminentScreenResult<T> {
  * asserts only that WE could not establish a date. Collapsing them would make the email state a
  * fact about the company that we do not have.
  */
+/** The prompt's one reading of 📈EARN-RECORD (lib/strategy: "beat ≥3 of ≥4 quarters, avg ≥ +5%").
+ *  "unknown" = no record OR fewer than 4 quarters — never folded into "other": missing or too-short
+ *  data is not evidence of a weak record. Both block the buy gate the same way. */
+export type BeatClass = "serial" | "other" | "unknown";
+export function beatClass(b: EarningsBeatRecord | undefined): BeatClass {
+  // ≥4 quarters: fetchEarningsBeatHistory accepts a 2-quarter history, and 2/2 is two data points,
+  // not a "beat ≥3/4" record — it must not open the buy gate (review 2026-10-28).
+  if (!b || b.total < 4) return "unknown";
+  return b.beats / b.total >= 0.75 && b.avgSurprisePct >= 5 ? "serial" : "other";
+}
+
 export function screenImminentEarningsBuys<T extends { symbol: string }>(
   buys: T[],
   dates: Record<string, string>,
   asked: Set<string>,
   today: string,
   maxDays = IMMINENT_EARNINGS_DAYS,
+  /** Beat records. A SERIAL beater (beatClass) is allowed into its print — owner decision 2026-10-28,
+   *  the hold side's own bar. Mixed or missing record = dropped as before (fail closed). Omit to
+   *  screen with no exceptions (the shortlist backfill uses that to FIND imminent names). */
+  beats?: ReadonlyMap<string, EarningsBeatRecord>,
 ): ImminentScreenResult<T> {
   const notes: string[] = [];
   const imminent: string[] = [];
@@ -214,8 +229,13 @@ export function screenImminentEarningsBuys<T extends { symbol: string }>(
     if (Number.isFinite(edMs)) {
       const dte = Math.floor((edMs - todayMs) / 86_400_000);
       if (dte >= 0 && dte <= maxDays) {
+        const rec = beats?.get(sym);
+        if (rec && beatClass(rec) === "serial") {
+          notes.push(`${sym} buy ALLOWED into ⚠⚠ IMMINENT EARNINGS ${ed} (${dte}d) — serial beater (${rec.beats}/${rec.total} beats, avg ${rec.avgSurprisePct >= 0 ? "+" : ""}${rec.avgSurprisePct.toFixed(1)}% surprise).`);
+          return true;
+        }
         imminent.push(sym);
-        notes.push(`${sym} buy DROPPED — ⚠⚠ IMMINENT EARNINGS ${ed} (${dte}d away; the rule is ≤${maxDays}d). Hard no-buy rule, enforced in code.`);
+        notes.push(`${sym} buy DROPPED — ⚠⚠ IMMINENT EARNINGS ${ed} (${dte}d away; the rule is ≤${maxDays}d) and ${rec ? "its beat record is not serial" : "we could NOT establish a beat record (fetch failed or too short a history)"}. Only serial beaters may be bought into a print; enforced in code.`);
         return false;
       }
       return true;
@@ -306,7 +326,9 @@ export function formatEarningsRecord(beat: EarningsBeatRecord | undefined): stri
   if (!beat) return "";
   // Round first so the sign reflects the number actually shown (no "-0%").
   const avgPct = Math.round(beat.avgSurprisePct);
-  return `  📈EARN-RECORD beat ${beat.beats}/${beat.total}, avg ${avgPct >= 0 ? "+" : ""}${avgPct}% surprise`;
+  // ✓SERIAL is the gate's own verdict (beatClass), so the row cannot round its way into a claim the
+  // gate rejects (3/4 at +4.6% displays "avg +5%" but is NOT serial).
+  return `  📈EARN-RECORD beat ${beat.beats}/${beat.total}, avg ${avgPct >= 0 ? "+" : ""}${avgPct}% surprise${beatClass(beat) === "serial" ? " ✓SERIAL" : ""}`;
 }
 
 // Earnings-surprise history (Finnhub) for a set of symbols — how many of the last ~8 quarters the

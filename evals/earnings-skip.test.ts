@@ -125,7 +125,7 @@ describe("wiring: /api/trade builds the shortlist through the backfill", () => {
     expect(route).toContain("mergeEarningsLookups(shortlistEarn.earnings, mainEarnings)");
   });
   test("the shadow is recorded only on buy-open days", () => {
-    expect(route).toMatch(/if \(buysOpen && !mainBuysBlocked && shortlistEarn\.skipped\.length\)/);
+    expect(route).toMatch(/if \(buysOpen && !mainBuysBlocked && \(shortlistEarn\.skipped\.length \|\| shortlistEarn\.serialImminent\.size\)\)/);
   });
   test("the conviction block is told the SHOWN shortlist, never the skipped names", () => {
     expect(route).toContain("mainShortlist: new Set(v1Buy.map(s => s.symbol))");
@@ -156,8 +156,10 @@ describe("beat-record tagging on the shadow (2026-10-27)", () => {
   });
   test("wiring: the trade route records TAGGED names; the shadow route scores by bucket", () => {
     const route = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
-    expect(route).toContain("recordEarningsSkipShadow(tagBeatRecords(shortlistEarn.skipped, esBeat), today)");
-    expect(route).toContain("fetchEarningsBeatHistory(shortlistEarn.skipped.map(k => k.symbol)).catch(");
+    expect(route).toContain("recordEarningsSkipShadow(tagBeatRecords(shortlistEarn.skipped, esBeat), today, kept)");
+    // since 2026-10-28: the shortlist's own records are reused; only names it could not fetch are asked
+    expect(route).toContain("new Map<string, EarningsBeatRecord>(shortlistEarn.beats)");
+    expect(route).toContain("fetchEarningsBeatHistory(missing).catch(");
     const shadow = readFileSync(`${import.meta.dir}/../app/api/earnings-skip-shadow/route.ts`, "utf8");
     expect(shadow).toContain("cls: beatClass(k.beat)");
     expect(shadow).toContain('for (const cls of ["serial", "other", "unknown"] as const)');

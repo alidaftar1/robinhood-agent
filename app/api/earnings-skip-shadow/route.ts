@@ -38,7 +38,12 @@ export async function GET(request: Request) {
         // Same prices as the total (no refetch), so the buckets are consistent with it.
         if (obs.length) byBeatRecord[cls] = (await scoreShadowObservations(obs, today, "exit", prices)).stats;
       }
-      scoring = { ...stats, byBeatRecord, scored };
+      // KEPT (since 2026-10-28): serial beaters the rule now lets through. Scored as an ENTRY signal —
+      // keeping one was right when it then OUTPERFORMED SPY — the mirror of the skipped names above.
+      const keptObs = days.flatMap(d => (d.kept ?? []).map(k => ({ symbol: k.symbol, price: k.price, date: d.date })));
+      // Different basis from the skipped names (excess vs raw) — read its own verdict. Shares `prices`.
+      const kept = keptObs.length ? (await scoreShadowObservations(keptObs, today, "entry", prices)).stats : null;
+      scoring = { ...stats, byBeatRecord, kept, scored };
     } catch {
       scoring = { error: "scoring unavailable" };
     }

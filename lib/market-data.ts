@@ -469,7 +469,11 @@ export function formatV1Shortlist(
     // Same reason as the influencer rows: the 📊REPORTED buy rule carves out "a serial beater with a
     // strong 📈EARN-RECORD", so a just-reported CANDIDATE needs its record shown to make that
     // reachable. Only on 📊REPORTED names — the record is noise on a name with no fresh print.
-    const beatFlag = re ? formatEarningsRecord(beatHistory.get(s.symbol)) : "";
+    // Also on a name reporting within the imminent window: since 2026-10-28 a SERIAL beater may be
+    // bought into its print, so the record that decides it must be on the row the model reads.
+    const dteRow = s.earningsDate ? Math.round((Date.parse(`${s.earningsDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000) : NaN;
+    const imminentRow = dteRow >= 0 && dteRow <= IMMINENT_EARNINGS_DAYS;
+    const beatFlag = re || imminentRow ? formatEarningsRecord(beatHistory.get(s.symbol)) : "";
     // ◆HELD marks a name you currently hold that is still eligible + positive-momentum. It is
     // RETAINED by the hysteresis band even if it slipped below the top buy names — do NOT rotate it.
     const heldFlag = held.has(s.symbol) ? " ◆HELD" : "";

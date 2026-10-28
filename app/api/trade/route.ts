@@ -533,10 +533,17 @@ export async function GET(request: Request) {
       // The bulk-calendar dates too, as the buy gate reads them (earningsDatesMap), so a print known
       // only to the bulk calendar also frees its slot instead of being dropped at the gate.
       Object.fromEntries(marketData.stocks.filter(s => s.earningsDate).map(s => [s.symbol, s.earningsDate as string])),
+      undefined,
+      // Serial beaters keep their slot (lib/earnings-skip 1b); a failed fetch skips them as before.
+      (syms) => fetchEarningsBeatHistory(syms),
     );
     const { buy: v1Buy, retained: v1Retained } = shortlistEarn;
+    if (shortlistEarn.serialImminent.size) {
+      contextWarnings.push(`CONTEXT — reporting within ${IMMINENT_EARNINGS_DAYS}d but KEPT on the shortlist as serial beaters (buyable into the print): ${[...shortlistEarn.serialImminent].map(([s, r]) => `${s} (${r.beats}/${r.total}, avg ${r.avgSurprisePct >= 0 ? "+" : ""}${r.avgSurprisePct.toFixed(0)}%)`).join(", ")}.`);
+      console.log("EARNINGS_SERIAL_KEPT", [...shortlistEarn.serialImminent.keys()]);
+    }
     if (shortlistEarn.skipped.length) {
-      contextWarnings.push(`CONTEXT — not shortlisted today, earnings ≤${IMMINENT_EARNINGS_DAYS}d (unbuyable under the no-buy rule), so the next eligible name in each sector took the slot: ${shortlistEarn.skipped.map(k => `${k.symbol} (${k.earningsDate})`).join(", ")}. Logged to the earnings-skip shadow to measure whether the rule helps.`);
+      contextWarnings.push(`CONTEXT — not shortlisted today, earnings ≤${IMMINENT_EARNINGS_DAYS}d without a serial beat record (unbuyable), so the next eligible name in each sector took the slot: ${shortlistEarn.skipped.map(k => `${k.symbol} (${k.earningsDate})`).join(", ")}. Logged to the earnings-skip shadow to measure whether the rule helps.`);
       console.log("EARNINGS_SKIP", shortlistEarn.skipped);
     }
     // buy-allowlist — retained names excluded on purpose. The earnings-SKIPPED names stay in it: they
@@ -615,11 +622,27 @@ export async function GET(request: Request) {
     // (◆HELD, render-only) is excluded here since anything held is already covered by (a).
     const reportedCandidates = [...v1Buy.map(s => s.symbol), ...influencerCandidateSet]
       .filter(sym => recentEarnings.has(sym));
-    const beatSymbols = [...new Set([...heldIntoEarnings, ...reportedCandidates])];
-    const beatHistory = beatSymbols.length
-      ? await fetchEarningsBeatHistory(beatSymbols).catch(() => new Map<string, EarningsBeatRecord>())
-      : new Map<string, EarningsBeatRecord>();
-    console.log("EARN_RECORD_SCOPE", { held: heldIntoEarnings, reportedCandidates, fetched: beatSymbols.length });
+    // (c) buyable candidates reporting within the imminent window: since 2026-10-28 a SERIAL beater
+    // may be bought into its print, so the record must be on the row the model reads AND in the map
+    // the buy gate reads. Records the shortlist backfill already fetched are reused, not refetched.
+    // The EARLIER of the two date sources: the shortlist row shows s.earningsDate (nearest of bulk and
+    // per-symbol), the gate reads earningsDatesMap (per-symbol first). Fetching for either keeps the
+    // row and the gate from disagreeing about whether a record is needed.
+    const stockDate = new Map(marketData.stocks.filter(x => x.earningsDate).map(x => [x.symbol, x.earningsDate as string]));
+    const dteOf = (sym: string) => {
+      const ds = [earningsDatesMap[sym], stockDate.get(sym)].filter((x): x is string => !!x).sort();
+      if (!ds.length) return null;
+      return Math.round((Date.parse(ds[0] + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000);
+    };
+    const imminentCandidates = [...v1Buy.map(s => s.symbol), ...influencerCandidateSet]
+      .filter(sym => { const d = dteOf(sym); return d != null && d >= 0 && d <= IMMINENT_EARNINGS_DAYS; });
+    const beatSymbols = [...new Set([...heldIntoEarnings, ...reportedCandidates, ...imminentCandidates])]
+      .filter(sym => !shortlistEarn.beats.has(sym));
+    const beatHistory = new Map<string, EarningsBeatRecord>(shortlistEarn.beats);
+    if (beatSymbols.length) {
+      for (const [k, v] of await fetchEarningsBeatHistory(beatSymbols).catch(() => new Map<string, EarningsBeatRecord>())) beatHistory.set(k, v);
+    }
+    console.log("EARN_RECORD_SCOPE", { held: heldIntoEarnings, reportedCandidates, imminentCandidates, fetched: beatSymbols.length, reused: shortlistEarn.beats.size });
 
     const shortlistTable = formatV1Shortlist([...v1Buy, ...v1Retained], quality?.scores ?? {}, marketData.insiderBuys, marketData.analystRatings, heldMainSymbols, newsSignals, recentEarnings, influencerX, beatHistory, today);
     // Build the influencer section HERE (once) — after recentEarnings/news, so candidates carry the
@@ -1217,7 +1240,12 @@ export async function GET(request: Request) {
     // identical for added shares, and neither prompt carves out a top-up. Runs BEFORE the position
     // cap on purpose, so a buy that cannot execute never consumes a slot the next name could use.
     {
-      const screen = screenImminentEarningsBuys(decision.buys, earningsDatesMap, earningsAsked, today);
+      // beatHistory: a SERIAL beater may be bought into its print (owner decision 2026-10-28).
+      // A name the shortlist SKIPPED (record not serial, or its lookup failed) stays blocked even if a
+      // later fetch came back serial: its sector slot already went to the next name.
+      const gateBeats = new Map(beatHistory);
+      for (const k of shortlistEarn.skipped) gateBeats.delete(k.symbol);
+      const screen = screenImminentEarningsBuys(decision.buys, earningsDatesMap, earningsAsked, today, IMMINENT_EARNINGS_DAYS, gateBeats);
       decision.buys = screen.kept;
       if (screen.notes.length > 0) {
         buySizingAdjustments.push(...screen.notes);
@@ -2187,12 +2215,19 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     // EARNINGS-SKIP SHADOW (lib/earnings-skip): log the names the imminent-earnings rule kept off the
     // shortlist, with today's price, so /api/earnings-skip-shadow can score whether skipping helped.
     // Only on days main-book buys were OPEN and not quality-blocked — otherwise the rule cost nothing.
-    if (buysOpen && !mainBuysBlocked && shortlistEarn.skipped.length) {
+    // Since 2026-10-28 serial beaters are NOT skipped; they are logged as `kept` on the same day so the
+    // exception itself is measured (kept vs skipped), instead of vanishing from the shadow.
+    if (buysOpen && !mainBuysBlocked && (shortlistEarn.skipped.length || shortlistEarn.serialImminent.size)) {
       try {
-        // Tag each with its beat record (one Finnhub call per skipped name, a handful at most) so the
-        // shadow can score serial beaters separately. Fail-safe: no records → logged untagged.
-        const esBeat = await fetchEarningsBeatHistory(shortlistEarn.skipped.map(k => k.symbol)).catch(() => new Map<string, EarningsBeatRecord>());
-        const esRec = await recordEarningsSkipShadow(tagBeatRecords(shortlistEarn.skipped, esBeat), today);
+        // Records come from the shortlist's own lookup (the one that decided skip vs keep); only the
+        // names it could not fetch are asked again. Fail-safe: no records → logged untagged.
+        const missing = shortlistEarn.skipped.map(k => k.symbol).filter(s => !shortlistEarn.beats.has(s));
+        const esBeat = new Map<string, EarningsBeatRecord>(shortlistEarn.beats);
+        if (missing.length) for (const [k, v] of await fetchEarningsBeatHistory(missing).catch(() => new Map<string, EarningsBeatRecord>())) esBeat.set(k, v);
+        const priceOfStock = (sym: string) => marketData.stocks.find(x => x.symbol === sym)?.price ?? 0;
+        const kept = [...shortlistEarn.serialImminent].map(([symbol, beat]) => ({ symbol, earningsDate: earningsDatesMap[symbol] ?? "", price: priceOfStock(symbol), beat }))
+          .filter(k => k.price > 0);
+        const esRec = await recordEarningsSkipShadow(tagBeatRecords(shortlistEarn.skipped, esBeat), today, kept);
         console.log("EARNINGS_SKIP_SHADOW", { logged: esRec.logged, skipped: esRec.skipped ?? false });
       } catch (e) {
         console.warn("EARNINGS_SKIP_SHADOW_SKIP", e);
