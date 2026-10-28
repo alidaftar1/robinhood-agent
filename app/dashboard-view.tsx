@@ -509,7 +509,15 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
 
       <div style={{ background: "#111", border: "1px solid #222", borderLeft: "3px solid #3b6ea5", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13, lineHeight: 1.6, color: "#bbb" }}>
         <span style={{ color: "#e5e5e5", fontWeight: 700 }}>Strategy update · 2026-07-09 — </span>
-        the main book switched to a <span style={{ color: "#e5e5e5", fontWeight: 600 }}>quality-momentum</span> strategy: rank the S&amp;P 500 by 12-month momentum (skipping the most recent month), keep only above-median-quality names (profitability &amp; low debt, from SEC filings), cap each sector (40% at the time; since 2026-10-23, at most 3× its S&amp;P 500 weight), and hold ~6 high-conviction names chosen from that shortlist with insider buys, analyst actions, fresh news and sector rotation as tie-breakers. The YouTube-influencer sleeve is unchanged.
+        the main book switched to a <span style={{ color: "#e5e5e5", fontWeight: 600 }}>quality-momentum</span> strategy: rank the S&amp;P 500 by 12-month momentum (skipping the most recent month), keep only above-median-quality names (profitability &amp; low debt, from SEC filings), cap each sector (40% at the time — see the 2026-10-26 update below), and hold ~6 high-conviction names chosen from that shortlist with insider buys, analyst actions, fresh news and sector rotation as tie-breakers. The YouTube-influencer sleeve is unchanged.
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #222" }}>
+          <span style={{ color: "#e5e5e5", fontWeight: 700 }}>Strategy update · 2026-10-26 — </span>
+          new <span style={{ color: "#e5e5e5", fontWeight: 600 }}>sector caps</span>: each sector may hold at most 3× its weight in the S&amp;P 500, replacing the flat 40%-per-sector cap. In practice Technology may hold up to 3 names (~60% of the book), Financials and Health Care 2, every other sector 1 (~20%). Big sectors loosen and small ones tighten, so a sector the market barely holds (Energy, ~4%) can no longer become 40% of this book. Buy-side only: it limits new buys and never forces a sale. In a 1999–2026 backtest it beat the flat cap (+11.4% vs +9.0% a year, similar worst drop), but all of that edge came from the tech-led 2013–2026 years; in 1999–2012 it did slightly worse. In effect it is a bet that technology keeps leading.
+        </div>
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #222" }}>
+          <span style={{ color: "#e5e5e5", fontWeight: 700 }}>Strategy update · 2026-10-28 — </span>
+          <span style={{ color: "#e5e5e5", fontWeight: 600 }}>buying into earnings</span>: the agent used to skip buying any stock reporting earnings within 3 days, in both books. A 2004–2026 backtest found that rule made no difference (+7.34% vs +7.39% a year), so a stock with a strong beat record (at least 4 quarters on record, beating estimates in three-quarters or more of them, by +5% or more on average) may now be bought just before it reports. Every other stock is still skipped, including one whose record we cannot fetch. It is the same bar the agent already used as a reason to keep a holding through its report.
+        </div>
       </div>
 
       {runs.length >= 2 && (

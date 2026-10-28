@@ -17,7 +17,7 @@
 // 1b. SERIAL-BEATER EXCEPTION (owner decision 2026-10-28). The blanket rule tested neutral (backtest,
 //    2004-2026: skipping vs not, +7.34% vs +7.39%), so the buy side now uses the hold side's own bar:
 //    a name with a serial 📈EARN-RECORD (beatClass "serial") is NOT skipped and may be bought into its
-//    print. A mixed OR UNKNOWN record (fetch failed, < 2 quarters) is still skipped — fail closed, so a
+//    print. A mixed OR UNKNOWN record (fetch failed, < 4 quarters) is still skipped — fail closed, so a
 //    Finnhub outage can only make the rule stricter, never open it.
 //
 // 2. SHADOW. Whether the rule itself helps is unmeasured: the backtest never modelled it, and the
