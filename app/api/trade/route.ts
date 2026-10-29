@@ -8,7 +8,7 @@ import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebala
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
-import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, netScores, INFLUENCER_BUY_FLOOR, toMomentumSignal, type MomentumSignal } from "@/lib/influencer-signals";
+import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, netScores, buyChannelCounts, sleeveBuyQualifies, MIN_BUY_CHANNELS, INFLUENCER_BUY_FLOOR, toMomentumSignal, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
 import { sendAlert } from "@/lib/alert";
@@ -211,7 +211,8 @@ export async function GET(request: Request) {
       // drops). Same pass rule too: a SUB-floor shortlist name passes the live data gate (the
       // net-floor guard rejects it later); every other sleeve buy without a reading is dropped.
       const dryNetAll = influencerCache ? netScores(influencerCache) : {};
-      const dryAboveFloor = (b: { symbol: string }) => (dryNetAll[b.symbol] ?? 0) >= INFLUENCER_BUY_FLOOR;
+      const dryChanAll = influencerCache ? buyChannelCounts(influencerCache) : {};
+      const dryAboveFloor = (b: { symbol: string }) => sleeveBuyQualifies(dryNetAll[b.symbol] ?? 0, dryChanAll[b.symbol] ?? 0);
       await fetchMomentumInto(
         decision.buys.filter(b => isInfluencerBuy(b) && dryAboveFloor(b) && dryShortlistSet.has(b.symbol) && !influencerMomentum.has(b.symbol)).map(b => b.symbol),
         influencerMomentum,
@@ -291,6 +292,7 @@ export async function GET(request: Request) {
     // CROSS-SIGNAL onto MAIN-book shortlist rows (🎬INFL✓/⚠) so a main buy is aware the YouTube crowd
     // corroborates or warns against it. Built even when there are no BUYS (avoid-only names still flag).
     const influencerNet: Record<string, number> = influencerCache ? netScores(influencerCache) : {};
+    const influencerChannels: Record<string, number> = influencerCache ? buyChannelCounts(influencerCache) : {};
     const influencerX = new Map<string, { net: number; avoid: number }>();
     if (influencerCache) {
       const avoids = influencerCache.avoidCounts ?? {};
@@ -762,7 +764,7 @@ export async function GET(request: Request) {
       // Filter to the names that would actually clear the hard net-score floor: the candidate set
       // is the top 12 by net REGARDLESS of value, but a buy below the floor is rejected in code.
       const convictionInfluencer = new Set(
-        [...influencerCandidateSet].filter(t => (influencerNet[t] ?? 0) >= INFLUENCER_BUY_FLOOR));
+        [...influencerCandidateSet].filter(t => sleeveBuyQualifies(influencerNet[t] ?? 0, influencerChannels[t] ?? 0)));
       // The SHOWN shortlist, not v1ShortlistSet: that set also holds the earnings-skipped names (for
       // buy classification), and labelling one "buyable this run" here would nudge the model into a
       // buy the earnings gate drops — after it has already used up sector budget.
@@ -1058,7 +1060,7 @@ export async function GET(request: Request) {
       // guard ahead of this gate was tried and reverted 2026-10-23: it frees sleeve slots and
       // sector budget for other buys, which changes WHAT is bought and how big — an owner decision,
       // not part of this fix.)
-      const aboveFloor = (b: { symbol: string }) => (influencerNet[b.symbol] ?? 0) >= INFLUENCER_BUY_FLOOR;
+      const aboveFloor = (b: { symbol: string }) => sleeveBuyQualifies(influencerNet[b.symbol] ?? 0, influencerChannels[b.symbol] ?? 0);
       const shortlistSleeveBuys = decision.buys
         .filter(b => isInfluencerBuy(b) && v1ShortlistSet.has(b.symbol) && aboveFloor(b) && !influencerMomentum.has(b.symbol))
         .map(b => b.symbol);
@@ -1375,6 +1377,12 @@ export async function GET(request: Request) {
         const net = influencerNet[b.symbol] ?? 0;
         if (net < INFLUENCER_BUY_FLOOR) {
           rejected.push(`${b.symbol} (net=${net}, below the ${INFLUENCER_BUY_FLOOR} floor)`);
+          return false;
+        }
+        // Corroboration bar (2026-10-29): one creator is not consensus. Missing count = 0 = rejected.
+        const ch = influencerChannels[b.symbol] ?? 0;
+        if (!sleeveBuyQualifies(net, ch)) {
+          rejected.push(`${b.symbol} (net=${net} but only ${ch} channel${ch === 1 ? "" : "s"}; needs ≥${MIN_BUY_CHANNELS} different channels)`);
           return false;
         }
         return true;

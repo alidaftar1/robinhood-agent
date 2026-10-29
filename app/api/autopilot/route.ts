@@ -12,7 +12,7 @@ import { computeAttribution, type ChannelStats, type PendingSummary } from "@/li
 import { computeSlippage, type SlippageStats } from "@/lib/slippage";
 import { computeSignalAttribution, type SignalStat } from "@/lib/signal-ledger";
 import { computeExitAttribution, type TriggerStat } from "@/lib/exit-ledger";
-import { getInfluencerSignals } from "@/lib/influencer-signals";
+import { getInfluencerSignals, buyChannelCounts, MIN_BUY_CHANNELS } from "@/lib/influencer-signals";
 import { logReviewResult } from "@/lib/braintrust-trace";
 import { sendAlert } from "@/lib/alert";
 
@@ -593,6 +593,9 @@ export async function GET(request: Request) {
   const influencerCache = await getInfluencerSignals().catch(() => null);
   const buyScores = influencerCache?.tickerCounts ?? {};
   const avoidScores = influencerCache?.avoidCounts ?? {};
+  const buyChannels = influencerCache ? buyChannelCounts(influencerCache) : {};
+  // De-duplicated by ticker+reason: one mis-read ticker repeated across videos is one finding.
+  const rejectedBuys = [...new Map((influencerCache?.rejectedBuys ?? []).map((r) => [`${r.ticker}|${r.reason}`, r])).values()].slice(0, 6);
   const topBuys = Object.entries(buyScores)
     .sort(([, a], [, b]) => b - a).slice(0, 8);
   // A ticker can be BOTH bought and avoided across DIFFERENT creators (legit disagreement — the
@@ -629,6 +632,15 @@ export async function GET(request: Request) {
       // rate limit, and telling the owner their whole day is gone when it is not sends them to
       // fix nothing. Both self-clear; that is the part they need.
       ? `the YouTube Data API returned a quota/rate-limit 403 on ${yt.quotaFailed}/${yt.channels} channels and no videos were retrieved — an empty sleeve here says nothing about what creators posted. This self-clears (a short rate limit in seconds, a spent daily quota at the reset). NOTE the quota is per-GCP-project, so it can be consumed by something that is not this system.`
+      : (() => {
+          // The ticker check fails CLOSED, so a name-lookup outage drops every buy and leaves an empty
+          // sleeve that would otherwise read as "creators named nothing". Say what actually happened.
+          const rej = influencerCache.rejectedBuys ?? [];
+          const unchecked = rej.filter(x => !x.mismatch).length;
+          const kept = Object.keys(influencerCache.tickerCounts ?? {}).length;
+          return unchecked > 0 && unchecked >= kept;
+        })()
+        ? `the ticker check could not run for ${(influencerCache.rejectedBuys ?? []).filter(x => !x.mismatch).length} buy mention(s) (company-name lookup or verifier failed), and they were dropped — treat an empty or thin sleeve as an outage, not a quiet week`
       : yt && yt.channels > 0 && yt.failed > yt.channels / 2
         ? `${yt.failed}/${yt.channels} YouTube channel fetches FAILED${yt.quotaFailed ? ` (${yt.quotaFailed} quota/rate-limit)` : " (non-quota)"} — treat this as an outage, not as a quiet week`
         : cov && cov.videos === 0
@@ -753,10 +765,12 @@ export async function GET(request: Request) {
     ? `<div style="background:#fefce8;border-left:4px solid #eab308;padding:12px 16px;margin-bottom:16px;border-radius:4px">
     <strong>🎬 Influencer signals this week:</strong>
     ${influencerOutage ? `<p style="margin:6px 0 0;font-size:13px;color:#b45309"><strong>⚠ Degraded:</strong> ${escapeHtml(influencerOutage.replace(/\.$/, ""))}. Buys/avoids may be missing or incomplete — read this as an outage, not a quiet week.</p>` : ""}
-    ${topBuys.length > 0 ? `<p style="margin:6px 0 0;font-size:13px"><strong style="color:#059669">Buys:</strong> ${topBuys.map(([t, s]) => `${t} (${s})`).join(", ")}</p>` : ""}
+    ${topBuys.length > 0 ? `<p style="margin:6px 0 0;font-size:13px"><strong style="color:#059669">Buys:</strong> ${topBuys.map(([t, s]) => `${t} (${s}${(buyChannels[t] ?? 0) < MIN_BUY_CHANNELS ? ", 1 channel" : ""})`).join(", ")}</p>` : ""}
+    ${rejectedBuys.some((r) => r.mismatch) ? `<p style="margin:6px 0 0;font-size:13px;color:#b45309"><strong>Dropped — ticker did not match the company named:</strong> ${rejectedBuys.filter((r) => r.mismatch).map((r) => escapeHtml(`${r.ticker} (${r.reason})`)).join("; ")}</p>` : ""}
+    ${rejectedBuys.some((r) => !r.mismatch) ? `<p style="margin:6px 0 0;font-size:13px;color:#b45309"><strong>Dropped — could not be checked:</strong> ${rejectedBuys.filter((r) => !r.mismatch).map((r) => escapeHtml(`${r.ticker} (${r.reason})`)).join("; ")}</p>` : ""}
     ${topAvoids.length > 0 ? `<p style="margin:6px 0 0;font-size:13px"><strong style="color:#dc2626">Avoid:</strong> ${topAvoids.map(([t, s]) => `${t} (${s})`).join(", ")}</p>` : ""}
     ${insights.length > 0 ? `<p style="margin:8px 0 2px;font-size:13px"><strong>Insights:</strong></p><ul style="margin:0;padding-left:20px;font-size:13px">${insights.map((i) => `<li><span style="color:#6b7280">[${escapeHtml(i.channel)}]</span> ${escapeHtml(i.text)}</li>`).join("")}</ul>` : ""}
-    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af">Informational — buys feed the sleeve (score ≥ 3); avoids/insights are visibility only, not wired into trades.</p>
+    <p style="margin:6px 0 0;font-size:11px;color:#9ca3af">Informational — buys feed the sleeve (score ≥ 3 AND buy calls from ≥ 2 different channels; \"1 channel\" names are not buyable); avoids/insights are visibility only, not wired into trades.</p>
   </div>`
     : `<div style="background:#f9fafb;border-left:4px solid #9ca3af;padding:12px 16px;margin-bottom:16px;border-radius:4px">
     <strong>🎬 Influencer signals this week:</strong>

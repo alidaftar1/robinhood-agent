@@ -371,6 +371,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Do NOT flag buys whose total exceeds the run's starting buying power as borrowing when the same run had confirmed sells covering the difference — that is the intended same-day use of proceeds. DO flag (HIGH) any run where total executed buys exceed starting buying power + the confirmed proceeds of that run's sells (that would be margin use), and flag (medium) a run with confirmed sells, decided buys, and an 'after sells:' adjustment that shrank buys while the post-trade cash shows the proceeds were there.",
   },
+  {
+    date: "2026-10-29",
+    title: "Influencer sleeve bought a mis-read ticker on one video (COR for Coherent)",
+    lesson:
+      "A creator recommended Coherent (COHR); the extractor wrote COR (Cencora, a drug distributor). One explicit buy call scores 3 = INFLUENCER_BUY_FLOOR, so a single video bought COR, and the model justified it with Cencora's own unrelated news. Two fixes (owner decision 2026-10-29): the extractor now returns the company name said and verifyBuyNames (lib/influencer-signals) drops any buy ticker whose official company does not match it (lookup/verifier failure = drop, recorded in cache.rejectedBuys); and a sleeve buy needs calls from >= MIN_BUY_CHANNELS (2) different channels (buyChannelCounts / sleeveBuyQualifies), enforced in the trade route's net-floor guard.",
+    check:
+      "Was any influencer buy executed for a ticker with fewer than 2 distinct channels behind it in the run's influencer data, or for a ticker listed in the cache's rejectedBuys? Flag HIGH. Also flag (medium) a thesis for an influencer buy that cites news or a business unrelated to what the creators said about the company.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

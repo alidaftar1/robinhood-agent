@@ -206,6 +206,9 @@ describe("sleeve buy universe fails closed", () => {
       { tickers: ["SPCX"], channelName: "Meet Kevin", confidence: "high" },
       { tickers: ["TSM"], channelName: "Tom Nash", confidence: "high" },
       { tickers: ["PLTR"], channelName: "Ticker Symbol YOU", confidence: "high" },
+      // A second channel, so PLTR clears the two-channel bar (2026-10-29) and the CONTROL below still
+      // isolates the momentum marker rather than tripping over the corroboration marker.
+      { tickers: ["PLTR"], channelName: "Meet Kevin", confidence: "medium" },
     ],
     tickerCounts: { SPCX: 7, TSM: 3, PLTR: 4 },
     avoidCounts: {},
