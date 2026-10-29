@@ -131,7 +131,7 @@ for (const scenario of ANALYSIS_SCENARIOS) {
 }
 
 // ─── Targeted analysis constraints ────────────────────────────────────────────
-// Note: T+1 settlement is covered by the t1-settlement scenario in the analysis suite above,
+// Note: the same-day budget (cash + this run's sale proceeds) is covered by the t1-settlement scenario in the analysis suite above,
 // which runs checkT1BudgetRespected. No separate targeted test needed.
 
 describe("analysis constraint: min position size", () => {

@@ -54,7 +54,11 @@ describe("the agent never spends borrowed money", () => {
 describe("the trade route spends `spendable` and does not double-count a measured 0 unsettled", () => {
   const s = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
   test("buy sizing and the prompt budget read the never-borrow figure", () => {
-    expect(s).toContain("fitNotionalBuysToBudget(decision.buys, agenticBalance.spendable)");
+    // Pre-flight: never-borrow cash + this run's ESTIMATED sale proceeds (limited margin, 2026-10-29);
+    // the deciding fit is the re-read after the sells, again on `spendable`, never raw buying power.
+    expect(s).toContain("fitNotionalBuysToBudget(decision.buys, agenticBalance.spendable + estProceeds)");
+    expect(s).toContain("preSellSpendable: agenticBalance ? agenticBalance.spendable : null");
+    expect(s).not.toContain("after.buyingPower");
     expect(s).toContain("usableNotionalBudget(agenticBalance.spendable)");
     expect(s).not.toContain("fitNotionalBuysToBudget(decision.buys, agenticBalance.buyingPower)");
   });

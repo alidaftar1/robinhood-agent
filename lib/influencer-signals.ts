@@ -860,7 +860,7 @@ FILL THE SLEEVE ONLY ON A QUALIFYING SIGNAL — an empty sleeve is a valid, corr
   stop and which book it lands in, so a mis-tag puts the position under the wrong rules.
 • Off-index names are not eligible for this sleeve and are not listed — if you have a ticker in mind
   that is not in the rows above, it is NOT buyable.
-• These are funded from the SAME settled buying power as main picks — total buys still ≤ budget.
+• These are funded from the SAME budget as main picks (buying power + this run's sale proceeds) — total buys still ≤ budget.
 
 ${rows}
 

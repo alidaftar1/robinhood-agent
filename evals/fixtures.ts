@@ -273,7 +273,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     name: "t1-settlement",
-    description: "Has $200 settled buying power but also holds a weak stock worth ~$245 — cannot use same-day sell proceeds for buys",
+    description: "Has $200 buying power and holds a weak stock worth ~$245 — selling it adds its proceeds to today's budget (limited margin), but buys must stay within cash + those proceeds",
     buyingPower: "$200.00",
     totalValue: "$900.00",
     positions: [

@@ -14,7 +14,7 @@ import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions,
 import { sendAlert } from "@/lib/alert";
 import { parseTradeDecision, isFullExit, type TradeDecision } from "@/lib/trade-decision";
 import { isMarketHoliday, holidayTableCovers } from "@/lib/holidays";
-import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applySectorBudget, applySleeveSectorRule, applyConcentrationTrim, resolveSellQuantity, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
+import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applySectorBudget, applySleeveSectorRule, applyConcentrationTrim, resolveSellQuantity, estimateSellProceeds, refitBuysAfterSells, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
 import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { recordExits, triggerFromReason, type ExitRecord } from "@/lib/exit-ledger";
@@ -224,7 +224,8 @@ export async function GET(request: Request) {
       });
       const influencerBuys = annotatedBuys.filter(b => b.resolvedStrategy === "influencer");
       const allowedNew = Math.max(0, 2 - keptInfluencer);
-      // Preview the pre-flight NOTIONAL buy sizing the real run now applies.
+      // Preview the NOTIONAL buy sizing against the simulated cash only. The live run also adds this
+      // run's sale proceeds (estimated, then re-read after the sells), so it may size buys larger.
       const { sized: sizedBuys, adjustments: sizingAdjustments } = fitNotionalBuysToBudget(decision.buys, buyingPower);
 
       return Response.json({
@@ -947,12 +948,11 @@ export async function GET(request: Request) {
       // next rebalance, which is the conservative direction.
       //
       // TWO KNOWN INTERACTIONS, accepted deliberately:
-      //  · T+1 SETTLEMENT. Today's sells never fund today's buys, and SELLS run every day while buys
-      //    run twice a week — so this is bounded by total sell frequency, not by rotation frequency
-      //    (a Wednesday stop-out or loss-discipline exit waits for the next window just as a rotation
-      //    does). Positions run $400-$750, so an exit idle for up to three sessions at typical market
-      //    drift costs order-of-$1, not cents. The two-day window exists partly to shorten this: a
-      //    Monday sell settles Tuesday and can be redeployed inside the same window.
+      //  · IDLE PROCEEDS. SELLS run every day while main buys run in the window, so a Wednesday
+      //    stop-out or loss-discipline exit waits for the next window (or the off-window idle-cash
+      //    opening) just as a rotation does. Since limited margin (2026-10-24) proceeds are spendable
+      //    the same day, so inside an open window a sale funds that run's buys; off-window they wait.
+      //    Positions run $400-$750, so an exit idle for up to three sessions costs order-of-$1.
       //  · NOT "one event". The Tuesday prompt is identical to Monday's — nothing tells the model the
       //    week's rebalance already happened, so a ⏳STALE rotate-or-justify call can be re-litigated
       //    on day two. Bounded by hysteresis/◆HELD and by buying power, and the churn diagnosis is
@@ -1279,7 +1279,7 @@ export async function GET(request: Request) {
     //
     // BUY-SIDE ONLY, mirroring MAX_INFLUENCER_POSITIONS exactly: at the cap a new main buy is
     // dropped unless a FULL EXIT frees a slot in the same decision. It can never force a sale, so
-    // it cannot manufacture churn — and under T+1 a forced sale would not fund a buy today anyway.
+    // it cannot manufacture churn.
     // The existing 12 therefore drain only through ordinary exits (stops, loss discipline,
     // time-stop, hysteresis failure), which with hysteresis retaining names may be SLOW. That is
     // the known weakness: if the count has not fallen in a month, the cap alone was not enough.
@@ -1429,14 +1429,19 @@ export async function GET(request: Request) {
       }
     }
 
-    // ── Pre-flight buy sizing: fit NOTIONAL buys into live settled buying power ────
-    // (sells today settle T+1 → they don't fund today's buys; size against real BP). Notional has
-    // no indivisible whole-share to strand — cash deploys down to the last ~$50, nothing idle.
+    // ── Pre-flight buy sizing: fit NOTIONAL buys into spendable cash + ESTIMATED sale proceeds ────
+    // Limited margin (2026-10-24): a sale's proceeds are spendable once it fills, so this run's sells
+    // may fund this run's buys. No sell has filled yet, so the proceeds here are an estimate
+    // (estimateSellProceeds); the authoritative fit is the RE-READ after the sells, just before the
+    // buy session. Notional has no indivisible whole-share to strand — cash deploys down to ~$50.
+    let estProceeds = 0;   // read again by the post-sell refit
     if (decision.buys.length > 0 && agenticBalance) {
       // `spendable`, not `buyingPower`: the never-borrow limit (lib/robinhood-balance).
-      const { sized, adjustments } = fitNotionalBuysToBudget(decision.buys, agenticBalance.spendable);
+      const heldQty = new Map((portfolioCtx?.positions ?? []).map(p => [p.symbol, p.quantity] as const));
+      estProceeds = estimateSellProceeds(decision.sells, sym => heldQty.get(sym), sym => priceMap.get(sym));
+      const { sized, adjustments } = fitNotionalBuysToBudget(decision.buys, agenticBalance.spendable + estProceeds);
       if (adjustments.length > 0) {
-        console.log("BUY_SIZING_ADJUSTED", { spendable: agenticBalance.spendable, adjustments });
+        console.log("BUY_SIZING_ADJUSTED", { spendable: agenticBalance.spendable, estProceeds, adjustments });
         buySizingAdjustments.push(...adjustments); // append — don't clobber the cap-guard notes above
       }
       decision.buys = sized;
@@ -1830,6 +1835,28 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
       }
     }
 
+    // ── Re-fit buys to the LIVE balance after the sells (same-day proceeds, never borrow) ────
+    // The pre-flight above spent ESTIMATED sale proceeds. Now that the sells have run, read what is
+    // actually spendable and fit the buys to that — this is the number that decides. A sell that did
+    // not fill, filled lower, or is still pending simply is not in the balance, so its proceeds are
+    // not spent. If the re-read FAILS we fall back to the pre-sell spendable cash alone: unknown means
+    // spend only what we knew we had (never borrow), at the cost of leaving proceeds idle to the next
+    // run. Re-reads when a sell was placed OR proceeds were assumed; with neither, the pre-flight
+    // already used the live figure. With NO opening balance every buy is dropped (refitBuysAfterSells).
+    if (decision.buys.length > 0) {
+      const needsReread = agenticBalance != null && (sellsToExecute.length > 0 || estProceeds > 0);
+      const after = needsReread ? await fetchAgenticBuyingPower(anthropic, accessToken).catch(() => null) : null;
+      const refit = refitBuysAfterSells(decision.buys, {
+        preSellSpendable: agenticBalance ? agenticBalance.spendable : null,
+        estProceeds, sellsPlaced: sellsToExecute.length, after,
+      });
+      if (refit.basis !== "unchanged") {
+        console.log("BUY_REFIT_AFTER_SELLS", { basis: refit.basis, budgetNow: after?.spendable ?? agenticBalance?.spendable ?? null, preSell: agenticBalance?.spendable ?? null, estProceeds, notes: refit.notes });
+      }
+      buySizingAdjustments.push(...refit.notes);
+      decision.buys = refit.buys;
+    }
+
     if (decision.buys.length > 0) {
       const ok = await runBuySession(decision.buys, 120_000);
       // Verify regardless of ok; retry only when the session completed cleanly. See the sell path.
@@ -1884,7 +1911,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
             !reverified
               ? `A retry was ${retryReached ? "placed" : "attempted (it may not have reached the broker)"} for these buys and the follow-up check failed, so their state is unknown: ${missing.map(b => b.symbol).join(", ")}.\nDo not assume they are unbought — reconcile in Robinhood before the next run.`
               : retried
-                ? `These decided buys did NOT execute even after a retry: ${missing.map(b => b.symbol).join(", ")}.\nLikely insufficient buying power (today's sells settle T+1) or a dropped order. Place manually if still wanted; the next run re-evaluates.`
+                ? `These decided buys did NOT execute even after a retry: ${missing.map(b => b.symbol).join(", ")}.\nLikely insufficient buying power (e.g. a sale that funded it had not filled) or a dropped order. Place manually if still wanted; the next run re-evaluates.`
                 : `These decided buys were not confirmed and NO retry was attempted (the place session aborted, so an order may still be in flight): ${missing.map(b => b.symbol).join(", ")}.\nVerify in Robinhood before assuming they are unbought.`,
           );
         }
@@ -1903,9 +1930,10 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     let positions: PositionSnapshot[];
     let cashAfter: number;
     // Did cashAfter come from the LIVE post-trade balance? Only then is a measured unsettled the
-    // complement of it. The reconstruction branch below starts from the PRE-trade balance, which
-    // lacks this run's sell proceeds — there a measured ~0 would drop them from totalValue.
+    // complement of it. The reconstruction branch below starts from the PRE-trade balance and adds
+    // this run's sell proceeds itself (proceedsInCash), so a measured unsettled must not be added on top.
     let cashFromLiveAfter = false;
+    let proceedsInCash = false;   // set when the fallback snapshot already folded this run's sale proceeds into cash
 
     if (liveBalanceAfter !== null && livePositionsAfter !== null) {
       // Fill in a live MARKET price for any held symbol the priceMap doesn't already carry
@@ -2018,7 +2046,14 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
           const px = parseFloat(t.avgPrice) || priceMap.get(t.symbol) || 0;
           return s + (parseFloat(t.quantity) || 0) * px;
         }, 0);
-      cashAfter = Math.max(0, startingCash - buyCost);
+      // Limited margin: this run's sale proceeds are CASH as soon as they fill (they can fund this
+      // run's buys), so they belong here, not in the unsettled estimate below. Without them a buy
+      // funded by proceeds clamps cash to 0 and the proceeds re-enter as "unsettled", overstating
+      // totalValue by the overspend — a phantom deposit in tomorrow's baseline.
+      const runSellProceeds = trades.filter(t => t.side === "sell")
+        .reduce((s, t) => s + (parseFloat(t.quantity) || 0) * (parseFloat(t.avgPrice) || priceMap.get(t.symbol) || 0), 0);
+      cashAfter = Math.max(0, startingCash + (isFinite(runSellProceeds) ? runSellProceeds : 0) - buyCost);
+      proceedsInCash = true;
     }
 
     // Unsettled sell proceeds (T+1): this run's sell proceeds are locked until the
@@ -2044,6 +2079,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     const unsettledMeasured = cashFromLiveAfter && liveBalanceAfter?.cashKnown === true;
     const unsettledAfter = unsettledMeasured
       ? liveBalanceAfter!.unsettled
+      : proceedsInCash ? 0   // fallback already folded this run's proceeds into cash — never add them again
       : (liveBalanceAfter?.unsettled ?? 0) > 0
         ? liveBalanceAfter!.unsettled
         : (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0);

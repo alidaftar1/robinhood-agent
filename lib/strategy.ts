@@ -89,9 +89,10 @@ export const STALE_DAYS = 60;
  *  1. NO CATCH-UP otherwise. The trade cron does fail (it has 529'd and self-healed before). With a
  *     single-day window, one failed Monday gives the week ZERO main-book buy windows, silently —
  *     and because the time-stop is suspended off-cycle, a stale holding waits an extra week too.
- *  2. T+1 SETTLEMENT. Today's sells never fund today's buys. With a one-day window, capital freed on
- *     the rebalance day could not be redeployed until the FOLLOWING week. A second day lets Monday's
- *     proceeds go back to work on Tuesday.
+ *  2. SETTLEMENT (historical). Under the cash account's T+1, today's sells could not fund today's
+ *     buys, so a second day let Monday's proceeds go back to work on Tuesday. Since the move to
+ *     limited margin (2026-10-24) sale proceeds are spendable the same day and the trade run re-reads
+ *     the balance after its sells (2026-10-29), so this reason no longer applies; reason 1 stands.
  *
  * Two of five weekdays still removes 60% of the churn opportunity, and consecutive days act as one
  * rebalance event rather than two independent decisions.
@@ -138,8 +139,9 @@ export const OFF_WINDOW_MIN_CASH = 100;
  * bar and the sleeve's pre-buy momentum screen, both of which look at the NAME rather than the
  * index. Caveat on the table above: it is SPY, and this book runs higher beta.
  *
- * SETTLED cash only. Unsettled proceeds cannot fund a buy under T+1, so counting them would open
- * the window for money that is not there — the same mistake as sizing buys off total cash.
+ * Cash SPENDABLE AT THE START of the run (never-borrow limit). The gate is decided before the model
+ * chooses any sell, so this run's own sale proceeds cannot open it; they still fund buys inside an
+ * open window (limited margin: proceeds are usable the same day — see the trade route's re-read).
  *
  * The weekly window does NOT consult the regime. That is the existing design and this must not
  * quietly tighten it: a scheduled rebalance in a downtrend is still a rebalance.
@@ -309,7 +311,7 @@ IMPORTANT: Do NOT call review_equity_order — place orders directly with place_
 ${marketData ?? ""}
 ${portfolioSection}
 Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} (the "Agentic" cash account — agentic trading enabled).
-BUDGET: your budget is the full value of this account. Always work from the live settled buying power shown above — never a fixed number. The owner may add (or remove) funds over time; simply deploy whatever buying power is currently available.
+BUDGET: your budget is the full value of this account. Always work from the live buying power shown above — never a fixed number. The owner may add (or remove) funds over time; simply deploy whatever buying power is currently available.
 Today's date: ${today}
 
 Your investment universe is the S&P 500. The table above shows the top 40 stocks by risk-adjusted momentum (plus any with insider buys or analyst signals), drawn from the full ~450-stock universe.
@@ -333,11 +335,10 @@ READING THE MARKET DATA TABLE:
 ${processSteps}
 
 CONSTRAINTS:
-- Cash account only — no margin, no leverage.
-- T+1 SETTLEMENT: Sell proceeds do NOT become available until the next trading day. Your buying budget for TODAY is exactly the settled buying power shown above — selling positions does not increase it within the same session. Do not plan to "sell X then buy Y with the proceeds" in the same run.
+- Never borrow — no leverage. The account has limited margin only so that sale proceeds are usable the same day; buys are funded from cash, never from margin.
 - Gradual rotation: do not liquidate the entire portfolio in one session — sell at most a few positions per run.
 - Sell discipline: a held position must still have an active thesis to stay — either it appears in the top momentum table above (positive mom5 or mom14) or it carries a current ★INS/⚡↑ signal. If a position has fallen out of the top table with no other active signal, its thesis has expired: sell it and redeploy, even if it isn't down in price. Do not keep a position just because it hasn't lost money — "not losing" is not a thesis.
-- Never exceed settled buying power on buys.
+- Never exceed the spendable cash shown above on buys.
 - Max $${maxPos} per position. For each buy, compute max_qty = floor(${maxPos} / price). Never order more than max_qty shares. If max_qty = 0 (price > $${maxPos}), skip the stock entirely.
 - Min position size: $50 (skip a stock if 1 share costs less than $50).
 - Only trade symbols shown in the market data table above — all are S&P 500 constituents.
@@ -440,19 +441,20 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
   // cap deliberately exempts (app/api/trade: `if (heldMainQty.has(b.symbol) ...) return true`) and
   // which nothing in the prompt previously mentioned. DELIBERATELY NOT SAID: that a full exit in the
   // same run frees a slot. It is true (the cap reads mainSoldSet), but evals/position-count pins the
-  // prompt against naming it — under T+1 a slot-freeing sell cannot fund a buy the same day, so it is
-  // guaranteed unpaired and ends in cash with nothing bought. That test caught this exact sentence in
-  // the first draft of this note; leave it out. Guidance is gated on the rebalance day because
+  // prompt against naming it — naming it invites selling a holding just to make room, which is the
+  // churn the hysteresis rule exists to stop (the original reason, T+1 leaving the exit unpaired, went
+  // away with limited margin on 2026-10-24). That test caught this exact sentence in the first draft
+  // of this note; leave it out. Guidance is gated on the rebalance day because
   // off-window main buys are closed, so pointing at a top-up there would contradict the cadence gate;
   // the NUMBER shows every day, same convention as the count itself.
   const newMainSlots = Math.max(0, TARGET_MAIN_POSITIONS - mainHeldCount);
   const slotNote = !isRebalanceDay
     ? ` NEW MAIN NAMES YOU COULD ADD: ${newMainSlots} (main-book buys are CLOSED today regardless — see the cadence rule).`
     : newMainSlots === 0
-    ? ` NEW MAIN NAMES YOU CAN ADD TODAY: 0. The "~" means the book may SIT above ${TARGET_MAIN_POSITIONS}; as a BUY limit it is NOT soft — it is enforced in code, and any new main-book name you decide beyond it is DROPPED before orders are placed, so deciding one spends that part of your budget on nothing. What IS still available: a TOP-UP of a name you already hold does not consume a slot and executes normally (subject to the per-position dollar cap), so with settled cash on hand that is the main-book buy to weigh. Under T+1 a sell does not fund a buy today, so exiting to make room would leave the book in cash with nothing bought; this is NOT an instruction to sell.`
+    ? ` NEW MAIN NAMES YOU CAN ADD TODAY: 0. The "~" means the book may SIT above ${TARGET_MAIN_POSITIONS}; as a BUY limit it is NOT soft — it is enforced in code, and any new main-book name you decide beyond it is DROPPED before orders are placed, so deciding one spends that part of your budget on nothing. What IS still available: a TOP-UP of a name you already hold does not consume a slot and executes normally (subject to the per-position dollar cap), so with cash on hand that is the main-book buy to weigh. Exiting a holding just to make room is a rotation, governed by the hysteresis rule below; this is NOT an instruction to sell.`
     : ` NEW MAIN NAMES YOU CAN ADD TODAY: ${newMainSlots} — beyond that a new main-book name is DROPPED in code. A top-up of a name you already hold does not consume a slot.`;
   const mainCountNote = materiallyOver && isRebalanceDay
-    ? ` You are ${overBy} OVER target, so each position is roughly ${(TARGET_MAIN_POSITIONS / mainHeldCount * 100).toFixed(0)}% of the size the strategy assumes — a longer, thinner tail than the design intends. Treat this as a reason to BUY FEWER, LARGER names today, not as a reason to sell: under T+1 a sell does not fund a buy today, so exiting to "make room" leaves the book in cash with nothing bought. It is NOT an instruction to sell, and the loss-discipline, time-stop and hysteresis rules below are unchanged.`
+    ? ` You are ${overBy} OVER target, so each position is roughly ${(TARGET_MAIN_POSITIONS / mainHeldCount * 100).toFixed(0)}% of the size the strategy assumes — a longer, thinner tail than the design intends. Treat this as a reason to BUY FEWER, LARGER names today, not as a reason to sell: exiting to "make room" is a rotation, governed by the hysteresis rule below. It is NOT an instruction to sell, and the loss-discipline, time-stop and hysteresis rules below are unchanged.`
     : "";
   const positionsLines = portfolio.positions?.length
     ? portfolio.positions.map(p => {
@@ -538,7 +540,7 @@ The BUYABLE names already passed three screens: (1) strong 12-MONTH momentum ("1
 SAME-BUSINESS TIEBREAKER (Technology): the sector cap counts Technology as ONE bucket, but names inside it can be the same bet — memory chips and flash (MU), hard drives (WDC, STX) and flash storage (SNDK) all ride one memory/storage cycle and move together. When choosing between Technology candidates that are otherwise CLOSE (similar momentum and quality, no decisive signal either way), prefer the one whose BUSINESS is not already in the book (held names count) or in today's other buys. MU, WDC, STX and SNDK count as ONE business here even though their products differ (memory chips, hard drives and flash all ride the memory/storage cycle). Beyond that named group, judge by what each company actually sells and to whom — a shared broad theme such as AI/datacenter spending does NOT make two names the same business — not by a broad industry label (standard classifications put MU with NVDA under "Semiconductors" and WDC/STX/SNDK with DELL and ANET under "Computer Hardware"), and account for corporate changes (WDC spun off its flash business as SanDisk/SNDK in 2025, so WDC is now hard drives only). TIEBREAKER ONLY: never pass over a clearly stronger name to diversify, never sell a holding because of overlap, and it changes neither what is eligible nor the caps. When it tips a decision, say in your thesis what each company does and which overlap you avoided.
 
 PORTFOLIO STATE (live from Robinhood):
-- Settled buying power: ${portfolio.buyingPower} — this is your ENTIRE budget for buys today.
+- Buying power: ${portfolio.buyingPower} — cash you can spend right now. Proceeds of any SELL you decide this run are ADDED to it (see SAME-DAY PROCEEDS below).
 - Total value: ${portfolio.totalValue ?? "unknown"}
 - MAIN-BOOK POSITIONS: ${mainHeldCount} held vs a target of ~${TARGET_MAIN_POSITIONS}.${slotNote}${mainCountNote}
 - Current positions:
@@ -546,7 +548,7 @@ ${positionsLines}
 ${sectorSection ?? ""}
 Account: ${process.env.AGENTIC_ACCOUNT_ID ?? "YOUR_ACCOUNT_ID"} | Today: ${today}
 ${marketRegime}${marketContextBlock}
-T+1 SETTLEMENT RULE: cash account — sell proceeds do NOT settle until tomorrow. Your buy budget is the settled buying power above; it does NOT increase when you sell today. Plan buys within settled buying power only.
+SAME-DAY PROCEEDS: limited-margin account — sale proceeds are spendable immediately, no settlement wait. Your buy budget today = the buying power above + the current value of what you sell this run (a full exit adds the position's value at its current price; a trim adds that fraction). Sells execute first; code then re-reads the live balance and trims buys to what is actually there, and never borrows — so budget from current prices, not hoped-for ones. This does NOT make a sale a reason to buy: every sell still needs its own reason under the rules below.
 
 ${isRebalanceDay ? "" : `
 ⛔ MAIN-BOOK BUYS ARE CLOSED TODAY.
@@ -554,7 +556,7 @@ The main book rebalances ONCE A WEEK, over the first TWO trading days of the wee
 months-horizon signal; re-deciding it every morning churned the book (~2x turnover in five weeks,
 18% of round-trips profitable) and that is what this rule exists to stop.
 There is ONE off-cycle exception and it does not apply today: Wed-Fri the book also opens when idle
-SETTLED cash is material AND the market is risk-on. So today is either inside the week's closed
+cash is material AND the market is risk-on. So today is either inside the week's closed
 stretch with little idle cash, or the market is risk-off — in both cases the answer is the same and
 the reason is recorded on the run. Today:
   · Do NOT propose any MAIN-BOOK buy. Code drops them, so proposing one only wastes a slot and makes
@@ -584,18 +586,18 @@ ${isRebalanceDay ? `- BUY: make up to 6 BUYS THIS REBALANCE from the shortlist a
 - Do NOT chase names that just spiked; the shortlist is already the right, evidence-backed set. Conviction goes into SIZE among these names.
 
 CONSTRAINTS:
-- Buys funded ONLY from settled buying power (shown above). Do not count sell proceeds.
-- Size each buy as a DOLLAR AMOUNT ("dollarAmount"), NOT a share count: min $50, max $${maxPos} per position. The $50 minimum is a HARD FLOOR — if your settled buying power is itself below $50, you CANNOT make a valid buy, so buy NOTHING ("buys":[]); never shrink a buy below $50 just to deploy a smaller balance. Buys are NOTIONAL — the broker fills fractional shares from your dollar amount, so you never compute a share count, and there is no whole-share remainder or stranded cash.
+- Buys funded from buying power (shown above) PLUS the proceeds of this run's sells — never borrowed.
+- Size each buy as a DOLLAR AMOUNT ("dollarAmount"), NOT a share count: min $50, max $${maxPos} per position. The $50 minimum is a HARD FLOOR — if your budget (buying power + this run's sale proceeds) is itself below $50, you CANNOT make a valid buy, so buy NOTHING ("buys":[]); never shrink a buy below $50 just to deploy a smaller balance. Buys are NOTIONAL — the broker fills fractional shares from your dollar amount, so you never compute a share count, and there is no whole-share remainder or stranded cash.
 - MAIN-book buys ONLY from the shortlist above; INFLUENCER buys ONLY from the INFLUENCER SIGNALS section.
 - Never buy a name flagged with earnings ≤${IMMINENT_EARNINGS_DAYS} days away (⚠⚠ IMMINENT, or ⚠EARN with a date within ${IMMINENT_EARNINGS_DAYS} days) UNLESS its row shows a 📈EARN-RECORD marked ✓SERIAL (beat ≥3 of ≥4 quarters, avg surprise ≥ +5%) — the same bar the hold side uses. ENFORCED IN CODE: any other such buy is DROPPED before any order is placed — including one whose beat record could not be fetched (no ✓SERIAL on the row = not serial) — and so is a buy in a name whose earnings date could not be established at all, so deciding one spends that part of your budget on nothing. It applies to a TOP-UP of a name you already hold as well as to a new name.
 - EARNINGS ON A HELD NAME (judgment call, NOT an automatic exit): if a name you HOLD shows ⚠EARN within ~${IMMINENT_EARNINGS_DAYS} days, decide whether to trim/exit or ride through. A high-conviction momentum winner can ride through — post-earnings drift tends to favor established winners — but TRIM or exit if the position is oversized (near the per-position cap) or its thesis is weak. State your call and reason for any held name with imminent earnings. Do NOT blanket-sell before earnings; the point is a considered decision, not a reflex.
   - 📊REPORTED (a name — on the shortlist, in the influencer signals, OR held — that JUST reported earnings, with its 1d/5d reaction WHATEVER it was: up, DOWN, or flat) is the BACKWARD-looking companion to ⚠EARN. READ THE OUTCOME and use it by decision type: (BUY) a big UP move is a LATE, RISKY momentum entry — a fresh post-earnings pop is often a one-time gap that gives back, NOT durable trend; do not chase it on price alone (the one exception: a serial beater with a strong 📈EARN-RECORD whose beat can PEAD-drift further — name the record). A big DOWN move means the market PUNISHED the print — treat it as a falling knife by DEFAULT (a broken thesis; do not buy the dip on hope); enter only with a specific reason the sell-off is an overreaction. A muted move = the print was a non-event; decide on the usual signals. (HOLD/SELL) the print RESOLVED the ⚠EARN uncertainty — a large pop is a take-profit/trim candidate (lock some gain, esp. in the influencer sleeve), a large drop is a reassess/exit (decide whether the thesis broke or it's an overreaction). CRITICAL: a big multi-day move (e.g. "5d +26%") shown NEXT TO 📊REPORTED IS the one-time earnings gap — it is NOT durable "re-acceleration", so do NOT cite that 5d% as a re-accelerating keep-reason. That move already happened; post-earnings gaps often fade (watch the "since entry" %: if you're already flat or DOWN since entry, you bought into the pop and it's giving back → lean trim/exit, not hold). State how the reaction informs your call.
   - USE THE 📈EARN-RECORD when present (the name's last-8-quarter surprise history). It is the base rate that separates a serial beater from a coin flip: a name that has beaten MOST quarters with a solidly positive avg surprise (e.g. beat ≥3/4, avg ≥ +5%) is a genuine RIDE-THROUGH candidate — the odds favor another beat + upward drift, so lean HOLD even if it's flat/⏳STALE (a serial beater into its print is exactly the case where "flat" is about to resolve UP). A mixed or negative record (beats ~half, avg near/below 0) is a true coin flip → trim if oversized. This is a tilt on the odds, NOT a guarantee: a beat can still sell off and even serial beaters eventually miss, so it argues for size/hold, never for ignoring a weak thesis. If a ⏳STALE-into-earnings name has a strong 📈EARN-RECORD, that record can OVERRIDE the stale-rotation default — name it in your thesis.
 - INFLUENCER CROSS-SIGNAL on a MAIN-book candidate (🎬INFL in the shortlist): the YouTube creators are an INDEPENDENT, momentum-oriented crowd, so their read is a SECONDARY signal on a name your quality-momentum screen already surfaced (net = weighted-buy − avoid). 🎬INFL✓ (net ≥ the sleeve bar — recommending it) STRENGTHENS the buy thesis — a second, uncorrelated source agreeing; lean toward it over an equally-ranked name with no such corroboration. BUT it's creator CONVICTION, not price-timing: still apply your own momentum/entry discipline (a name they love can still be a falling knife), and if it shows an avoid count, weigh that dissent. 🎬INFL⚠ (net < 0 — avoids outweigh buys) WARRANTS CAUTION — an independent bearish take on a name you like: size it down, prefer a comparable un-warned name, or if you still buy it your thesis MUST address why the creators' caution is wrong. 🎬INFL~ (net-flat, creators split) is CONTESTED — treat it as NO corroboration, not as endorsement; the dissent means don't lean on the influencer read here. None of these change what's eligible (a name must still clear momentum+quality) or override the caps — it's a tiebreaker/conviction input like ★INS/↓FIRM. Cite it in your thesis when it tips a decision.
-- HARD LIMIT: total cost of all buys ≤ ${bp} (settled buying power). Fixed — selling today does NOT increase it.
+- HARD LIMIT: total cost of all buys ≤ ${bp} (buying power) + the current value of what you sell this run. Enforced in code against the live balance after the sells fill; anything over is trimmed or dropped.
 ${stopoutBlock}${recentSellsBlock}${valuationSection}${earningsReleaseSection}${influencerSection ?? ""}
 
-${isRebalanceDay ? "Write a brief thesis (2–4 sentences): which shortlist names you're buying and why (momentum + quality), and" : "Write a brief thesis (2–4 sentences). MAIN-BOOK BUYS ARE CLOSED TODAY — do not name any main-book buy, and do not sell to free a slot. If no risk sell is due, say plainly that the main book is unchanged pending the rebalance — but a genuine risk sell (loss discipline / ⚡NEWS↓ / ↓FIRM / fell off the shortlist) is still CORRECT today and must not be withheld. Then state"} — per the hysteresis rule above — which current holdings you're selling WITH the specific reason for each (fell off the shortlist entirely / ↓FIRM / sector-concentration trim flagged ⚠ in SECTOR EXPOSURE${isRebalanceDay ? " / freeing a slot for a higher-conviction name" : ""}). Do NOT sell a ◆HELD name for merely ranking below newer names.${influencerSection ? " It MUST also state your influencer-sleeve decision: which influencer pick(s) you're buying and why, OR — if none — the specific disqualifier (priced above the per-position cap, imminent earnings without a serial 📈EARN-RECORD, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer sleeve." : ""} Then compute sum(buys[i].dollarAmount) and verify it is ≤ ${bp}; if it exceeds, reduce dollar amounts or remove buys until it fits. Then output exactly one line:
+${isRebalanceDay ? "Write a brief thesis (2–4 sentences): which shortlist names you're buying and why (momentum + quality), and" : "Write a brief thesis (2–4 sentences). MAIN-BOOK BUYS ARE CLOSED TODAY — do not name any main-book buy, and do not sell to free a slot. If no risk sell is due, say plainly that the main book is unchanged pending the rebalance — but a genuine risk sell (loss discipline / ⚡NEWS↓ / ↓FIRM / fell off the shortlist) is still CORRECT today and must not be withheld. Then state"} — per the hysteresis rule above — which current holdings you're selling WITH the specific reason for each (fell off the shortlist entirely / ↓FIRM / sector-concentration trim flagged ⚠ in SECTOR EXPOSURE${isRebalanceDay ? " / freeing a slot for a higher-conviction name" : ""}). Do NOT sell a ◆HELD name for merely ranking below newer names.${influencerSection ? " It MUST also state your influencer-sleeve decision: which influencer pick(s) you're buying and why, OR — if none — the specific disqualifier (priced above the per-position cap, imminent earnings without a serial 📈EARN-RECORD, no score ≥ 3, or insufficient buying power). Do not silently skip the influencer sleeve." : ""} Then compute sum(buys[i].dollarAmount) and verify it is ≤ ${bp} plus the current value of what you sell this run; if it exceeds, reduce dollar amounts or remove buys until it fits. Then output exactly one line:
 TRADE_DECISION:{"thesis":"...","sells":[{"symbol":"X","exit":"all","reason":"news-down"}],"buys":[{"symbol":"X","dollarAmount":D,"strategy":"main"}]}
 
 Every SELL needs a "reason" field, one of exactly: news-down (⚡NEWS↓ bearish event) · firm-down (analyst
@@ -607,7 +609,7 @@ genuinely drove the decision; if none fits, use discretionary rather than forcin
 label, because a mislabelled exit corrupts the measurement for every other exit of that kind.
 
 Rules:
-- buys = new or added positions, each sized as "dollarAmount" (US dollars, e.g. 250) — NOT a share count. sum(dollarAmount) ≤ settled buying power; min $50, max $${maxPos} each. The broker fills the fractional shares.
+- buys = new or added positions, each sized as "dollarAmount" (US dollars, e.g. 250) — NOT a share count. sum(dollarAmount) ≤ buying power + this run's sale proceeds; min $50, max $${maxPos} each. The broker fills the fractional shares.
 - sells = holdings you want to reduce. FULL exit → {"symbol":"X","exit":"all"}. Partial TRIM → {"symbol":"X","fraction":F} with 0<F<1 (e.g. 0.5 = sell half). Do NOT specify a share count — the system sells the exact live-held amount (× fraction).
 - strategy = "main" for shortlist picks (default), "influencer" for picks from the INFLUENCER SIGNALS section (applies to buys; tag an influencer-sleeve sell "strategy":"influencer" too).
 - If nothing to sell: sells=[]

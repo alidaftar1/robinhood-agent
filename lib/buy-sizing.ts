@@ -112,7 +112,7 @@ export function fitNotionalBuysToBudget<T extends { symbol: string; dollarAmount
   for (const b of buys) {
     const want = b.dollarAmount;
     if (!(want > 0)) { adjustments.push(`${b.symbol} skipped — non-positive dollarAmount`); continue; }
-    if (budget < minBuy) { adjustments.push(`${b.symbol} DROPPED — only $${budget.toFixed(2)} settled buying power left (< $${minBuy} min)`); continue; }
+    if (budget < minBuy) { adjustments.push(`${b.symbol} DROPPED — only ${budget.toFixed(2)} of spendable budget left (< ${minBuy} min)`); continue; }
     if (want <= budget) {
       sized.push(b);
       budget -= want;
@@ -371,4 +371,55 @@ export function resolveSellQuantity(
   }
   if (intent.quantity != null && intent.quantity > 0) return String(Math.min(intent.quantity, held));
   return heldQtyStr; // no intent field at all → full exit (safe default)
+}
+
+// ── Same-day sale proceeds (limited margin, 2026-10-24) ───────────────────────────────────────
+// On the cash account a sale settled T+1, so today's sells could never fund today's buys and the
+// pre-flight sized against pre-sell cash alone. On limited margin the proceeds are spendable as soon
+// as the order fills, so the decision may spend them — but the PRE-FLIGHT runs before any sell has
+// filled. This is only an ESTIMATE for that pre-flight: held quantity × fraction sold × last price,
+// less a haircut for the move between the price read and the fill. It is never the final word — the
+// trade route re-reads the live balance after the sells and re-fits the buys to it, so an estimate
+// that is too generous is corrected before any buy is placed, and one that is too low only costs
+// deployment, never borrowing.
+export const SELL_PROCEEDS_HAIRCUT = 0.02;
+export function estimateSellProceeds(
+  sells: ReadonlyArray<{ symbol: string; exit?: string; fraction?: number; quantity?: number }>,
+  heldQtyOf: (symbol: string) => string | undefined,
+  priceOf: (symbol: string) => number | undefined,
+  haircut: number = SELL_PROCEEDS_HAIRCUT,
+): number {
+  let total = 0;
+  for (const s of sells) {
+    const held = heldQtyOf(s.symbol);
+    const px = priceOf(s.symbol);
+    if (held == null || !(px != null && px > 0)) continue;   // not held / no price → count nothing (low side)
+    // Same resolution the sell path executes, so the estimate cannot count a sale that would not be placed.
+    const q = parseFloat(resolveSellQuantity(s, held) ?? "0") || 0;
+    total += q * px;
+  }
+  return total * (1 - haircut);
+}
+
+// The deciding fit, after the sells have run. Pure so the never-borrow directions are TESTED:
+//  · no opening balance at all  → NO buys (nothing known to be spendable);
+//  · nothing sold and no proceeds were assumed → unchanged (the pre-flight already used the live figure);
+//  · otherwise fit to the live re-read, or — if that failed — to the pre-sell cash alone.
+// Gated on EITHER a placed sell OR assumed proceeds: if a later filter dropped every sell after the
+// pre-flight had counted their proceeds, skipping the refit would place buys funded by money that
+// never arrived — margin.
+export function refitBuysAfterSells<T extends { symbol: string; dollarAmount: number }>(
+  buys: T[],
+  o: { preSellSpendable: number | null; estProceeds: number; sellsPlaced: number; after: { spendable: number } | null },
+): { buys: T[]; notes: string[]; basis: "unchanged" | "live" | "pre-sell" | "none" } {
+  if (buys.length === 0) return { buys, notes: [], basis: "unchanged" };
+  if (o.preSellSpendable == null) {
+    return { buys: [], basis: "none", notes: [`ALL buys DROPPED (${buys.map(b => b.symbol).join(", ")}) — the account balance could not be read, so nothing is known to be spendable. Never-borrow fallback, not a lack of cash.`] };
+  }
+  if (o.sellsPlaced === 0 && !(o.estProceeds > 0)) return { buys, notes: [], basis: "unchanged" };
+  const basis = o.after ? "live" : "pre-sell";
+  const { sized, adjustments } = fitNotionalBuysToBudget(buys, o.after ? o.after.spendable : o.preSellSpendable);
+  const notes = adjustments.map(a => `after sells: ${a}`);
+  if (!o.after) notes.unshift(`CONTEXT — could not re-read the balance after today's sells, so buys were sized against the pre-sell spendable cash ($${o.preSellSpendable.toFixed(2)}) only; today's sale proceeds wait for the next run. This is the never-borrow fallback, not a lack of cash.`);
+  return { buys: sized, notes, basis };
 }

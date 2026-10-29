@@ -64,11 +64,13 @@ describe("the model can see its position count against target", () => {
 
   test("it points at BUYING FEWER, never at freeing a slot", () => {
     // The original wording invited the free-a-slot judgment — the prompt's ONE authorised
-    // discretionary exit. Under T+1 a slot-freeing sell cannot fund a buy the same day, so it is
-    // guaranteed unpaired: the book ends in cash with nothing bought. Say the constraint out loud.
+    // discretionary exit. Selling a holding just to make room is churn, so the note sends that to the
+    // hysteresis rule instead. (The old reason — T+1 left the exit unpaired — ended with limited
+    // margin on 2026-10-24; the note must not still assert it.)
     const line = countLine(nNames(12));
     expect(line).toMatch(/BUY FEWER, LARGER names/);
-    expect(line).toMatch(/T\+1 a sell does not fund a buy today/);
+    expect(line).toMatch(/governed by the hysteresis rule/);
+    expect(line).not.toMatch(/T\+1/);
     expect(line).not.toMatch(/free-a-slot|free a slot/);
     expect(line).toMatch(/NOT an instruction to sell/);
   });
@@ -108,8 +110,8 @@ describe("the model can see its position count against target", () => {
   });
 
   test("the slot count does NOT reintroduce the free-a-slot nudge", () => {
-    // Same invariant as the over-target note above, on the new sentence: T+1 makes a slot-freeing
-    // sell guaranteed unpaired. Checked at the cap AND over it, the two states that would tempt it.
+    // Same invariant as the over-target note above, on the new sentence: naming it invites selling a
+    // holding just to make room. Checked at the cap AND over it, the two states that would tempt it.
     for (const n of [TARGET_MAIN_POSITIONS, TARGET_MAIN_POSITIONS + 1, 12]) {
       const line = countLine(Array.from({ length: n }, (_, i) => `S${i}`));
       expect(line).not.toMatch(/free-a-slot|frees? a slot/);

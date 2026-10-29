@@ -363,6 +363,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Do NOT flag an imminent-earnings buy as a rule violation when buySizingAdjustments carries its 'ALLOWED … serial beater' note. DO flag (HIGH) any executed buy with earnings ≤3 days away that has NO such note, or whose noted record is not serial (fewer than 4 quarters, beats/total < 0.75, or avg < +5%) — that means the gate was bypassed. And check the thesis named the record for any such buy.",
   },
+  {
+    date: "2026-10-29",
+    title: "Same-day sale proceeds now fund buys (rule change, not borrowing)",
+    lesson:
+      "Owner decision 2026-10-29: the account has been on limited margin since 2026-10-24, so a sale's proceeds are spendable as soon as it fills, but the trade run still budgeted as if sales settled T+1 — on 2026-10-29 it sold FTNT, MRVL and AMZN (~$605) and sized the only buy (COR, influencer) at $63, the pre-sell cash. Now the model's budget is buying power + the current value of what it sells that run; the pre-flight adds an estimate of the proceeds (estimateSellProceeds, lib/buy-sizing), and after the sells the route RE-READS the live balance and re-fits the buys to its never-borrow 'spendable' figure (min of buying power, unleveraged buying power and cash). If that re-read fails it falls back to pre-sell cash only.",
+    check:
+      "Do NOT flag buys whose total exceeds the run's starting buying power as borrowing when the same run had confirmed sells covering the difference — that is the intended same-day use of proceeds. DO flag (HIGH) any run where total executed buys exceed starting buying power + the confirmed proceeds of that run's sells (that would be margin use), and flag (medium) a run with confirmed sells, decided buys, and an 'after sells:' adjustment that shrank buys while the post-trade cash shows the proceeds were there.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

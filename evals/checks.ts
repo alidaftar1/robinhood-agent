@@ -2,6 +2,7 @@ import { SP500_UNIVERSE } from "@/lib/strategy";
 import type { ToolCall, TradeDecision } from "./agent";
 import type { Scenario } from "./fixtures";
 import { mockPrice } from "./fixtures";
+import { estimateSellProceeds } from "@/lib/buy-sizing";
 
 export interface CheckResult {
   name: string;
@@ -417,8 +418,9 @@ export function checkTradeDecisionPresent(text: string): CheckResult {
 }
 
 /**
- * T+1 settlement: total buy cost must not exceed settled buying power.
- * Sell proceeds are NOT added — they don't settle same day.
+ * Same-day budget: total buy cost must not exceed buying power + the proceeds of the sells decided
+ * in the same run. Limited margin (2026-10-24, owner decision 2026-10-29): sale proceeds are
+ * spendable immediately, so they DO count — but nothing beyond them (never borrow).
  */
 // V1 buys are NOTIONAL: the dollar amount IS the cost. Fall back to the legacy whole-share
 // quantity×price only if a decision predates the notional format (dollarAmount absent).
@@ -426,16 +428,19 @@ const buyDollars = (b: TradeDecision["buys"][number]): number =>
   b.dollarAmount ?? ((b.quantity ?? 0) * (b.price || mockPrice(b.symbol)));
 
 export function checkT1BudgetRespected(decision: TradeDecision | null, scenario: Scenario): CheckResult {
-  if (!decision) return { name: "T+1: buys within settled buying power", passed: false, detail: "no decision parsed" };
-  const settled = parseFloat(scenario.buyingPower.replace("$", ""));
+  const name = "Budget: buys within buying power + same-day sale proceeds";
+  if (!decision) return { name, passed: false, detail: "no decision parsed" };
+  const cash = parseFloat(scenario.buyingPower.replace("$", ""));
+  const held = new Map(scenario.positions.map(p => [p.symbol, p.quantity] as const));
+  const proceeds = estimateSellProceeds(decision.sells ?? [], sym => held.get(sym), sym => mockPrice(sym), 0);
   const buyCost = decision.buys.reduce((s, b) => s + buyDollars(b), 0);
-  const passed = buyCost <= settled + 1;
+  const passed = buyCost <= cash + proceeds + 1;
   return {
-    name: "T+1: buys within settled buying power",
+    name,
     passed,
     detail: passed
-      ? `$${buyCost.toFixed(0)} ≤ $${settled} settled power`
-      : `$${buyCost.toFixed(0)} exceeds $${settled} settled power (sell proceeds don't count)`,
+      ? `${buyCost.toFixed(0)} ≤ ${cash} cash + ${proceeds.toFixed(0)} sale proceeds`
+      : `${buyCost.toFixed(0)} exceeds ${cash} cash + ${proceeds.toFixed(0)} sale proceeds (would borrow)`,
   };
 }
 
