@@ -162,7 +162,11 @@ export function buildV1PromptFromScenario(scenario: Scenario, today: string): st
     {
       buyingPower: scenario.buyingPower,
       totalValue: scenario.totalValue,
-      positions: scenario.positions.map((p) => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.average_buy_price })),
+      // `price` as the live route passes it (the prompt shows "+x% since entry" from it). Without it the
+      // model can only value a sale at COST, while checkT1BudgetRespected values it at mockPrice: CI
+      // failed twice on 2026-10-30 by exactly AMZN's cost-vs-price gap — $750 of buys against $500
+      // cash + $245 proceeds, which the model had budgeted as $500 + $260.
+      positions: scenario.positions.map((p) => ({ symbol: p.symbol, quantity: p.quantity, avgCost: p.average_buy_price, price: mockPrice(p.symbol) })),
     },
     "", "", [], [], [], earningsDates,
     // Everything from here is defaulted EXCEPT analystRatings, which production passes. The eval
