@@ -14,6 +14,7 @@ const base = {
   prevAgentBuys: [] as string[],
   onMainList: (s: string) => ["MU", "STX"].includes(s),
   mainUnknown: () => false,
+  mainStrong: (s: string) => ["MU", "STX"].includes(s),
   influencer: {
     qualifies: (s: string) => s === "AMD",
     describe: (s: string) => (s === "AMD" ? "net 5, 2 channels" : "net 0, 0 channels"),
@@ -31,9 +32,23 @@ describe("sortOwnerBuys", () => {
     expect(r).toEqual([{ symbol: "COR", sleeve: "misfit", why: expect.stringContaining("net 0") }]);
   });
 
-  test("main wins when a name fits both", () => {
+  test("fits both and in the main list's top → main", () => {
     const r = sortOwnerBuys({ ...base, heldNow: ["STX"], influencer: { ...base.influencer, qualifies: () => true } });
     expect(sleeveOf(r)).toEqual({ STX: "main" });
+  });
+
+  // 2026-10-30: GOOGL was on the main list only for its sector's slot (+23%, 11th of 14) but net 8
+  // across 4 channels — the owner's call: a weak main pick and a strong sleeve one.
+  test("fits both but only in the lower part of the main list → influencer (GOOGL)", () => {
+    const r = sortOwnerBuys({ ...base, heldNow: ["GOOGL"], prevHeld: [],
+      onMainList: s => s === "GOOGL", mainStrong: () => false, influencer: { ...base.influencer, qualifies: s => s === "GOOGL" } });
+    expect(sleeveOf(r)).toEqual({ GOOGL: "influencer" });
+  });
+
+  test("lower part of the main list and NOT a sleeve pick → still main, never sold", () => {
+    const r = sortOwnerBuys({ ...base, heldNow: ["SPG"], prevHeld: [],
+      onMainList: s => s === "SPG", mainStrong: () => false });
+    expect(sleeveOf(r)).toEqual({ SPG: "main" });
   });
 
   // FAIL-CLOSED: an outage must never turn into a sale. Each of these breaks one data source and
@@ -160,5 +175,12 @@ describe("wiring: missing data never reads as 'not on the main list'", () => {
     const confirm = route.indexOf("confirmMisfits(firstSort, await fetchOwnerBuyEvidence(");
     expect(confirm).toBeGreaterThan(0);
     expect(confirm).toBeLessThan(route.indexOf('reason: "owner-misfit"'));
+  });
+});
+
+describe("wiring: the top of the main list is the first TARGET_MAIN_POSITIONS of the ranked buy list", () => {
+  test("mainStrong reads v1Buy's head", () => {
+    const route = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
+    expect(route).toContain("mainStrong: (sym) => v1Buy.slice(0, TARGET_MAIN_POSITIONS).some(s => s.symbol === sym)");
   });
 });

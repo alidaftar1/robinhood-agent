@@ -570,6 +570,8 @@ export async function GET(request: Request) {
         prevAgentBuys: (previousRun.trades ?? []).filter(t => t.side === "buy" && t.actor !== "human").map(t => t.symbol),
         onMainList: quality ? (sym) => v1ShortlistSet.has(sym) || v1Retained.some(r => r.symbol === sym) : null,
         // In the universe but unpriced / no momentum this morning: a data gap, not a verdict.
+        // v1Buy is in momentum order; its first TARGET_MAIN_POSITIONS are the book's strongest names.
+        mainStrong: (sym) => v1Buy.slice(0, TARGET_MAIN_POSITIONS).some(s => s.symbol === sym),
         mainUnknown: (sym) => qualityUnknown.has(sym) || (sp500Set.has(sym) && !hasMomentum.has(sym)),
         influencer: influencerCache && influencerCache.signals.length > 0
           ? {

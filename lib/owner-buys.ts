@@ -11,10 +11,13 @@
 // check them and may sell one that fits neither. So, for each name held now that the previous run
 // did not hold and the agent did not buy:
 //   on the main shortlist (buy list or ◆HELD band)      → main
+//     …unless it also qualifies for the sleeve and is NOT in the main list's top 7 (the book's target
+//     size): a name that is on the list only for its sector's slot is a weak main pick and a strong
+//     sleeve one (2026-10-30, owner: GOOGL, +23% 12-1 momentum, 11th of 14, net 8 / 4 channels)
 //   otherwise, qualifies as a sleeve buy right now     → influencer
 //   main data AND influencer data both read, neither   → misfit (sold by code this run)
 //   either side could not be read                       → unknown (left as main, never sold)
-// Main wins a tie: the main book is the strategy, the sleeve is the satellite.
+// Main wins a tie only for a top-7 name.
 // An outage never sells: a misfit is only declared when BOTH checks actually ran — and "could not
 // be read" includes a name in the S&P universe that has no price or momentum this morning (one
 // failed quote drops it from the shortlist without any signal). Then confirmMisfits keeps only the
@@ -36,6 +39,8 @@ export function sortOwnerBuys(args: {
   prevAgentBuys: string[];
   /** On the main shortlist: buy-allowlist or ◆HELD band. null = quality data unavailable. */
   onMainList: ((sym: string) => boolean) | null;
+  /** In the top of the main list (first TARGET_MAIN_POSITIONS of the ranked buy list). */
+  mainStrong: (sym: string) => boolean;
   /** The main check could not be made for this name (quality withheld, or no price/momentum), so
    *  "not on the list" proves nothing. */
   mainUnknown: (sym: string) => boolean;
@@ -49,12 +54,21 @@ export function sortOwnerBuys(args: {
   for (const symbol of new Set(args.heldNow)) {
     if (prev.has(symbol) || agent.has(symbol)) continue;
     const mainKnown = args.onMainList != null && !args.mainUnknown(symbol);
+    const sleeveFit = args.influencer?.qualifies(symbol) ?? false;
     if (mainKnown && args.onMainList!(symbol)) {
-      out.push({ symbol, sleeve: "main", why: "on the main-book shortlist" });
+      if (args.mainStrong(symbol)) {
+        out.push({ symbol, sleeve: "main", why: "in the top of the main-book shortlist" });
+        continue;
+      }
+      if (!sleeveFit) {
+        out.push({ symbol, sleeve: "main", why: "on the main-book shortlist" });
+        continue;
+      }
+      out.push({ symbol, sleeve: "influencer", why: `on the main shortlist outside its top, and a stronger influencer pick (${args.influencer!.describe(symbol)})` });
       continue;
     }
-    if (args.influencer?.qualifies(symbol)) {
-      out.push({ symbol, sleeve: "influencer", why: `qualifies as an influencer pick (${args.influencer.describe(symbol)})` });
+    if (sleeveFit) {
+      out.push({ symbol, sleeve: "influencer", why: `qualifies as an influencer pick (${args.influencer!.describe(symbol)})` });
       continue;
     }
     if (mainKnown && args.influencer) {
