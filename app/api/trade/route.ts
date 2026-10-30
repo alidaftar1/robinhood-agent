@@ -8,6 +8,7 @@ import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebala
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
+import { sortOwnerBuys, confirmMisfits } from "@/lib/owner-buys";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, netScores, buyChannelCounts, sleeveBuyQualifies, MIN_BUY_CHANNELS, INFLUENCER_BUY_FLOOR, toMomentumSignal, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
@@ -31,7 +32,7 @@ import { shortlistAroundEarnings, emptyEarningsLookup, mergeEarningsLookups, rec
 import { IMMINENT_EARNINGS_DAYS, fetchEarningsForSymbols, fetchEarningsBeatHistory, hasPrintedBySession, normalizeReportDate, screenImminentEarningsBuys, type EarningsBeatRecord, type RecentEarnings } from "@/lib/earnings";
 import { logTradeRun } from "@/lib/braintrust-trace";
 import { inferSellStrategy } from "@/lib/run-store";
-import { fetchAgenticBalance, fetchAgenticPositions } from "@/lib/robinhood-balance";
+import { fetchAgenticBalance, fetchAgenticPositions, fetchOwnerBuyEvidence } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
 
@@ -555,6 +556,51 @@ export async function GET(request: Request) {
     // before the earnings gate drops it. Keeping them restores the pre-backfill path exactly.
     const v1ShortlistSet = new Set([...v1Buy.map(s => s.symbol), ...shortlistEarn.skipped.map(k => k.symbol)]);
 
+    // ── Owner buys: sort each new holding into a book BEFORE anything judges it (lib/owner-buys) ──
+    // Sleeve membership is the previous run's influencerPositions; a name the owner bought since then
+    // is in neither, so without this it is judged as main. `sleevePositions` replaces every later
+    // read of previousRun.influencerPositions in this run, and is what today's run carries forward.
+    let sleevePositions = previousRun?.influencerPositions;
+    const ownerMisfits: Array<{ symbol: string; why: string }> = [];
+    if (livePositions !== null && previousRun) {
+      const hasMomentum = new Set(marketData.stocks.filter(st => typeof st.mom12_1 === "number").map(st => st.symbol));
+      const firstSort = sortOwnerBuys({
+        heldNow: (portfolioCtx?.positions ?? []).map(p => p.symbol),
+        prevHeld: (previousRun.positions ?? []).map(p => p.symbol),
+        prevAgentBuys: (previousRun.trades ?? []).filter(t => t.side === "buy" && t.actor !== "human").map(t => t.symbol),
+        onMainList: quality ? (sym) => v1ShortlistSet.has(sym) || v1Retained.some(r => r.symbol === sym) : null,
+        // In the universe but unpriced / no momentum this morning: a data gap, not a verdict.
+        mainUnknown: (sym) => qualityUnknown.has(sym) || (sp500Set.has(sym) && !hasMomentum.has(sym)),
+        influencer: influencerCache && influencerCache.signals.length > 0
+          ? {
+              qualifies: (sym) => isSleeveEligible(sym) && sleeveBuyQualifies(influencerNet[sym] ?? 0, influencerChannels[sym] ?? 0),
+              describe: (sym) => `net ${influencerNet[sym] ?? 0}, ${influencerChannels[sym] ?? 0} channel${(influencerChannels[sym] ?? 0) === 1 ? "" : "s"}${isSleeveEligible(sym) ? "" : ", outside the sleeve universe"}`,
+            }
+          : null,
+      });
+      // A misfit is SOLD, so it needs the broker's word that the owner bought it. Fetched only when
+      // there is one (rare), so the normal run pays nothing for it. The window starts at the EARLIER of
+      // the latest record and the last prior-day run: a 7am drop-check record is dated today.
+      const misfitSyms = firstSort.filter(s => s.sleeve === "misfit").map(s => s.symbol);
+      const sorted = misfitSyms.length === 0 ? firstSort
+        : confirmMisfits(firstSort, await fetchOwnerBuyEvidence(anthropic, accessToken, misfitSyms, [previousRun.date, previousDayRun?.date].filter((d): d is string => !!d).sort()[0]));
+      for (const s of sorted) {
+        if (s.sleeve === "influencer") {
+          const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === s.symbol)!;
+          influencerHeld.add(s.symbol);
+          heldMainSymbols.delete(s.symbol);
+          sleevePositions = [...(sleevePositions ?? []), { symbol: p.symbol, quantity: p.quantity, avgCost: p.avgCost, price: String(p.price ?? priceMap.get(p.symbol) ?? p.avgCost) }];
+        } else if (s.sleeve === "misfit") {
+          ownerMisfits.push({ symbol: s.symbol, why: s.why });
+        }
+      }
+      if (sorted.length > 0) {
+        const label = { main: "→ main book", influencer: "→ influencer sleeve", misfit: "→ fits neither book, sell queued", unknown: "→ left in the main book, not sold" } as const;
+        contextWarnings.push(`OWNER BUYS SORTED — ${sorted.map(s => `${s.symbol} ${label[s.sleeve]} (${s.why})`).join("; ")}.`);
+        console.log("OWNER_BUYS_SORTED", sorted);
+      }
+    }
+
     // RELIABLE per-symbol earnings for the names that actually drive the ⚠⚠ judgment (shortlist +
     // held). The bulk calendar's 1500-row cap drops near-term dates in peak season (PLTR 08-03 was
     // silently missing 2026-07-31 → the earnings judgment never fired on a held name 3 days out).
@@ -809,7 +855,7 @@ export async function GET(request: Request) {
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
           max_tokens: 3000,
-          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (previousRun?.influencerPositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, buysOpen, valuationSection + convictionSection, marketData.analystRatings),
+          system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (sleevePositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, buysOpen, valuationSection + convictionSection, marketData.analystRatings),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
@@ -1172,11 +1218,11 @@ export async function GET(request: Request) {
       // arrive as `heldQty` and at index 0 make `quantity >= 0` always true, turning a numeric-
       // quantity trim into a "full exit", freeing an influencer slot and admitting a 3rd position
       // past MAX_INFLUENCER_POSITIONS (security-audit finding [3]).
-      const heldInflQtyExec = new Map((previousRun?.influencerPositions ?? []).map(p => [p.symbol, parseFloat(p.quantity) || 0]));
+      const heldInflQtyExec = new Map((sleevePositions ?? []).map(p => [p.symbol, parseFloat(p.quantity) || 0]));
       const soldSet = new Set(
         decision.sells.filter(s => isFullExit(s, heldInflQtyExec.get(String(s.symbol)))).map(s => s.symbol),
       );
-      const keptInfluencer = (previousRun?.influencerPositions ?? []).filter(p => !soldSet.has(p.symbol)).length;
+      const keptInfluencer = (sleevePositions ?? []).filter(p => !soldSet.has(p.symbol)).length;
       const isInfluencerBuy = (b: { symbol: string; strategy?: string }) =>
         b.strategy === "influencer" || (influencerCandidateSet.has(b.symbol) && !v1ShortlistSet.has(b.symbol));
       // ── SLEEVE SECTOR DIVERSIFICATION ──────────────────────────────────────
@@ -1186,7 +1232,7 @@ export async function GET(request: Request) {
       // the time and would block PLTR+NVDA or MSFT+AMD — different businesses. industryOf splits
       // semiconductors out of XLK, which is the concentration that actually occurred (NVDA+AVGO).
       {
-        const keptSectors = (previousRun?.influencerPositions ?? [])
+        const keptSectors = (sleevePositions ?? [])
           .filter(p => !soldSet.has(p.symbol))
           .map(p => industryOf(p.symbol));
         const { buys: diversified, notes: sectorNotes } = applySleeveSectorRule(decision.buys, {
@@ -1455,6 +1501,20 @@ export async function GET(request: Request) {
       decision.buys = sized;
     }
 
+    // ── Owner buys that fit neither book: sold by code (lib/owner-buys) ─────────────
+    // The owner's standing rule (2026-10-29): his buys are meant to fit main or influencer, and one
+    // that fits neither may be sold. Only declared when BOTH checks ran, so an outage never sells.
+    // If the model already sells the name, its intent stands.
+    {
+      const alreadySelling = new Set(decision.sells.map(s => s.symbol));
+      for (const m of ownerMisfits) {
+        if (alreadySelling.has(m.symbol)) continue;
+        decision.sells.push({ symbol: m.symbol, exit: "all", strategy: "main", reason: "owner-misfit" });
+        buySizingAdjustments.push(`${m.symbol} SELL QUEUED — your buy fits neither book: ${m.why}.`);
+      }
+      if (ownerMisfits.length > 0) console.log("OWNER_MISFIT_SELLS", ownerMisfits);
+    }
+
     // ── Concentration trim-on-drift (code-enforced risk cap on HELD value) ─────────
     // A code trim is a RISK reduction of a STILL-HELD name — NOT a discretionary exit — so it must be
     // kept out of the recent-sells registry (else the next run's rebuy-cooldown would block adding to a
@@ -1616,7 +1676,7 @@ export async function GET(request: Request) {
     // influencerPositions on the prior run is the authoritative record and is what
     // computeSleeveReturns already partitions on.
     const sellStrategyTag = (sym: string) =>
-      inferSellStrategy(sym, previousRun?.influencerPositions, previousRun?.trades ?? []);
+      inferSellStrategy(sym, sleevePositions, previousRun?.trades ?? []);
 
     async function runSellSession(sells: Array<{ symbol: string; quantity: string }>, timeoutMs: number): Promise<boolean> {
       if (sells.length === 0) return true;
@@ -2396,7 +2456,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
     );
     // Also carry forward influencer positions from previous run that weren't sold today
     const prevInfluencerSymbols = new Set(
-      (previousRun?.influencerPositions ?? []).map(p => p.symbol)
+      (sleevePositions ?? []).map(p => p.symbol)
     );
     const soldSymbolsSet = new Set(trades.filter(t => t.side === "sell").map(t => t.symbol));
     const influencerSymbols = new Set([

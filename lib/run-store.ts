@@ -1426,7 +1426,7 @@ export type CapturePlan = {
  */
 export function planCapture(
   heldRun: Pick<TradeRun, "positions" | "influencerPositions" | "trades">,
-  latest: Pick<TradeRun, "positions" | "trades">,
+  latest: Pick<TradeRun, "positions" | "trades" | "influencerPositions">,
   liveOrders: LiveOrder[],
   /**
    * The dates this reconciliation spans: `from` is the run that still held the book, `to` is the
@@ -1566,6 +1566,13 @@ export function planCapture(
     q.set(biggest, adjusted);
     return q;
   };
+  // A captured BUY's sleeve: the run being repaired wins when it already holds the name in the
+  // sleeve — that is the trade run sorting the owner's new buy (lib/owner-buys) before this capture
+  // could record it. Otherwise the run that held the book, the same rule sells use.
+  const buySleeve = (symbol: string): "main" | "influencer" =>
+    latest.influencerPositions?.some(p => p.symbol === symbol)
+      ? "influencer"
+      : inferSellStrategy(symbol, heldRun.influencerPositions, heldRun.trades ?? []);
   const recordFills = (fills: LiveOrder[], symbol: string, signedGap: number) => {
     const qty = reconcileQuantities(fills, signedGap);
     if (!qty) return false;
@@ -1575,7 +1582,7 @@ export function planCapture(
         symbol, side: o.side as "buy" | "sell", quantity: (qty.get(o) ?? 0).toFixed(6),
         avgPrice: parseFloat(o.avgPrice).toFixed(2), state: "filled", actor: "human",
         ...(o.createdAt ? { tradedOn: o.createdAt } : {}),
-        strategy: inferSellStrategy(symbol, heldRun.influencerPositions, heldRun.trades ?? []),
+        strategy: o.side === "buy" ? buySleeve(symbol) : inferSellStrategy(symbol, heldRun.influencerPositions, heldRun.trades ?? []),
       });
     }
     return true;
@@ -1618,8 +1625,7 @@ export function planCapture(
       symbol: u.symbol, side: "buy", quantity: u.excessQty.toFixed(6),
       avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled", actor: "human",
       ...(hit.createdAt ? { tradedOn: hit.createdAt } : {}),
-      // Sleeve membership is read from the run that held the book, the same rule sells use.
-      strategy: inferSellStrategy(u.symbol, heldRun.influencerPositions, heldRun.trades ?? []),
+      strategy: buySleeve(u.symbol),
     });
   }
 

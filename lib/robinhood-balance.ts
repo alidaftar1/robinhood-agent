@@ -110,3 +110,72 @@ Use instrument_symbol for symbol, quantity for quantity, average_buy_price for a
     clearTimeout(killTimer);
   }
 }
+
+/**
+ * Symbols with a FILLED BUY the OWNER placed (not the agent) on or after `since` (YYYY-MM-DD).
+ *
+ * The evidence lib/owner-buys requires before code sells an owner buy as a misfit: a holding that is
+ * merely NEW (a spin-off, merger stock, a row the previous snapshot dropped, an agent buy that
+ * filled late) is not proof the owner bought it. Orders carry `placed_agent` — "user" for the
+ * owner's own, "agentic" for this agent's. Read-only: the model is restricted to get_equity_orders.
+ * null on ANY failure, which callers must treat as "no evidence" — never as a sell signal.
+ */
+export async function fetchOwnerBuyEvidence(
+  anthropic: Anthropic,
+  accessToken: string,
+  symbols: string[],
+  since: string,
+): Promise<Set<string> | null> {
+  if (symbols.length === 0) return new Set();
+  const account = process.env.AGENTIC_ACCOUNT_ID ?? "";
+  const controller = new AbortController();
+  const killTimer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const res = await (anthropic.beta.messages as any).create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1024,
+      system: `Call get_equity_orders for account ${account} to get its recent orders. Output exactly one line:
+OWNER_ORDERS:[{"symbol":"XX","side":"buy|sell","state":"XX","createdAtTs":"<created_at exactly as returned>","placedBy":"XX"}]
+Include only orders for these symbols: ${symbols.join(", ")}. Use instrument_symbol, side, state, created_at copied unchanged, and the placed_agent field copied exactly as returned (empty string if absent). If none, output OWNER_ORDERS:[]. Output nothing else.`,
+      messages: [{ role: "user", content: `Fetch recent orders for account ${account}.` }],
+      mcp_servers: [{
+        type: "url", url: MCP_URL, name: "robinhood", authorization_token: accessToken,
+        tool_configuration: { enabled: true, allowed_tools: ["get_equity_orders"] },
+      }],
+      betas: ["mcp-client-2025-04-04"],
+    }, { signal: controller.signal });
+    const text = res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+    const match = text.match(/^OWNER_ORDERS:(.+)$/m);
+    if (!match) return null;
+    const rows = JSON.parse(match[1]);
+    if (!Array.isArray(rows)) return null;
+    return ownerBuysFromOrders(rows, symbols, since);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(killTimer);
+  }
+}
+
+/** Pure half of fetchOwnerBuyEvidence: which symbols have a filled, owner-placed buy since `since`. */
+export function ownerBuysFromOrders(
+  rows: Array<{ symbol?: unknown; side?: unknown; state?: unknown; createdAtTs?: unknown; placedBy?: unknown }>,
+  symbols: string[],
+  since: string,
+): Set<string> {
+  const wanted = new Set(symbols);
+  const out = new Set<string>();
+  for (const r of rows) {
+    const sym = String(r.symbol ?? "").toUpperCase();
+    if (!wanted.has(sym)) continue;
+    if (String(r.side).toLowerCase() !== "buy" || String(r.state).toLowerCase() !== "filled") continue;
+    if (String(r.placedBy).toLowerCase() !== "user") continue;
+    // The full broker timestamp must parse: a row an LLM made up rarely carries a real one, and a
+    // sale rests on this. Compared as a UTC date, which is never earlier than the US date of the fill.
+    const raw = String(r.createdAtTs ?? "");
+    const ts = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw) ? Date.parse(raw) : NaN;
+    if (!Number.isFinite(ts) || !(new Date(ts).toISOString().slice(0, 10) >= since)) continue;
+    out.add(sym);
+  }
+  return out;
+}

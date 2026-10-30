@@ -55,6 +55,7 @@ export type ExitTrigger =
   | "stale"            // time-stop: held long, went nowhere
   | "shortlist-drop"   // fell off the quality-momentum shortlist
   | "concentration"    // sector-cap or per-position trim
+  | "owner-misfit"     // the owner bought it, it fits neither book, code sold it (lib/owner-buys)
   | "discretionary"    // model sold it and named no structured reason
   | "human";           // the owner sold it — NO WRITER YET; planCapture tags the trade actor:"human"
                        // but does not feed this ledger, so owner exits are currently absent
@@ -66,7 +67,7 @@ export type ExitTrigger =
  * the one thing this ledger cannot survive.
  */
 export function triggerFromReason(reason: string | undefined): ExitTrigger {
-  const known: ExitTrigger[] = ["news-down", "firm-down", "stale", "shortlist-drop", "concentration", "stop", "take-profit", "earnings"];
+  const known: ExitTrigger[] = ["news-down", "firm-down", "stale", "shortlist-drop", "concentration", "stop", "take-profit", "earnings", "owner-misfit"];
   const r = (reason ?? "").trim().toLowerCase();
   return (known as string[]).includes(r) ? (r as ExitTrigger) : "discretionary";
 }
