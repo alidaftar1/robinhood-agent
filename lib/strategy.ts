@@ -522,7 +522,11 @@ ENFORCED IN CODE: a re-buy of a name above is DROPPED before execution UNLESS a 
         // pop is a take-profit/trim candidate, a big drop a reassess. (companion to the ⚠EARN flag)
         const re = recentEarnings.get(p.symbol);
         const reportedTag = re ? formatPostEarnings(re, change1dOf[p.symbol], change5dOf[p.symbol]) : "";
-        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${retStr}${ageStr}${tag}${concenTag}${staleTag}${earnTag}${beatTag}${analystTag}${newsTag}${reportedTag}`;
+        // Current value in dollars, not just "% since entry": the budget is buying power + what a sale is
+        // WORTH NOW, and with only the % the model valued a sale at cost (CI 2026-10-30 and 11-02: sold AMZN
+        // bought at $260 now $245, then spent $260).
+        const worthStr = curVal != null ? `, worth $${curVal.toFixed(0)} now` : "";
+        return `  ${p.symbol} × ${p.quantity} @ $${avg.toFixed(2)} avg${worthStr}${retStr}${ageStr}${tag}${concenTag}${staleTag}${earnTag}${beatTag}${analystTag}${newsTag}${reportedTag}`;
       }).join("\n")
     : "  (none — full cash)";
 
