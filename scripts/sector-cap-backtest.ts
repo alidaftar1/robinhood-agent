@@ -44,7 +44,7 @@ import { parseSp500Csv, buildUniverseIndex, membersAsOfPrecise } from "../lib/sh
 import { buildCaptureDayFromHistory, buildDateIndex, type Series } from "../lib/sharadar-features";
 import { runBacktest, DEFAULT_BACKTEST, maxDrawdown } from "../lib/backtest";
 import { LIVE_PROXY, type StrategyVariant, type VariantPick } from "../lib/strategy-variant";
-import { parseFundamentalsCsv, buildFundamentalIndex, qualityAsOf } from "../lib/sharadar-quality";
+import { parseFundamentalsCsv, buildFundamentalIndex, qualityAsOf, latestFilingAsOf } from "../lib/sharadar-quality";
 import { STOCK_SECTOR } from "../lib/market-data";
 
 const CACHE = process.env.SHARADAR_CACHE_DIR ?? `${process.env.HOME}/.cache/sharadar`;
@@ -141,6 +141,41 @@ const universe = buildUniverseIndex(sp500Rows);
 const fundRows = parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fund_all.csv`).text(),
   { dimension: "ARY", tickers: new Set(sp500Rows.map(r => r.ticker)), basis: "netinc" });
 const fundIndex = buildFundamentalIndex(fundRows);
+// --quality ary (default, as published) | art-fin: TTM (ART) quality with production's Financials /
+// Real Estate no-leverage rule. The historical sector map holds Sharadar NAMES, so lib/sharadar-
+// quality's isFin (ETF codes) never fires; art-fin applies it by name. Added 2026-11-02 to re-check
+// the 10-27 Tech-limit verdicts on the production-closest basis (scripts/fcf-backtest.ts measured
+// the basis gap: ary flatters 2013+ by ~3pp/yr, ~1 in 7 picks differ).
+const QUALITY = process.argv.includes("--quality") ? process.argv[process.argv.indexOf("--quality") + 1] : "ary";
+if (QUALITY !== "ary" && QUALITY !== "art-fin") throw new Error(`--quality must be ary or art-fin, got ${QUALITY}`);
+const fundIndexTTM = QUALITY === "art-fin" ? buildFundamentalIndex(parseFundamentalsCsv(await Bun.file(`${CACHE}/sp500_fund_all.csv`).text(),
+  { dimension: "ART", tickers: new Set(sp500Rows.map(r => r.ticker)), basis: "netinc" })) : null;
+const FIN_SECTORS = new Set(["Financial Services", "Real Estate"]);
+/** lib/sharadar-quality qualityAsOf term for term, on TTM rows, with the Financials/RE rule by name. */
+function qualityTTMFin(cohort: Iterable<string>, asOf: string): Map<string, number> {
+  const percentileFn = (vals: number[]) => { const s = [...vals].sort((a, b) => a - b); const n = s.length || 1;
+    return (x: number) => { let lo = 0, hi = s.length; while (lo < hi) { const m = (lo + hi) >> 1; if (s[m] <= x) lo = m + 1; else hi = m; } return lo / n; }; };
+  const raw = new Map<string, { roe: number | null; roa: number; lev: number | null }>();
+  for (const sym of cohort) {
+    const f = latestFilingAsOf(fundIndexTTM!.get(sym), asOf); if (!f) continue;
+    const a = f.assets, e = f.equity, l = f.liabilities, n = f.netinc;
+    if (a == null || n == null || a <= 0) continue;
+    const isFin = FIN_SECTORS.has(sectorOf(sym)); const negEq = e != null && e <= 0;
+    raw.set(sym, { roe: e != null && e > 0 ? n / e : null, roa: n / a, lev: !isFin && !negEq && l != null ? l / a : null });
+  }
+  const vals = [...raw.values()];
+  const roeP = percentileFn(vals.filter(r => r.roe != null).map(r => r.roe as number));
+  const roaP = percentileFn(vals.map(r => r.roa));
+  const levP = percentileFn(vals.filter(r => r.lev != null).map(r => r.lev as number));
+  const q = new Map<string, number>();
+  for (const [sym, r] of raw) {
+    const parts = [roaP(r.roa)];
+    if (r.roe != null) parts.push(roeP(r.roe));
+    if (r.lev != null) parts.push(1 - levP(r.lev));
+    q.set(sym, parts.reduce((s2, x) => s2 + x, 0) / parts.length);
+  }
+  return q;
+}
 const tradingDays = [...dateIdx.keys()].filter(d => d >= TEST_FROM && d <= TEST_TO && spy.has(d)).sort();
 
 // Index sector weights, monthly.
@@ -167,7 +202,7 @@ function* dayStream() {
     const members = membersAsOfPrecise(universe, sp500Rows, date) ?? new Set<string>();
     if (date.slice(0, 4) !== lastYear) { lastYear = date.slice(0, 4); console.error(`  … ${lastYear} (${new Date().toISOString().slice(11, 19)})`); }
     const month = date.slice(0, 7);
-    if (month !== qMonth) { const r = qualityAsOf(members, fundIndex, date, "netinc"); qCache = r.quality; peCache = r.pe; qMonth = month; }
+    if (month !== qMonth) { const r = qualityAsOf(members, fundIndex, date, "netinc"); qCache = QUALITY === "art-fin" ? qualityTTMFin(members, date) : r.quality; peCache = r.pe; qMonth = month; }
     yield buildCaptureDayFromHistory(date, members, series, dateIdx, spy.get(date) ?? null, qCache ?? undefined, peCache ?? undefined);
   }
 }
@@ -398,12 +433,13 @@ const dr = (v: Array<number | null>) => { const o: number[] = []; for (let i = 1
 const mean = (x: number[]) => x.reduce((a, b) => a + b, 0) / (x.length || 1);
 const sd = (x: number[]) => { const m = mean(x); return Math.sqrt(x.reduce((a, b) => a + (b - m) ** 2, 0) / (x.length || 1)); };
 
-console.log(`\nSECTOR-CAP EXPERIMENT — ${N} names, rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d, stop ${DEFAULT_BACKTEST.stopLossPct}% ${DEFAULT_BACKTEST.stopMode}, cost ${DEFAULT_BACKTEST.costBps}bps, quality ARY`);
+console.log(`\nSECTOR-CAP EXPERIMENT — ${N} names, rebalance ${DEFAULT_BACKTEST.rebalanceEveryDays}d, stop ${DEFAULT_BACKTEST.stopLossPct}% ${DEFAULT_BACKTEST.stopMode}, cost ${DEFAULT_BACKTEST.costBps}bps, quality ${QUALITY === "art-fin" ? "ART (TTM) + Financials/RE no-leverage" : "ARY"}`);
 console.log(`Historical sectors for every variant (see header). Only the sector limit differs.\n`);
 console.log(`  ${"variant".padEnd(16)}${"CAGR".padStart(9)}${"Sharpe".padStart(8)}${"IR".padStart(7)}${"TE".padStart(8)}${"maxDD".padStart(9)}${"yrs>SPY".padStart(9)}${"trades".padStart(8)}`);
 console.log("  " + "─".repeat(71));
 let spyLine = "";
 const halves: string[] = []; let spyHalves = "";
+const dailyOf = new Map<string, Map<string, number>>();
 for (const v of VARIANTS.filter(v => !only || only.includes(v.id))) {
   console.error(`running ${v.id}`);
   const r = runBacktest(v, dayStream(), priceOf, (d) => spy.get(d) ?? null, DEFAULT_BACKTEST);
@@ -411,6 +447,7 @@ for (const v of VARIANTS.filter(v => !only || only.includes(v.id))) {
   const e = r.marks.map(m => m.equity), s = r.marks.map(m => m.spy);
   const rs = dr(e), rb = dr(s);
   const act: number[] = []; for (let i = 0; i < Math.min(rs.length, rb.length); i++) act.push(rs[i] - rb[i]);
+  { const dm = new Map<string, number>(); for (let i = 1; i < r.marks.length; i++) dm.set(r.marks[i].date, r.marks[i].equity / r.marks[i - 1].equity - 1); dailyOf.set(v.id, dm); }
   const cagr = (Math.pow(e[e.length - 1] / e[0], 1 / yrs) - 1) * 100;
   const sharpe = sd(rs) > 0 ? mean(rs) / sd(rs) * Math.sqrt(252) : 0;
   const ir = sd(act) > 0 ? mean(act) / sd(act) * Math.sqrt(252) : 0;
@@ -430,10 +467,11 @@ for (const v of VARIANTS.filter(v => !only || only.includes(v.id))) {
     const ms = r.marks.filter(m => m.date >= from && m.date <= to);
     const y = (Date.parse(ms[ms.length - 1].date) - Date.parse(ms[0].date)) / (365.25 * 86_400_000);
     const s0 = ms.find(m => m.spy != null)!.spy!, s1 = [...ms].reverse().find(m => m.spy != null)!.spy!;
-    return { st: (Math.pow(ms[ms.length - 1].equity / ms[0].equity, 1 / y) - 1) * 100, sp: (Math.pow(s1 / s0, 1 / y) - 1) * 100 };
+    let pk = ms[0].equity, dd = 0; for (const m of ms) { pk = Math.max(pk, m.equity); dd = Math.min(dd, m.equity / pk - 1); }
+    return { st: (Math.pow(ms[ms.length - 1].equity / ms[0].equity, 1 / y) - 1) * 100, sp: (Math.pow(s1 / s0, 1 / y) - 1) * 100, dd: dd * 100 };
   };
-  const h1 = TEST_FROM < "2013-01-01" ? half(TEST_FROM, "2012-12-31") : { st: NaN, sp: NaN }, h2 = half("2013-01-01", "2026-12-31");
-  halves.push(`  ${v.id.padEnd(16)}${pct(h1.st).padStart(9)}${pct(h1.st - h1.sp).padStart(10)}${pct(h2.st).padStart(11)}${pct(h2.st - h2.sp).padStart(10)}`);
+  const h1 = TEST_FROM < "2013-01-01" ? half(TEST_FROM, "2012-12-31") : { st: NaN, sp: NaN, dd: NaN }, h2 = half("2013-01-01", "2026-12-31");
+  halves.push(`  ${v.id.padEnd(16)}${pct(h1.st).padStart(9)}${pct(h1.st - h1.sp).padStart(10)}${pct(h1.dd, 1).padStart(9)}${pct(h2.st).padStart(11)}${pct(h2.st - h2.sp).padStart(10)}${pct(h2.dd, 1).padStart(9)}`);
   if (!spyHalves) spyHalves = `  ${"SPY".padEnd(16)}${pct(h1.sp).padStart(9)}${"".padStart(10)}${pct(h2.sp).padStart(11)}`;
   console.log(`  ${v.id.padEnd(16)}${pct(cagr).padStart(9)}${sharpe.toFixed(2).padStart(8)}${ir.toFixed(2).padStart(7)}${(te.toFixed(1) + "%").padStart(8)}${pct(r.maxDrawdownPct, 1).padStart(9)}${`${win}/${tot}`.padStart(9)}${String(r.trades).padStart(8)}${r.usable ? "" : "  ⛔ NOT USABLE"}`);
   if (!spyLine) {
@@ -445,10 +483,24 @@ for (const v of VARIANTS.filter(v => !only || only.includes(v.id))) {
 }
 console.log(spyLine);
 console.log(`\nBY HALF — CAGR and excess over SPY`);
-console.log(`  ${"variant".padEnd(16)}${`${TEST_FROM.slice(0, 4)}-2012`.padStart(9)}${"vs SPY".padStart(10)}${"2013-2026".padStart(11)}${"vs SPY".padStart(10)}`);
+console.log(`  ${"variant".padEnd(16)}${`${TEST_FROM.slice(0, 4)}-2012`.padStart(9)}${"vs SPY".padStart(10)}${"maxDD".padStart(9)}${"2013-2026".padStart(11)}${"vs SPY".padStart(10)}${"maxDD".padStart(9)}`);
 for (const l of halves) console.log(l);
 console.log(spyHalves);
 console.log(`\n  TE = tracking error vs SPY (annualised). yrs>SPY = calendar years the variant beat SPY.`);
+const refDaily = dailyOf.get("3x-spy-max3");
+if (refDaily) {
+  console.log(`\nPAIRED vs 3x-spy-max3 (quality ${QUALITY}) — annualised mean daily return difference, t-stat`);
+  for (const [id, m] of dailyOf) {
+    if (id === "3x-spy-max3") continue;
+    const cells: string[] = [];
+    for (const [from, to] of [["0000", "9999"], ["0000", "2012-12-31"], ["2013-01-01", "9999"]] as const) {
+      const d: number[] = []; for (const [k, x] of m) { const b = refDaily.get(k); if (b != null && k >= from && k <= to) d.push(x - b); }
+      const t = sd(d) > 0 ? mean(d) / (sd(d) / Math.sqrt(d.length)) : 0;
+      cells.push(`${pct(mean(d) * 252 * 100)} t=${t.toFixed(2)}`);
+    }
+    console.log(`  ${id.padEnd(18)} all ${cells[0].padEnd(18)} →2012 ${cells[1].padEnd(18)} 2013→ ${cells[2]}`);
+  }
+}
 
 // Sanity check on the rebuilt index weights vs SPY's published breakdown (2026-10-22, State Street).
 const w = indexWeights("2026-09-29");
