@@ -122,7 +122,11 @@ export function formatSectorExposure(slices: SectorSlice[], softCapPctOf: (etf: 
   const top = slices[0];
   const line = top ? softCapPctOf(top.etf) : SECTOR_CAP_PCT;
   const over = top && top.pct > line
-    ? `\n⚠ You are ${top.pct.toFixed(0)}% in ${top.name} — OVER the ${line.toFixed(0)}% soft cap. Lean toward trimming it and redeploying into an underweight sector, unless you explicitly justify keeping the concentration.`
+    ? `\n⚠ You are ${top.pct.toFixed(0)}% in ${top.name} — OVER the ${line.toFixed(0)}% soft cap. Lean toward trimming it and redeploying into an underweight sector, unless you explicitly justify keeping the concentration. ` +
+      // The DOLLAR excess, so a sector trim is sized to it: on 2026-11-03 the model sold ALL of MRK
+      // (~$199) to fix ~$20 of excess, then tried to rebuy the sector (ILMN) with the proceeds.
+      `The excess is ~$${(top.value * (1 - line / top.pct)).toFixed(0)}: a sector-cap reduction is a TRIM of about that much (sell a "fraction" of one holding), not a full exit — a full exit needs its OWN reason under the rules below. ` +
+      `Do not put the proceeds back into ${top.name} this run — that undoes the trim.`
     : "";
   return `\nSECTOR EXPOSURE (current holdings, by value):\n${lines}${over}\n`;
 }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { sortOwnerBuys, confirmMisfits } from "../lib/owner-buys";
+import { sortOwnerBuys, confirmMisfits, ownerBuySectorNotes } from "../lib/owner-buys";
+import { computeSectorSlices, formatSectorExposure } from "../lib/risk-metrics";
 import { ownerBuysFromOrders } from "../lib/robinhood-balance";
 import { planCapture, type LiveOrder, type PositionSnapshot, type TradeSnapshot } from "../lib/run-store";
 
@@ -182,5 +183,55 @@ describe("wiring: the top of the main list is the first TARGET_MAIN_POSITIONS of
   test("mainStrong reads v1Buy's head", () => {
     const route = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
     expect(route).toContain("mainStrong: (sym) => v1Buy.slice(0, TARGET_MAIN_POSITIONS).some(s => s.symbol === sym)");
+  });
+});
+
+// 2026-11-03: the owner bought MRK; Health Care went ~35% → ~41% of holdings, and the next run sold
+// MRK. Nothing in the report said the buy itself put the sector over its line.
+describe("ownerBuySectorNotes: say when the owner's buy puts its sector over the trim line", () => {
+  const book = [
+    { symbol: "MRK", value: 199 }, { symbol: "LLY", value: 372 }, { symbol: "REGN", value: 362 },
+    { symbol: "MU", value: 700 }, { symbol: "BE", value: 652 },
+  ];
+  const run = (positions: typeof book, sorted: ReturnType<typeof sortOwnerBuys>, line = 40) => ownerBuySectorNotes({
+    sorted, slices: computeSectorSlices(positions),
+    sectorOf: s => ({ MRK: "XLV", LLY: "XLV", REGN: "XLV", MU: "XLK", BE: "XLI", ILMN: "XLV" } as Record<string, string>)[s],
+    valueOf: s => positions.find(p => p.symbol === s)?.value ?? 0, linePctOf: () => line,
+  });
+  const mrk = [{ symbol: "MRK", sleeve: "main" as const, why: "" }];
+
+  test("the 11-03 book: MRK flagged, with its share without it and the trim size", () => {
+    const [note] = run(book, mrk);
+    expect(note).toContain("your MRK buy puts Health Care at 41% of holdings, over its 40% trim line (35% without it)");
+    expect(note).toMatch(/trim the sector by about \$\d+/);
+  });
+
+  test("the warning and the note quote the same excess", () => {
+    const excess = run(book, mrk)[0].match(/about \$(\d+)/)![1];
+    expect(formatSectorExposure(computeSectorSlices(book), () => 40)).toContain(`The excess is ~$${excess}`);
+  });
+
+  test("under the line → no note", () => {
+    expect(run(book, mrk, 45)).toEqual([]);
+  });
+
+  test("not the LARGEST sector (the ⚠ only fires for the largest) → no note", () => {
+    expect(run(book.map(p => p.symbol === "MU" ? { ...p, value: 2000 } : p), mrk)).toEqual([]);
+  });
+
+  test("an owner buy in another sector → no note", () => {
+    expect(run(book, [{ symbol: "BE", sleeve: "main", why: "" }])).toEqual([]);
+  });
+
+  test("a misfit is being sold anyway → no note", () => {
+    expect(run(book, [{ symbol: "MRK", sleeve: "misfit", why: "" }])).toEqual([]);
+  });
+});
+
+describe("wiring: the sector note is built from the prompt's own valuation", () => {
+  test("ownerBuySectorNotes runs on computeSectorSlices with the sell-side trim line", () => {
+    const route = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
+    expect(route).toContain("contextWarnings.push(...ownerBuySectorNotes({");
+    expect(route).toContain("linePctOf: (etf) => sectorSoftTrimPct(etf, TARGET_MAIN_POSITIONS)");
   });
 });

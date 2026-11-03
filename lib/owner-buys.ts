@@ -99,3 +99,37 @@ export function confirmMisfits(sorted: OwnerBuySort[], ownerBought: Set<string> 
     };
   });
 }
+
+/**
+ * Flag an owner buy that puts its sector over the sell-side trim line — the ⚠ in SECTOR EXPOSURE,
+ * which fires only for the LARGEST sector — so the report explains the trim that run is nudged to
+ * make. 2026-11-03: the owner's MRK buy took Health Care from ~35% to ~41% of holdings; the next run
+ * sold MRK and nothing said the buy itself put the sector over. Takes the SAME slices the prompt's
+ * SECTOR EXPOSURE block is built from, so the note and the ⚠ cannot disagree. Advisory: no order.
+ */
+export function ownerBuySectorNotes(args: {
+  sorted: OwnerBuySort[];
+  /** computeSectorSlices of every holding (both sleeves), largest first. */
+  slices: Array<{ etf: string; name: string; value: number; pct: number }>;
+  sectorOf: (sym: string) => string | undefined;
+  valueOf: (sym: string) => number;
+  /** Trim line for a sector, in percent (sectorSoftTrimPct). */
+  linePctOf: (etf: string) => number;
+}): string[] {
+  const top = args.slices[0];
+  if (!top) return [];
+  const line = args.linePctOf(top.etf);
+  if (!(top.pct > line)) return [];
+  const total = top.value / (top.pct / 100);
+  const notes: string[] = [];
+  for (const s of args.sorted) {
+    if (s.sleeve === "misfit" || args.sectorOf(s.symbol) !== top.etf) continue;   // a misfit is sold anyway
+    const own = args.valueOf(s.symbol);
+    const before = total - own > 0 ? (top.value - own) / (total - own) * 100 : 0;
+    notes.push(
+      `OWNER BUY OVER SECTOR LINE — your ${s.symbol} buy puts ${top.name} at ${top.pct.toFixed(0)}% of holdings, over its ${line.toFixed(0)}% trim line ` +
+      `(${before.toFixed(0)}% without it). This run is told to trim the sector by about $${(top.value * (1 - line / top.pct)).toFixed(0)}.`,
+    );
+  }
+  return notes;
+}

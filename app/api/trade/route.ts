@@ -8,7 +8,7 @@ import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebala
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
 import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
-import { sortOwnerBuys, confirmMisfits } from "@/lib/owner-buys";
+import { sortOwnerBuys, confirmMisfits, ownerBuySectorNotes } from "@/lib/owner-buys";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, netScores, buyChannelCounts, sleeveBuyQualifies, MIN_BUY_CHANNELS, INFLUENCER_BUY_FLOOR, toMomentumSignal, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
 import { computeSectorSlices, formatSectorExposure, computeBookBetaForPositions, formatBookBeta } from "@/lib/risk-metrics";
@@ -599,6 +599,13 @@ export async function GET(request: Request) {
       if (sorted.length > 0) {
         const label = { main: "→ main book", influencer: "→ influencer sleeve", misfit: "→ fits neither book, sell queued", unknown: "→ left in the main book, not sold" } as const;
         contextWarnings.push(`OWNER BUYS SORTED — ${sorted.map(s => `${s.symbol} ${label[s.sleeve]} (${s.why})`).join("; ")}.`);
+        // Valued exactly as buildRiskSection values them for the prompt's SECTOR EXPOSURE block.
+        const valuedNow = (portfolioCtx?.positions ?? []).map(p => ({ symbol: p.symbol, value: parseFloat(p.quantity) * (priceMap.get(p.symbol) ?? parseFloat(p.avgCost)) }));
+        contextWarnings.push(...ownerBuySectorNotes({
+          sorted, slices: computeSectorSlices(valuedNow), sectorOf: (sym) => STOCK_SECTOR[sym],
+          valueOf: (sym) => valuedNow.find(v => v.symbol === sym)?.value ?? 0,
+          linePctOf: (etf) => sectorSoftTrimPct(etf, TARGET_MAIN_POSITIONS),
+        }));
         console.log("OWNER_BUYS_SORTED", sorted);
       }
     }

@@ -219,6 +219,15 @@ describe("each sector is capped at 3x its S&P weight, in names and in dollars", 
     expect(formatSectorExposure(slices)).toContain("50% in Technology — OVER the 40% soft cap");
   });
 
+  // 2026-11-03: told only to "lean toward trimming", the model sold ALL of MRK (~$199) to fix ~$20 of
+  // Health Care excess. The ⚠ line now carries the dollar excess and says a full exit needs its own reason.
+  test("the ⚠ line sizes the trim in dollars", () => {
+    const out = formatSectorExposure([{ etf: "XLV", name: "Health Care", value: 933, pct: 41 }], () => 40);
+    expect(out).toContain("The excess is ~$23");          // 933 × (1 − 40/41)
+    expect(out).toContain("not a full exit");
+    expect(out).toContain("Do not put the proceeds back into Health Care this run");
+  });
+
   test("the shortlist and the dollar budget read the SAME rule", () => {
     // 6 energy names with the strongest momentum: only ONE may reach the buyable shortlist.
     const mk = (symbol: string, mom: number) => ({ symbol, price: 100, mom12_1: mom } as unknown as StockData);
