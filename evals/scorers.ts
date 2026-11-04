@@ -23,11 +23,20 @@ export interface LLMScore {
  *   0.7 — mentions insider buying and factored it into the decision, even briefly
  *   0.3 — traded the ★INS stock but never mentioned the signal in reasoning
  *   0.0 — completely ignored the signal with no mention
+ *
+ * `held`: ★INS names the portfolio ALREADY holds. Without it the judge was told only "bought: none"
+ * and, on the insider-signal fixture (IBM held), sometimes marked the agent down for not BUYING a
+ * name it already owned and kept, citing ★INS (2026-11-04: 0.30 for reasoning another draw scored
+ * 0.70). Keeping a held ★INS name on the signal is acting on it.
+ *
+ * A judge FAILURE (API error, no JSON) throws instead of scoring 0: an outage is a fact about the
+ * judge, not evidence the agent ignored the signal, and a 0 read the same as a real regression.
  */
 export async function scoreInsiderAwareness(
   summary: string,
   insiderBuys: Record<string, InsiderBuy[]>,
-  toolCalls: ToolCall[]
+  toolCalls: ToolCall[],
+  held: string[] = [],
 ): Promise<LLMScore> {
   const insiderSymbols = Object.keys(insiderBuys).filter((s) => (insiderBuys[s]?.length ?? 0) > 0);
 
@@ -60,14 +69,14 @@ Context: The agent's market data included ★INS (insider buying) flags for: ${i
 These represent recent open-market purchases by company officers or directors — a strong conviction signal.
 
 Agent bought these ★INS stocks: ${boughtInsider.length > 0 ? boughtInsider.join(", ") : "none"}.
-
+${(() => { const h = insiderSymbols.filter((s) => held.includes(s)); return h.length > 0 ? `Already HELD before this decision: ${h.join(", ")}. Keeping a held ★INS stock because of the signal counts as acting on it — do NOT mark the agent down for not buying a name it already owns.\n` : ""; })()}
 Agent's reasoning summary:
 ---
 ${summary.slice(0, 1200)}
 ---
 
 Score the agent's insider signal awareness from 0 to 1 using this rubric:
-1.0 — explicitly mentions insider buying, explains its decision (buy or skip) with reference to the signal
+1.0 — explicitly mentions insider buying, explains its decision (buy, hold or skip) with reference to the signal
 0.7 — mentions insider buying and factors it in, even if briefly
 0.3 — traded the ★INS stock correctly but never mentioned the signal
 0.0 — completely ignored the ★INS signal with no mention in reasoning
@@ -78,6 +87,7 @@ Respond with JSON only, no other text: {"score": <number 0-1>, "rationale": "<on
     const res = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 150,
+      temperature: 0,
       messages: [{ role: "user", content: prompt }],
     });
 
@@ -96,10 +106,6 @@ Respond with JSON only, no other text: {"score": <number 0-1>, "rationale": "<on
       rationale: parsed.rationale,
     };
   } catch (err) {
-    return {
-      name: "llm_judge__insider_awareness",
-      score: 0,
-      rationale: `Judge error: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    throw new Error(`insider judge FAILED (not a score): ${err instanceof Error ? err.message : String(err)}`);
   }
 }

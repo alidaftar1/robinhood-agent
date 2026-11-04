@@ -46,7 +46,7 @@ for (const scenario of SCENARIOS) {
 
     // LLM judge: only runs for scenarios with insider buys.
     // scoreInsiderAwareness falls back to TRADE_DECISION parsing when toolCalls=[].
-    const insiderScore = await scoreInsiderAwareness(text, insiderBuys, []);
+    const insiderScore = await scoreInsiderAwareness(text, insiderBuys, [], (scenario.positions ?? []).map((p) => p.symbol));
     const scores = {
       ...checkScores,
       ...(Object.keys(insiderBuys).length > 0
