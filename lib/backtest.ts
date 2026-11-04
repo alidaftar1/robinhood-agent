@@ -58,6 +58,15 @@ export interface BacktestConfig {
    */
   entryStopPct?: number | null;
   /**
+   * OPTIONAL TAKE-PROFIT, cumulative from entry, percent (e.g. 40 = sell the whole position once it
+   * closes ≥ +40% above entry). The live influencer sleeve has one (TAKE_PROFIT_PCT); the main book
+   * does not. null/absent = no take-profit, exactly as before. `onTakeProfit` is told of each exit
+   * so a variant can keep the name out of its picks for a while (a take-profit that the next
+   * rebalance simply re-buys is only a few days in cash).
+   */
+  takeProfitPct?: number | null;
+  onTakeProfit?: (date: string, symbol: string, price: number) => void;
+  /**
    * Split a NEW position's entry across this many consecutive trading days (1 = today's behaviour,
    * the whole weight on day 0).
    *
@@ -177,7 +186,7 @@ export function runBacktest(
     let equity = cash + holdings.reduce((a, h) => a + h.shares * markPrice(h), 0);
 
     // ── 2. stops, on today's close ──
-    if (cfg.stopLossPct != null || cfg.entryStopPct != null) {
+    if (cfg.stopLossPct != null || cfg.entryStopPct != null || cfg.takeProfitPct != null) {
       const survivors: Holding[] = [];
       for (const h of holdings) {
         const p = priceOf(date, h.symbol);
@@ -198,6 +207,10 @@ export function runBacktest(
         if ((cfg.stopLossPct != null && ret <= cfg.stopLossPct) || hitEntryBar) {
           cash += h.shares * p - cost(h.shares * p);
           stopOuts++; trades++;
+        } else if (cfg.takeProfitPct != null && entryRet != null && entryRet >= cfg.takeProfitPct) {
+          cash += h.shares * p - cost(h.shares * p);
+          trades++;
+          cfg.onTakeProfit?.(date, h.symbol, p);
         } else survivors.push(h);
       }
       holdings = survivors;
