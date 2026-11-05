@@ -2,41 +2,43 @@ import { describe, it, expect } from "bun:test";
 import { buildV1AnalysisPrompt } from "@/lib/strategy";
 import { KNOWN_ISSUES } from "@/lib/autopilot-known-issues";
 
-// 2026-11-05: MU was kept at -23.5% from cost on its 12-month momentum rank, cited as "fresh
-// momentum". The rule now defines the reversal keep-reason as a POSITIVE 5-day return, and shows that
-// 5d figure on each underwater MAIN line — the shortlist row carries only 12-1 momentum.
+// 2026-11-05: the prompt's LOSS DISCIPLINE rule (sell a MAIN name >10% below entry unless it cites a
+// name-specific keep-reason) was REMOVED after a 1999-2026 backtest on the live rules showed it cost
+// ~2.1-2.4 pp/yr (scripts/take-profit-backtest.ts, ld* variants). The same morning it had been
+// tightened with a "(5d ±X%)" tag on underwater lines; that tag went with it. The same-day −10%
+// crash stop (lib/stopouts, drop-check) is a separate mechanism and is unchanged.
 const ctx = {
   buyingPower: "$200", totalValue: "$2100",
-  positions: [
-    { symbol: "MU", quantity: "0.5", avgCost: "904.74", price: 692.5 },   // -23.5%: underwater main
-    { symbol: "LLY", quantity: "0.4", avgCost: "800", price: 940 },       // +17.5%: not underwater
-    { symbol: "NVDA", quantity: "1", avgCost: "206", price: 185 },        // -10.2%: influencer sleeve
-  ],
+  positions: [{ symbol: "MU", quantity: "0.5", avgCost: "904.74", price: 692.5 }],   // -23.5%
 } as any;
-const build = (c5: Record<string, number>) => buildV1AnalysisPrompt(
-  "2026-11-05", "(t)", ctx, "", "", ["NVDA"], [], [], {}, new Map(), new Map(), new Map(), {}, c5,
-);
+const p = buildV1AnalysisPrompt("2026-11-05", "(t)", ctx, "", "", [], [], [], {}, new Map(), new Map(), new Map(), {}, { MU: -13.4 });
+const pOff = buildV1AnalysisPrompt("2026-11-05", "(t)", ctx, "", "", [], [], [], {}, new Map(), new Map(), new Map(), {}, {}, [], "", "", false);
 
-describe("loss discipline: the reversal keep-reason is visible and is not the 12-month rank", () => {
-  const p = build({ MU: -13.4, LLY: 2.1, NVDA: -9.5 });
-  const line = (sym: string) => p.split("\n").find((l) => l.trimStart().startsWith(`${sym} ×`)) ?? "";
-
-  it("an underwater MAIN line shows its 5d return", () => {
-    expect(line("MU")).toContain("(5d -13.4%)");
+describe("loss from cost is not a sell reason", () => {
+  it("the LOSS DISCIPLINE rule and its keep-reason demand are gone", () => {
+    expect(p).not.toContain("LOSS DISCIPLINE");
+    expect(p).not.toMatch(/MUST cite a NAME-SPECIFIC reason it recovers/);
+    expect(pOff).not.toMatch(/loss discipline/i);
   });
-  it("a main name that is not >10% under cost, and a sleeve name, show no 5d tag", () => {
-    expect(line("LLY")).not.toContain("(5d");
-    expect(line("NVDA")).not.toContain("(5d");
+  it("the prompt says plainly that a loss from cost alone is not a sell reason, and why", () => {
+    expect(p).toContain("NO LOSS-FROM-COST RULE");
+    expect(p).toMatch(/NOT, by itself, a reason to sell/);
+    expect(p).toMatch(/backtested 1999-2026/);
   });
-  it("no 5d data → no tag (never a made-up 0%)", () => {
-    expect(build({}).split("\n").find((l) => l.trimStart().startsWith("MU ×"))).not.toContain("(5d");
+  it("an off-shortlist holding is still a sell — said outright (without it the model kept WDC 3/3)", () => {
+    expect(p).toMatch(/does NOT appear in the shortlist table at all HAS fallen off it: that is reason \(a\), sell it/);
   });
-  it("the rule no longer offers 'ranks near the TOP on fresh momentum', and names the 5d test", () => {
-    expect(p).not.toContain("ranks near the TOP on fresh momentum");
-    expect(p).toContain("its 5-day return, shown as \"5d\" on its position line, is now POSITIVE");
-    expect(p).toContain("the 12-month momentum figure is NOT fresh momentum");
+  it("the risk sells that remain are still listed on a closed day", () => {
+    expect(pOff).toMatch(/bearish ⚡NEWS↓ event or ↓FIRM/);
   });
-  it("the reviewer registry checks for it", () => {
-    expect(KNOWN_ISSUES.some((k) => k.date === "2026-11-05" && /12-month/.test(k.title) && /5d/.test(k.check))).toBe(true);
+  it("no '(5d …)' tag on an underwater line any more", () => {
+    const line = p.split("\n").find((l) => l.trimStart().startsWith("MU ×")) ?? "";
+    expect(line).toContain("-23.5% since entry");
+    expect(line).not.toContain("(5d");
+  });
+  it("the reviewer now flags the opposite mistake: a sale made only on the loss from cost", () => {
+    const k = KNOWN_ISSUES.find((x) => x.date === "2026-11-05");
+    expect(k?.title).toMatch(/sold only because it is down from cost/);
+    expect(k?.check).toMatch(/Flag it — being below cost is no longer a sell reason/);
   });
 });

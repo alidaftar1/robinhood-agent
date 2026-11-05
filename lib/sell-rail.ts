@@ -33,8 +33,10 @@ import { isFullExit, type TradeDecisionSell } from "./trade-decision";
  *  and applyConcentrationTrim already issues partial sells in code. */
 export const MAX_DISCRETIONARY_EXITS = 3;
 
-/** Below this since entry, loss discipline independently justifies the exit. Mirrors the prompt's
- *  "more than 10% below entry" rule so code and prompt cannot disagree about what is justified. */
+/** Below this since entry, the exit does not count against MAX_DISCRETIONARY_EXITS. The prompt's
+ *  loss-from-cost SELL rule was removed 2026-11-05 (backtested: it cost ~2pp/yr), so nothing tells the
+ *  model to sell on this any more; it stays here as a PERMISSION only, so a crash week cannot strand
+ *  genuinely broken names behind the discretionary cap. */
 export const LOSS_DISCIPLINE_PCT = -10;
 
 export interface SellRailContext {

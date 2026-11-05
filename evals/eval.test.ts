@@ -1764,12 +1764,12 @@ describe("V1 prompt: market-headlines block is defended against injection", () =
   });
 });
 
-// ─── V1 prompt: loss-discipline for materially-underwater main-book holdings (STLD 2026-08-19) ───
-describe("V1 prompt: underwater main-book holdings must earn their keep", () => {
+// ─── V1 prompt: loss from cost is not a sell reason (rule added for STLD 2026-08-19, removed 2026-11-05
+// after a 1999-2026 backtest showed it cost ~2pp/yr — see evals/loss-discipline.test.ts) ───
+describe("V1 prompt: no loss-from-cost sell rule", () => {
   const prompt = buildV1AnalysisPrompt("2026-08-19", "(t)", { buyingPower: "$500", totalValue: "$2500", positions: [] });
-  it("requires a NAME-SPECIFIC reason to keep a MAIN name >10% below cost (not a sector rationale)", () => {
-    expect(prompt).toContain("LOSS DISCIPLINE");
-    expect(prompt).toMatch(/10% below entry|down >10% from cost/);
-    expect(prompt).toContain("NAME-SPECIFIC");
+  it("says a loss from cost is not by itself a sell reason, and no longer demands a keep-reason", () => {
+    expect(prompt).toContain("NO LOSS-FROM-COST RULE");
+    expect(prompt).not.toContain("LOSS DISCIPLINE");
   });
 });

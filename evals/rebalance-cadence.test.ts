@@ -175,8 +175,11 @@ describe("the rendered prompt honours the rebalance window", () => {
   });
 
   test("risk sells are still explicitly permitted off-cycle", () => {
-    // The block must not read as "do nothing" — loss discipline must never wait for the window.
+    // The block must not read as "do nothing" — a risk exit must never wait for the window. (Loss
+    // from cost was one of these until 2026-11-05; it was removed as a sell reason, see
+    // evals/loss-discipline.test.ts.)
     expect(off).toContain("SELLS remain available for RISK ONLY");
-    expect(off).toMatch(/loss discipline/i);
+    expect(off).toMatch(/bearish ⚡NEWS↓ event or ↓FIRM/);
+    expect(off).not.toMatch(/loss discipline/i);
   });
 });

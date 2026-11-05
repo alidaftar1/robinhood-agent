@@ -29,11 +29,11 @@ export interface KnownIssue {
 export const KNOWN_ISSUES: KnownIssue[] = [
   {
     date: "2026-11-05",
-    title: "Underwater main name kept on its 12-month momentum rank, cited as 'fresh momentum'",
+    title: "Main name sold only because it is down from cost (the loss-discipline rule was removed)",
     lesson:
-      "MU was kept at -23.5% from cost (held 13 days, no ★INS / ⚡NEWS↑ / analyst catalyst) because it 'ranks #2 on fresh 12-mo momentum (399%)'. The loss-discipline rule says outright that 12-month momentum barely moves on a recent breakdown so a losing name can still rank, yet it also listed 'ranks near the TOP on fresh momentum' as a keep-reason without defining fresh — and the main shortlist row shows ONLY 12-1 momentum, so that keep-reason could be met by nothing but the number the rule rules out. Fixed 2026-11-05: the reversal keep-reason is now a POSITIVE 5-day return, shown as '(5d ±X%)' on each main position line more than 10% below entry.",
+      "Until 2026-11-05 the prompt told the model to SELL any MAIN holding more than 10% below entry unless it cited a name-specific keep-reason. Backtested 1999-2026 on the live rules, that rule cost about 2.1-2.4 percentage points a year (t about -2.1 to -2.6, both quality bases, both halves of the period); names sold at -10% then beat SPY by ~2.7% over 60 days, and a '5-day return positive' keep-exception changed almost nothing. The owner removed it. The same morning it had been TIGHTENED (MU kept at -23.5% on its 12-month rank prompted the change) — that fix was reverted with the rule. The same-day -10% crash stop in code is unchanged.",
     check:
-      "For every MAIN holding more than 10% below entry that the run KEPT, what keep-reason did the thesis cite? Flag it if the reason is the name's 12-month (12-1) momentum rank or figure, its place on the shortlist, or a sector/thematic story — none of those is name-specific. A valid keep cites a fresh ★INS / ⚡↑ / ⚡NEWS↑ catalyst on that name, a POSITIVE 5d return shown on its position line '(5d +X%)', or specific evidence about that company's own thesis. Quote the cited reason and the 5d figure.",
+      "Did the run SELL a MAIN-book holding whose stated reason is only its loss from cost ('down X% since entry', 'underwater', 'broken on price', 'loss discipline') with none of: fell off the shortlist, ↓FIRM downgrade, bearish ⚡NEWS↓, a ⚠ sector trim, the time-stop, or a rebalance-day rotation into a stronger name? Flag it — being below cost is no longer a sell reason. Quote the thesis line.",
   },
   {
     date: "2026-10-06",
