@@ -68,7 +68,7 @@ jobs:
           EVAL_LLM_MAX_CALLS: ${{ github.event.inputs.max_calls || '120' }}
         run: |
           set -o pipefail
-          bun test evals/eval.test.ts evals/reviewer-recall.test.ts --timeout 180000 2>&1 | tee /tmp/llm-evals.log
+          bun test evals/eval.test.ts evals/reviewer-recall.test.ts evals/news-reader.test.ts --timeout 180000 2>&1 | tee /tmp/llm-evals.log
 
       # The summary is the point of running this unattended: the owner should be able to read the
       # outcome without opening the runner. Written even on failure.
