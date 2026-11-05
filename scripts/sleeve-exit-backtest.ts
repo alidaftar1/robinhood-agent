@@ -115,7 +115,7 @@ for (const d of days) {
 }
 
 // ── simulation ──────────────────────────────────────────────────────────────
-type Rule = { id: string; trail?: number; activate?: number; lock?: number; tp?: number; holdOnly?: number; keepStop?: boolean };
+type Rule = { id: string; trail?: number; activate?: number; lock?: number; tp?: number; holdOnly?: number; keepStop?: boolean; stop?: number | null };
 const RULES: Rule[] = [
   { id: "live" },
   { id: "trail15", trail: 15, activate: 0 },
@@ -134,7 +134,13 @@ const RULES: Rule[] = [
   { id: "hold30", holdOnly: 30 },
   { id: "hold30-stop", holdOnly: 30, keepStop: true },
   { id: "hold60-stop", holdOnly: 60, keepStop: true },
+  // ADDED 2026-11-05 (owner): the sleeve's -10%-from-buy stop ISOLATED — every other live exit
+  // (+40% take-profit, both stale clocks) unchanged. null = no stop at all.
+  { id: "no-stop", stop: null },
+  { id: "stop15", stop: -15 },
+  { id: "stop20", stop: -20 },
 ];
+const stopOf = (rule: Rule): number | null => rule.stop === undefined ? INFLUENCER_DROP_THRESHOLD_PCT : rule.stop;
 type Pos = { sym: string; entry: number; shares: number; peak: number; held: number; last: number; missing: number };
 type Trade = { ret: number; peak: number; days: number; why: string; year: string };
 function simulate(pick: Map<string, string[]>, rule: Rule) {
@@ -162,7 +168,7 @@ function simulate(pick: Map<string, string[]>, rule: Rule) {
         else if (rule.keepStop && ret >= TAKE_PROFIT_PCT) why = "tp";
         else if (p.held >= rule.holdOnly) why = "no-move";
       }
-      else if (ret <= INFLUENCER_DROP_THRESHOLD_PCT) why = "stop";
+      else if (stopOf(rule) != null && ret <= stopOf(rule)!) why = "stop";
       else if (ret >= (rule.tp ?? TAKE_PROFIT_PCT)) why = "tp";
       else if (rule.trail != null && peakRet >= (rule.activate ?? 0) && fromPeak <= -rule.trail) why = "trail";
       else if (rule.lock != null && peakRet >= (rule.activate ?? 0) && ret <= rule.lock) why = "trail";
@@ -248,7 +254,7 @@ function exitRun(sym: string, di: number, rule: Rule): number | null {
     const ret = (px / p0 - 1) * 100, peakRet = (peak / p0 - 1) * 100, fromPeak = (px / peak - 1) * 100;
     const out = rule.holdOnly != null
       ? (k >= rule.holdOnly || (!!rule.keepStop && (ret <= INFLUENCER_DROP_THRESHOLD_PCT || ret >= TAKE_PROFIT_PCT))) :
-      ret <= INFLUENCER_DROP_THRESHOLD_PCT || ret >= (rule.tp ?? TAKE_PROFIT_PCT) ||
+      (stopOf(rule) != null && ret <= stopOf(rule)!) || ret >= (rule.tp ?? TAKE_PROFIT_PCT) ||
       (rule.trail != null && peakRet >= (rule.activate ?? 0) && fromPeak <= -rule.trail) ||
       (rule.lock != null && peakRet >= (rule.activate ?? 0) && ret <= rule.lock) ||
       (k >= INFLUENCER_STALE_DAYS && ret < INFLUENCER_STALE_RETURN_PCT) ||
