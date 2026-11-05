@@ -4,10 +4,11 @@ import { dashboardPublicUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
-import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap } from "@/lib/market-data";
+import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap, STOCK_SECTOR } from "@/lib/market-data";
 import { saveRun, getRuns, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { recordStopout, resolveDropCheckExits, classifyExit, buildExitContext, symbolsWithMainOwnership, stopThresholdFor,
-         MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT } from "@/lib/stopouts";
+         MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT, MAIN_SECTOR_EXCESS_PCT,
+         sectorPeerMove, heldBySectorRule } from "@/lib/stopouts";
 import { sendAlert } from "@/lib/alert";
 import { recordExits, type ExitTrigger } from "@/lib/exit-ledger";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -194,8 +195,20 @@ export async function GET(request: Request) {
     // MCP — safety is the code-controlled prompt + no injection reaching it, not tool removal.)
     // Replaces the prior design where Sonnet held the token and "don't buy" was prompt-only, caught
     // after the fact by a detector that couldn't un-place an order.
-    const stopEntries = droppedPositions.filter((e) => e.reason === "stop");
-    const sympathyHolds = new Set<string>();
+    // SECTOR-RELATIVE CRASH STOP (lib/stopouts heldBySectorRule): a MAIN same-day stop is held in CODE
+    // when the name fell with its sector's other S&P members rather than apart from them. Only the
+    // main bar on the same-day basis — a sleeve name or a name bought today is measured from its buy
+    // price and is not a sector question. Unknown sector move → no hold (the plain bar, as before).
+    const sectorHolds = new Map<string, { change: number; peer: number }>();
+    for (const e of droppedPositions) {
+      if (e.reason !== "stop" || e.bar !== "main" || e.basis !== "same-day") continue;
+      const peer = sectorPeerMove(e.position.symbol, marketData.stocks, (sym) => STOCK_SECTOR[sym]);
+      if (heldBySectorRule(e.change1d, peer)) sectorHolds.set(e.position.symbol, { change: e.change1d, peer: peer! });
+    }
+    if (sectorHolds.size > 0) console.log("DROP_CHECK_SECTOR_HOLD", Object.fromEntries([...sectorHolds].map(([k, v]) => [k, `${v.change.toFixed(1)}% vs sector ${v.peer.toFixed(1)}%`])));
+    // The LLM sympathy check sees only the stops the sector rule did NOT already hold.
+    const stopEntries = droppedPositions.filter((e) => e.reason === "stop" && !sectorHolds.has(e.position.symbol));
+    const sympathyHolds = new Set<string>(sectorHolds.keys());
     let decisionText = "";
     if (stopEntries.length > 0) {
       const decisionSystem = `${basePrompt}
@@ -536,7 +549,11 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     // Carry forward influencer tracking: surviving influencer positions only (sold ones drop out).
     const influencerPositions = positions.filter((p) => influencerSymbols.has(p.symbol));
 
-    const sympathyNote = heldOnSympathy.length > 0 ? `\n\nHELD on sympathy (stop-loss judged broad-market): ${heldOnSympathy.join(", ")}.` : "";
+    const modelHeld = heldOnSympathy.filter((sym) => !sectorHolds.has(sym));
+    const sectorNote = sectorHolds.size > 0
+      ? `\n\nHELD by the sector-relative stop (fell with its sector, not ${Math.abs(MAIN_SECTOR_EXCESS_PCT)}+ points worse): ${[...sectorHolds].map(([sym, v]) => `${sym} ${v.change.toFixed(1)}% vs sector ${v.peer.toFixed(1)}%`).join(", ")}.`
+      : "";
+    const sympathyNote = (modelHeld.length > 0 ? `\n\nHELD on sympathy (stop-loss judged broad-market): ${modelHeld.join(", ")}.` : "") + sectorNote;
     const staleNote = staleNotes.length > 0
       ? `\n\nSNAPSHOT WAS STALE — the live book had already changed, so these exits were adjusted or skipped: ${staleNotes.join(", ")}. Almost always the owner trading by hand during the session.`
       : "";

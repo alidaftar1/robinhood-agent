@@ -279,6 +279,42 @@ export function stopThresholdFor(ctx: ExitContext): number {
   return stopBarFor(ctx) === "sleeve" ? INFLUENCER_DROP_THRESHOLD_PCT : MAIN_DROP_THRESHOLD_PCT;
 }
 
+/** SECTOR-RELATIVE CRASH STOP (2026-11-05, owner decision). A MAIN-book same-day breach of
+ *  MAIN_DROP_THRESHOLD_PCT is sold only if the name ALSO fell at least |MAIN_SECTOR_EXCESS_PCT|
+ *  points more than its sector's other S&P members that day — so a sector-wide fall is held, and a
+ *  company-specific crash is still cut. Backtested 1999-2026 on the live rules (scripts/
+ *  take-profit-backtest.ts, sd10-rel10): +1.44 / +0.81 pp/yr vs the plain -10% (t 1.6 / 1.0), the best
+ *  of the variants tried, smallest maxDD on the TTM basis; every variant beat the plain bar, none
+ *  significantly, and the gain sits before 2012. The trigger case: 2026-11-05 the drop-check sold MU
+ *  (-11% on a memory-wide fall) at the day's low and the owner bought it back. */
+export const MAIN_SECTOR_EXCESS_PCT = -10;
+/** Fewer priced peers than this and the sector move is not established — the plain bar applies. */
+export const MIN_SECTOR_PEERS = 3;
+
+/** Equal-weight mean same-day move (percent) of the OTHER names in `symbol`'s sector, the same
+ *  measure the backtest used (not the cap-weighted sector ETF, which in XLK is mostly NVDA/AAPL/MSFT
+ *  and says little about memory). null when the sector is unknown or too few peers are priced. */
+export function sectorPeerMove(
+  symbol: string,
+  stocks: ReadonlyArray<{ symbol: string; change1d: number }>,
+  sectorOf: (sym: string) => string | undefined,
+): number | null {
+  const sec = sectorOf(symbol);
+  if (!sec) return null;
+  let sum = 0, n = 0;
+  for (const s of stocks) {
+    if (s.symbol === symbol || sectorOf(s.symbol) !== sec || !Number.isFinite(s.change1d)) continue;
+    sum += s.change1d; n++;
+  }
+  return n >= MIN_SECTOR_PEERS ? sum / n : null;
+}
+
+/** true = HOLD this main same-day stop: the name fell with its sector, not apart from it. An unknown
+ *  sector move (null) never holds — the plain -10% bar applies, as before this rule existed. */
+export function heldBySectorRule(change1d: number, peerMove: number | null): boolean {
+  return peerMove != null && change1d - peerMove > MAIN_SECTOR_EXCESS_PCT;
+}
+
 export function classifyExit(change1d: number, ctx: ExitContext): "stop" | "profit" | null {
   if (change1d <= stopThresholdFor(ctx)) return "stop";
   // Take-profit is a "+40% from BUY" target — meaningless against an intraday baseline. It also
