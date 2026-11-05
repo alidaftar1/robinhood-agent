@@ -64,6 +64,12 @@ export interface BacktestConfig {
    * "its 5-day return is positive" (lib/strategy, 2026-11-05). Absent = the hard bar, as before.
    */
   entryStopKeep?: (date: string, symbol: string) => boolean;
+  /**
+   * Optional KEEP exception for the SAME-DAY bar: true = do not stop this holding out today even
+   * though its move breached stopLossPct. Models a sympathy hold (live drop-check can hold a name
+   * that fell with its sector). `ret` is the same-day move in percent. Absent = the plain bar.
+   */
+  sameDayStopKeep?: (date: string, symbol: string, ret: number) => boolean;
   /** Told of each exit by the ENTRY bar (not the same-day bar), so a variant can bar a re-buy. */
   onEntryStop?: (date: string, symbol: string) => void;
   /**
@@ -213,10 +219,11 @@ export function runBacktest(
         // the whole point of it, and reading it off `basis` would make it a duplicate of the first.
         const entryRet = h.entry > 0 ? ((p - h.entry) / h.entry) * 100 : null;
         const hitEntryBar = cfg.entryStopPct != null && entryRet != null && entryRet <= cfg.entryStopPct && !(cfg.entryStopKeep?.(date, h.symbol) ?? false);
-        if ((cfg.stopLossPct != null && ret <= cfg.stopLossPct) || hitEntryBar) {
+        const hitDayBar = cfg.stopLossPct != null && ret <= cfg.stopLossPct && !(cfg.sameDayStopKeep?.(date, h.symbol, ret) ?? false);
+        if (hitDayBar || hitEntryBar) {
           cash += h.shares * p - cost(h.shares * p);
           stopOuts++; trades++;
-          if (hitEntryBar && !(cfg.stopLossPct != null && ret <= cfg.stopLossPct)) cfg.onEntryStop?.(date, h.symbol);
+          if (hitEntryBar && !hitDayBar) cfg.onEntryStop?.(date, h.symbol);
         } else if (cfg.takeProfitPct != null && entryRet != null && entryRet >= cfg.takeProfitPct) {
           cash += h.shares * p - cost(h.shares * p);
           trades++;

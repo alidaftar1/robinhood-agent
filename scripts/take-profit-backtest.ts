@@ -242,6 +242,31 @@ function ret5d(date: string, sym: string): number | null {
   const a = priceOf(tradingDays[i - 5], sym), b = priceOf(date, sym);
   return a && b ? (b / a - 1) * 100 : null;
 }
+/** Equal-weight average same-day return (percent) of the S&P members in `sym`'s historical sector on
+ *  `date`, EXCLUDING `sym` itself. Cached per (date, sector) — sums over members, then removes sym. */
+const secCache = new Map<string, { sum: number; n: number; own: Map<string, number> }>();
+function sectorDayRet(date: string, sym: string): number | null {
+  const sec = sectorOf(sym); if (sec === "?") return null;
+  const key = `${date}|${sec}`;
+  let c = secCache.get(key);
+  if (!c) {
+    c = { sum: 0, n: 0, own: new Map() };
+    const pos = dateIdx.get(date);
+    const members = membersAsOfPrecise(universe, sp500Rows, date) ?? new Set<string>();
+    if (pos) for (const t of members) {
+      if (sectorOf(t) !== sec) continue;
+      const i = pos.get(t), bars = series.get(t);
+      if (i == null || !bars || i < 1) continue;
+      const a = bars[i - 1].closeadj, b = bars[i].closeadj;
+      if (!(a > 0 && b > 0)) continue;
+      const r = (b / a - 1) * 100; c.sum += r; c.n++; c.own.set(t, r);
+    }
+    secCache.set(key, c);
+  }
+  const mine = c.own.get(sym);
+  const n = c.n - (mine != null ? 1 : 0);
+  return n >= 3 ? (c.sum - (mine ?? 0)) / n : null;
+}
 const RUNS: Run[] = [
   mkRun("live", null, 0),
   mkRun("tp40", 40, 0),
@@ -264,6 +289,15 @@ const RUNS: Run[] = [
   mkRun("ld10-5d", null, 5, { entryStopPct: -10, entryStopKeep: (d, sym) => (ret5d(d, sym) ?? -1) > 0 }),
   mkRun("ld15-5d", null, 5, { entryStopPct: -15, entryStopKeep: (d, sym) => (ret5d(d, sym) ?? -1) > 0 }),
   mkRun("ld20-5d", null, 5, { entryStopPct: -20, entryStopKeep: (d, sym) => (ret5d(d, sym) ?? -1) > 0 }),
+  // ADDED 2026-11-05 (owner, after the drop-check sold MU and BE at the low of a sector-wide fall):
+  // variants of the SAME-DAY crash stop. live = -10%; no-stop above. Wider bars, and sympathy holds:
+  // relN keeps a breach unless the stock fell N points MORE than its sector's other members that
+  // day; symp5 keeps any breach on a day its sector averaged -5% or worse. Unknown sector = no hold.
+  mkRun("sd15", null, 0, { stopLossPct: -15 }),
+  mkRun("sd20", null, 0, { stopLossPct: -20 }),
+  mkRun("sd10-rel10", null, 0, { sameDayStopKeep: (d, sym, r) => { const sr = sectorDayRet(d, sym); return sr != null && r - sr > -10; } }),
+  mkRun("sd10-rel7", null, 0, { sameDayStopKeep: (d, sym, r) => { const sr = sectorDayRet(d, sym); return sr != null && r - sr > -7; } }),
+  mkRun("sd10-symp5", null, 0, { sameDayStopKeep: (d, sym) => { const sr = sectorDayRet(d, sym); return sr != null && sr <= -5; } }),
 ];
 
 // ── run ─────────────────────────────────────────────────────────────────────
