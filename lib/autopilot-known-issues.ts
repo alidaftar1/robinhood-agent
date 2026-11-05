@@ -28,6 +28,14 @@ export interface KnownIssue {
 
 export const KNOWN_ISSUES: KnownIssue[] = [
   {
+    date: "2026-11-05",
+    title: "Underwater main name kept on its 12-month momentum rank, cited as 'fresh momentum'",
+    lesson:
+      "MU was kept at -23.5% from cost (held 13 days, no ★INS / ⚡NEWS↑ / analyst catalyst) because it 'ranks #2 on fresh 12-mo momentum (399%)'. The loss-discipline rule says outright that 12-month momentum barely moves on a recent breakdown so a losing name can still rank, yet it also listed 'ranks near the TOP on fresh momentum' as a keep-reason without defining fresh — and the main shortlist row shows ONLY 12-1 momentum, so that keep-reason could be met by nothing but the number the rule rules out. Fixed 2026-11-05: the reversal keep-reason is now a POSITIVE 5-day return, shown as '(5d ±X%)' on each main position line more than 10% below entry.",
+    check:
+      "For every MAIN holding more than 10% below entry that the run KEPT, what keep-reason did the thesis cite? Flag it if the reason is the name's 12-month (12-1) momentum rank or figure, its place on the shortlist, or a sector/thematic story — none of those is name-specific. A valid keep cites a fresh ★INS / ⚡↑ / ⚡NEWS↑ catalyst on that name, a POSITIVE 5d return shown on its position line '(5d +X%)', or specific evidence about that company's own thesis. Quote the cited reason and the 5d figure.",
+  },
+  {
     date: "2026-10-06",
     title: "Uncaptured orders attributed to the agent's own dropped buys, without matching symbols",
     lesson:
