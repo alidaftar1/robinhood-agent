@@ -58,6 +58,15 @@ export interface BacktestConfig {
    */
   entryStopPct?: number | null;
   /**
+   * Optional KEEP exception for the entry bar: when it returns true the entry bar does not fire for
+   * that holding today (the same-day bar still can). Models the live loss-discipline rule, which
+   * keeps a name >10% under cost when it has a name-specific reason — the reproducible part being
+   * "its 5-day return is positive" (lib/strategy, 2026-11-05). Absent = the hard bar, as before.
+   */
+  entryStopKeep?: (date: string, symbol: string) => boolean;
+  /** Told of each exit by the ENTRY bar (not the same-day bar), so a variant can bar a re-buy. */
+  onEntryStop?: (date: string, symbol: string) => void;
+  /**
    * OPTIONAL TAKE-PROFIT, cumulative from entry, percent (e.g. 40 = sell the whole position once it
    * closes ≥ +40% above entry). The live influencer sleeve has one (TAKE_PROFIT_PCT); the main book
    * does not. null/absent = no take-profit, exactly as before. `onTakeProfit` is told of each exit
@@ -203,10 +212,11 @@ export function runBacktest(
         // The second bar, when configured, is ALWAYS from entry regardless of stopMode — that is
         // the whole point of it, and reading it off `basis` would make it a duplicate of the first.
         const entryRet = h.entry > 0 ? ((p - h.entry) / h.entry) * 100 : null;
-        const hitEntryBar = cfg.entryStopPct != null && entryRet != null && entryRet <= cfg.entryStopPct;
+        const hitEntryBar = cfg.entryStopPct != null && entryRet != null && entryRet <= cfg.entryStopPct && !(cfg.entryStopKeep?.(date, h.symbol) ?? false);
         if ((cfg.stopLossPct != null && ret <= cfg.stopLossPct) || hitEntryBar) {
           cash += h.shares * p - cost(h.shares * p);
           stopOuts++; trades++;
+          if (hitEntryBar && !(cfg.stopLossPct != null && ret <= cfg.stopLossPct)) cfg.onEntryStop?.(date, h.symbol);
         } else if (cfg.takeProfitPct != null && entryRet != null && entryRet >= cfg.takeProfitPct) {
           cash += h.shares * p - cost(h.shares * p);
           trades++;

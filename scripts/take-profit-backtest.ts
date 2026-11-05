@@ -231,7 +231,16 @@ function mkRun(id: string, tp: number | null, coolDays: number, over: Partial<Ba
     },
   };
   const cfg: BacktestConfig = { ...DEFAULT_BACKTEST, ...over, takeProfitPct: tp, onTakeProfit: (date, symbol) => { exits.push({ date, symbol }); barredAt.set(symbol, dayNo.get(date) ?? 0); } };
+  // Loss-discipline exits: recorded like take-profits (so the "what it did next" table covers them)
+  // and barred for coolDays (live: the re-buy cooldown, ~7 calendar days ≈ 5 trading days).
+  if (over.entryStopPct != null) cfg.onEntryStop = (date, symbol) => { exits.push({ date, symbol }); barredAt.set(symbol, dayNo.get(date) ?? 0); };
   return { v, cfg, exits };
+}
+/** 5-trading-day return of `sym` ending at `date`, or null without both bars. */
+function ret5d(date: string, sym: string): number | null {
+  const i = dayNo.get(date); if (i == null || i < 5) return null;
+  const a = priceOf(tradingDays[i - 5], sym), b = priceOf(date, sym);
+  return a && b ? (b / a - 1) * 100 : null;
 }
 const RUNS: Run[] = [
   mkRun("live", null, 0),
@@ -247,6 +256,14 @@ const RUNS: Run[] = [
   mkRun("reb20", null, 0, { rebalanceEveryDays: 20 }),
   mkRun("reb60", null, 0, { rebalanceEveryDays: 60 }),
   mkRun("reb60-no-stop", null, 0, { rebalanceEveryDays: 60, stopLossPct: null }),
+  // ADDED 2026-11-05 (owner: "backtest the -10% rule?"): the live LOSS-DISCIPLINE rule, on top of the
+  // live same-day -10% stop — sell a name >= X% under its entry, unless its 5-day return is positive
+  // (the reproducible keep-reason; catalysts are not in the history). Hard versions for comparison.
+  // A name sold this way may be re-bought at the next rebalance unless a cool<D> bars it.
+  mkRun("ld10-hard", null, 5, { entryStopPct: -10 }),
+  mkRun("ld10-5d", null, 5, { entryStopPct: -10, entryStopKeep: (d, sym) => (ret5d(d, sym) ?? -1) > 0 }),
+  mkRun("ld15-5d", null, 5, { entryStopPct: -15, entryStopKeep: (d, sym) => (ret5d(d, sym) ?? -1) > 0 }),
+  mkRun("ld20-5d", null, 5, { entryStopPct: -20, entryStopKeep: (d, sym) => (ret5d(d, sym) ?? -1) > 0 }),
 ];
 
 // ── run ─────────────────────────────────────────────────────────────────────
@@ -304,7 +321,7 @@ if (ref) {
   }
 }
 
-console.log(`\nWHAT THE TAKE-PROFIT SOLD DID NEXT — return vs SPY from the exit close (positive = selling cost money)`);
+console.log(`\nWHAT THE TAKE-PROFIT / LOSS-DISCIPLINE EXIT SOLD DID NEXT — return vs SPY from the exit close (positive = selling cost money)`);
 console.log(`  ${"variant".padEnd(14)}${"n".padStart(6)}${"20d mean".padStart(10)}${"±se".padStart(7)}${"20d>0".padStart(7)}${"60d mean".padStart(10)}${"±se".padStart(7)}${"60d>0".padStart(7)}`);
 for (const run of RUNS.filter(r => r.exits.length > 0)) {
   const r20 = run.exits.map(x => fwd(x.date, x.symbol, 20)).filter((x): x is number => x != null);
