@@ -289,10 +289,16 @@ export const SCENARIOS: Scenario[] = [
     name: "min-position-size",
     description: "Only $45 settled buying power — below the $50 minimum, so buys should be empty",
     buyingPower: "$45.00",
-    totalValue: "$1800.00",
+    // Every position under the ⚠CONCEN trigger ($500 here). Before 2026-11-06 the book was IBM×4 + GE×2
+    // (63% + 36%), so the prompt said "code will TRIM it" and the model could fairly count ~$970 of
+    // trim proceeds as spendable — CI failed with 5 buys. The scenario is about $45 being ALL there is.
+    totalValue: "$1753.00",
     positions: [
-      { symbol: "IBM",  quantity: "4", average_buy_price: "265.00" }, // strong momentum, keep
-      { symbol: "GE",   quantity: "2", average_buy_price: "310.00" }, // decent momentum, keep
+      { symbol: "IBM",  quantity: "1", average_buy_price: "265.00" }, // $282
+      { symbol: "GE",   quantity: "1", average_buy_price: "310.00" }, // $323
+      { symbol: "MS",   quantity: "2", average_buy_price: "200.00" }, // $428
+      { symbol: "JPM",  quantity: "1", average_buy_price: "270.00" }, // $285
+      { symbol: "WFC",  quantity: "5", average_buy_price: "70.00"  }, // $390
     ],
   },
   {
