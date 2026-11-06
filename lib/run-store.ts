@@ -594,6 +594,14 @@ export function mergeRunsByDate(all: TradeRun[]): TradeRun[] {
     const src = posSourceByDate.get(date);
     if (src && src !== base) {
       base.positions = [...src.positions];
+      // The TOTAL travels with the holdings. A total from one run beside holdings from another is
+      // no snapshot at all, and the next day's return reads exactly that pair as its baseline.
+      // 2026-11-05: the 07:30 run's total (MU and BE still held) sat beside the 11:00 drop-check's
+      // holdings (both sold), so 11-06 booked their 07:30→sale loss as a −$33.72 "transfer" and
+      // published +0.88% for a day the account fell 0.71%. SPY's mark travels too, so the
+      // dashboard's comparison covers the same window as the book.
+      if (src.portfolioAfter) base.portfolioAfter = { ...src.portfolioAfter };
+      if (src.spyPrice != null) base.spyPrice = src.spyPrice;
       if (src.influencerPositions) base.influencerPositions = [...src.influencerPositions];
       // Book β is computed against a specific holdings snapshot — carry it from whichever run
       // supplies the positions above, so the merged run's β always describes the book it shows.
@@ -904,8 +912,15 @@ export async function backfillSleeveReturns(): Promise<string[]> {
     (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 1e-9);
   const sane = clampSleeveReturn;
 
+  const runsPerDate = new Map<string, number>();
+  const skippedMultiRun = new Set<string>();
+  for (const r of all) runsPerDate.set(r.date, (runsPerDate.get(r.date) ?? 0) + 1);
   const patched = all.map(run => {
     if (run.agenticDailyReturn == null) return run; // non-canonical (thin intraday) run — leave untouched
+    // A date with several runs is computed from the MERGED day (recomputeDayReturn writes the same
+    // number onto every one of its runs). One raw run's own holdings and trades describe only part
+    // of that day, so recomputing from them here would undo it.
+    if ((runsPerDate.get(run.date) ?? 0) > 1) { skippedMultiRun.add(run.date); return run; }
     // Same baseline agenticDailyReturn used at trade time: the newest run of any earlier DATE
     // (getPreviousDayRun semantics) — NOT the previous canonical run — so sleeve + agentic returns
     // share one baseline. `all` is newest-first, so find() returns that run.
@@ -939,6 +954,10 @@ export async function backfillSleeveReturns(): Promise<string[]> {
     ];
     await redisPost("pipeline", pipeline);
   }
+  // Reported, never silent: these dates were not recomputed here (use ?patchDate=DATE for one).
+  if (skippedMultiRun.size > 0) {
+    changes.push(`skipped ${skippedMultiRun.size} multi-run date(s) — recompute each with ?patchDate: ${[...skippedMultiRun].sort().join(", ")}`);
+  }
   return changes;
 }
 
@@ -957,6 +976,101 @@ export async function updateRunByDate(date: string, updater: (run: TradeRun) => 
   ];
   await redisPost("pipeline", pipeline);
   return true;
+}
+
+/**
+ * Pure: a date's returns from the MERGED view — the day's latest snapshot (holdings AND total, see
+ * mergeRunsByDate) and ALL its trades, against the previous date's latest snapshot. This is the
+ * baseline the next day's trade run reads (getPreviousDayRun = the newest run of an earlier date),
+ * so consecutive days chain with no window left out.
+ *
+ * Why it exists: a day's return was computed once, by the 07:30 run, and never again. An intraday
+ * exit (drop-check, earnings-exit) then moved the day's snapshot to the exit time, and whatever the
+ * book did between 07:30 and the exit belonged to no day. 2026-11-05: MU and BE fell from 07:30 to
+ * the 11:00 stop, a −$33.72 move that 11-06 then booked as a transfer.
+ *
+ * `requireReconciled`: refuse when the holdings do not follow from the previous day plus the
+ * day's trades (an unrecorded owner fill). The live writers withhold such a day rather than publish
+ * it, and the intraday re-computation must not undo that.
+ */
+export function dayReturnFromMerged(merged: TradeRun[], date: string, requireReconciled: boolean):
+  | { ok: true; agentic: { dailyReturn: number; impliedTransfer: number } | null; sleeves: { influencerDailyReturn: number | null; mainDailyReturn: number | null } }
+  | { ok: false; reason: string } {
+  const run = merged.find(r => r.date === date);
+  const prev = merged.find(r => r.date < date); // merged is newest-first
+  if (!run?.portfolioAfter || !prev?.portfolioAfter) return { ok: false, reason: `run or prev not found for ${date}` };
+  if (requireReconciled) {
+    const plan = buildInferredSells(prev, { positions: run.positions, trades: run.trades ?? [] });
+    if (plan.sells.length > 0 || plan.unreconstructable.length > 0) {
+      return { ok: false, reason: `${date}: book does not reconcile (${[...plan.sells.map(t => t.symbol), ...plan.unreconstructable.map(u => `${u.symbol} ${u.reason}`)].join(", ")}) — left as stored` };
+    }
+  }
+  const agentic = computeDailyReturn(
+    parseFloat(run.portfolioAfter.totalValue), parseFloat(prev.portfolioAfter.totalValue),
+    run.positions ?? [], prev.positions ?? [], run.trades ?? []);
+  const sleeves = sleeveReturnsForStorage(agentic, computeSleeveReturns(
+    run.positions ?? [], run.trades ?? [], run.influencerPositions ?? [], prev.influencerPositions ?? [], prev.positions ?? []));
+  return { ok: true, agentic, sleeves };
+}
+
+/** Pure: which of a date's raw runs recomputeDayReturn writes (see its doc). Runs that carry a
+ *  return; if none does, nothing — or, with `writeIfNone` (patchDate), the newest run. */
+export function runsToRecompute(sameDate: TradeRun[], writeIfNone: boolean): Set<TradeRun> {
+  const bearing = sameDate.filter(r => r.agenticDailyReturn != null);
+  if (bearing.length > 0) return new Set(bearing);
+  return writeIfNone && sameDate.length > 0 ? new Set([sameDate[0]]) : new Set();
+}
+
+/**
+ * Recompute a date's stored returns from the merged view (dayReturnFromMerged).
+ *
+ * WHICH RUNS ARE WRITTEN is the safety of this function. Only runs that ALREADY carry a return are
+ * updated — the runs mergeRunsByDate's preferRun can pick, since "has a return" is its first test.
+ * A thin intraday run stays null, so it can never out-rank the run the day's other writers manage:
+ *   - an exit that fires BEFORE the 07:30 run would otherwise carry a prev→exit number that wins
+ *     on trade count over the trade run's full-window one;
+ *   - patchTrades / clearReturnForDate withhold by nulling ONE run, and a stray non-null copy on
+ *     another run of the date would quietly republish the number they withheld.
+ * With no return-bearing run (the trade run has not run, or withheld) intraday callers do nothing:
+ * the trade run or the 8am repair computes the day. patchDate (`writeIfNone`) still fills a day
+ * whose only runs are null, as it always has. Respects returnLocked unless `unlock`.
+ */
+export async function recomputeDayReturn(date: string, opts: { unlock?: boolean; requireReconciled?: boolean; writeIfNone?: boolean } = {}):
+  Promise<{ ok: boolean; detail: string; dailyReturn?: number | null; mainDailyReturn?: number | null }> {
+  const all = await getRuns(MAX_RUNS);
+  const sameDate = all.filter(r => r.date === date);
+  if (sameDate.length === 0) return { ok: false, detail: `no run found for ${date}` };
+  if (sameDate.some(r => r.returnLocked) && !opts.unlock) {
+    return { ok: false, detail: `${date}: skipped — return is locked (known artifact, won't recompute). Pass &unlock=1 only after the artifact is fixed.` };
+  }
+  const writeTo = runsToRecompute(sameDate, opts.writeIfNone ?? false);
+  if (writeTo.size === 0) {
+    return { ok: false, detail: `${date}: no run of this date carries a return yet — left for the trade run / 8am repair` };
+  }
+  const r = dayReturnFromMerged(mergeRunsByDate(all), date, opts.requireReconciled ?? false);
+  if (!r.ok) return { ok: false, detail: r.reason };
+  const fields = {
+    agenticDailyReturn: r.agentic?.dailyReturn ?? null,
+    agenticImpliedTransfer: r.agentic?.impliedTransfer ?? null,
+    ...r.sleeves,
+    ...(opts.unlock ? { returnLocked: false } : {}),
+  };
+  const patched = all.map(run => writeTo.has(run) ? { ...run, ...fields } : run);
+  // DEL+RPUSH rewrites the whole list, so a run saved since the read would be erased. Re-check the
+  // head right before writing; Upstash has no transaction to make this airtight, this narrows it
+  // from the whole computation to one round trip.
+  const headRaw = await redisCommand("lindex", RUNS_KEY, 0) as string | null;
+  const headTs = headRaw ? (JSON.parse(headRaw) as TradeRun).timestamp : undefined;
+  if (headTs !== all[0]?.timestamp) {
+    return { ok: false, detail: `${date}: a run was saved meanwhile — not written, retry` };
+  }
+  await redisPost("pipeline", [["DEL", RUNS_KEY], ...patched.map(x => ["RPUSH", RUNS_KEY, JSON.stringify(x)])]);
+  const pct = (x: number | null | undefined) => x == null ? "null" : (x * 100).toFixed(2) + "%";
+  return {
+    ok: true,
+    detail: `${date}: return = ${pct(fields.agenticDailyReturn)}${opts.unlock ? " [unlocked]" : ""}, main sleeve = ${pct(fields.mainDailyReturn)}`,
+    dailyReturn: fields.agenticDailyReturn, mainDailyReturn: fields.mainDailyReturn,
+  };
 }
 
 /**

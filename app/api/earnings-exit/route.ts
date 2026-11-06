@@ -3,7 +3,7 @@ import { dashboardPublicUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { getMarketData, fetchCurrentPrice, enrichPriceMap } from "@/lib/market-data";
-import { saveRun, getLatestRun, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
+import { saveRun, getLatestRun, recomputeDayReturn, type PositionSnapshot, type TradeSnapshot } from "@/lib/run-store";
 import { sendAlert } from "@/lib/alert";
 import { recordExits } from "@/lib/exit-ledger";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -211,6 +211,17 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       market: { stocksLoaded: marketData.stocks.length, headlinesLoaded: marketData.headlines.length },
       ...(spyPrice != null ? { spyPrice } : {}),
     });
+
+    // The day's return now runs to this run's snapshot, not to 07:30: what the book did in between belongs
+    // to today (lib/run-store recomputeDayReturn; the 2026-11-05 MU/BE gap). Refuses a book that
+    // does not reconcile, and never blocks the exit or its alert.
+    // Gated on the SAVE, not on a sale: a run that held everything (sympathy / sector holds, an
+    // unconfirmed sell) still becomes the day's latest snapshot and the next day's baseline.
+    if (saved) {
+      await recomputeDayReturn(today, { requireReconciled: true })
+        .then(r => console.log("DAY_RETURN_RECOMPUTED", r.detail))
+        .catch(e => console.warn("DAY_RETURN_RECOMPUTE_FAILED", String(e)));
+    }
 
     const dashboardUrl = dashboardPublicUrl(process.env.APP_URL);
     await recordExits(

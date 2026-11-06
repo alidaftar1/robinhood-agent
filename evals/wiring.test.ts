@@ -284,13 +284,17 @@ describe("wiring: ORDER of operations between components", () => {
     // beside null sleeves forever — and dashboard-view drops null-sleeve days, so the day would
     // have silently left the Main Book index, its Sharpe and its beat-rate, with no automated
     // path back (recomputeSleeves has no caller).
-    const s = src("app/api/debug/route.ts");
-    expect(s).toContain("const patchedSleeves = sleeveReturnsForStorage(");
-    expect(s).toContain("...patchedSleeves,");
-    // Computed from the DEDUPED trades — the same input as the account return, so the two
-    // numbers cannot be derived from different trade lists (the 2026-10-06 shape).
-    expect(at(s, "const dedupedTrades")).toBeLessThan(at(s, "const patchedSleeves"));
-    expect(at(s, "const patchedSleeves")).toBeGreaterThan(at(s, "const result = computeDailyReturn("));
+    // Since 2026-11-06 patchDate delegates to lib/run-store recomputeDayReturn (merged day, so an
+    // intraday exit's trades are included), which computes through dayReturnFromMerged.
+    expect(src("app/api/debug/route.ts")).toContain("await recomputeDayReturn(date, { unlock, writeIfNone: true })");
+    const s = src("lib/run-store.ts");
+    const fn = s.slice(at(s, "export function dayReturnFromMerged("), at(s, "export async function recomputeDayReturn("));
+    expect(fn).toContain("const sleeves = sleeveReturnsForStorage(agentic, computeSleeveReturns(");
+    // The account return and the sleeves read the SAME trade list (the 2026-10-06 shape): the merged
+    // day's trades, which mergeRunsByDate has already deduped of re-recorded sells.
+    expect(fn.match(/run\.trades \?\? \[\]/g)?.length).toBeGreaterThanOrEqual(2);
+    const w = s.slice(at(s, "export async function recomputeDayReturn("));
+    expect(w).toContain("...r.sleeves,");
   });
 
   test("clearing a day's return clears its SLEEVE returns too", () => {

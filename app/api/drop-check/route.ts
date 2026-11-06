@@ -5,7 +5,7 @@ import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap, STOCK_SECTOR } from "@/lib/market-data";
-import { saveRun, getRuns, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
+import { saveRun, getRuns, recomputeDayReturn, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { recordStopout, resolveDropCheckExits, classifyExit, buildExitContext, symbolsWithMainOwnership, stopThresholdFor,
          MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT, MAIN_SECTOR_EXCESS_PCT,
          sectorPeerMove, heldBySectorRule } from "@/lib/stopouts";
@@ -531,11 +531,14 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       };
     } else {
       const cash = parseFloat(previousRun?.portfolioAfter?.cash ?? "0");
+      const proceeds = isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0;
+      // The total includes this run's proceeds: they are in the account, and leaving them out (as
+      // this did) read as a withdrawal once this run became the day's snapshot.
       portfolioAfter = {
-        totalValue: (cash + equity).toFixed(2),
+        totalValue: (cash + proceeds + equity).toFixed(2),
         cash: cash.toFixed(2),
         equity: equity.toFixed(2),
-        unsettledCash: (isFinite(sellProceeds) && sellProceeds > 0 ? sellProceeds : 0).toFixed(2),
+        unsettledCash: proceeds.toFixed(2),
       };
     }
 
@@ -571,6 +574,17 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
       market: { stocksLoaded: marketData.stocks.length, headlinesLoaded: marketData.headlines.length },
       ...(spyPrice != null ? { spyPrice } : {}),
     });
+
+    // The day's return now runs to this run's snapshot, not to 07:30: what the book did in between belongs
+    // to today (lib/run-store recomputeDayReturn; the 2026-11-05 MU/BE gap). Refuses a book that
+    // does not reconcile, and never blocks the exit or its alert.
+    // Gated on the SAVE, not on a sale: a run that held everything (sympathy / sector holds, an
+    // unconfirmed sell) still becomes the day's latest snapshot and the next day's baseline.
+    if (saved) {
+      await recomputeDayReturn(today, { requireReconciled: true })
+        .then(r => console.log("DAY_RETURN_RECOMPUTED", r.detail))
+        .catch(e => console.warn("DAY_RETURN_RECOMPUTE_FAILED", String(e)));
+    }
 
     // EXIT LEDGER — this path knows exactly why it sold, which is the whole point of recording it.
     // Fail-safe: never blocks or alters the exit, and a write failure is swallowed inside.

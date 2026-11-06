@@ -4,7 +4,7 @@ import { getMarketData } from "@/lib/market-data";
 import { computeBookBetaForPositions } from "@/lib/risk-metrics";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { prunePicksByFirstSeen, resetLedger } from "@/lib/influencer-ledger";
-import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, sleeveReturnsForStorage, applyActorTag, tagSleeveFrom } from "@/lib/run-store";
+import { planSellTagBackfill, applySellTagBackfill, replaceRuns, buildInferredSells, computeSleeveReturns, sleeveReturnsForStorage, applyActorTag, tagSleeveFrom, recomputeDayReturn } from "@/lib/run-store";
 import { getQualityScores } from "@/lib/quality";
 
 const MCP_URL = "https://agent.robinhood.com/mcp/trading";
@@ -272,55 +272,12 @@ export async function GET(request: Request) {
     // clears the lock and recomputes from the DEDUPED trades so the phantom can't re-inflate it.
     const unlock = url.searchParams.get("unlock") === "1";
     try {
-      const runs = await getRuns(30);
-      const run = runs.find(r => r.date === date);
-      const prevRun = runs.find(r => r.date < date);
-      if (run?.returnLocked && !unlock) {
-        results.patchDate = `${date}: skipped — return is locked (known artifact, won't recompute). Pass &unlock=1 only after the artifact is fixed.`;
-      } else if (!run || !run.portfolioAfter || !prevRun?.portfolioAfter) {
-        results.patchDate = `run or prev not found for ${date}`;
-      } else {
-        // Drop provably-impossible re-recorded sells (PR #7) before computing, so a double-recorded
-        // fill can't be counted as phantom proceeds — the same correction mergeRunsByDate applies.
-        const dropKeys = new Set(
-          findReRecordedSells(runs).filter(d => d.date === date).map(d => d.dropKey)
-        );
-        const tradeKeyOf = (t: { symbol: string; side: string; quantity: string; avgPrice: string }) =>
-          `${date}|${t.symbol}|${t.side}|${t.quantity}|${t.avgPrice}`;
-        const dedupedTrades = (run.trades ?? []).filter(t => !dropKeys.has(tradeKeyOf(t)));
-        const result = computeDailyReturn(
-          parseFloat(run.portfolioAfter.totalValue),
-          parseFloat(prevRun.portfolioAfter.totalValue),
-          run.positions, prevRun.positions,
-          dedupedTrades
-        );
-        // The sleeves are recomputed alongside, not left behind. This path is the AUTOMATED
-        // repair — autopilot Fix 2 calls it whenever today's return is null — and its whole job is
-        // to turn a withheld day into a published one. Since 2026-10-16 the live writers withhold
-        // BOTH sleeve returns when the account return is withheld (sleeveReturnsForStorage), so a
-        // patchDate that restored only agenticDailyReturn would leave the day with a real account
-        // number and null sleeves forever: dashboard-view filters those out, and the day would
-        // vanish from the Main Book index, its Sharpe and its beat-rate with nothing to repair it
-        // (recomputeSleeves has no automated caller). Same inputs as the account return — the
-        // DEDUPED trades — so the two can't disagree.
-        const patchedSleeves = sleeveReturnsForStorage(
-          result,
-          computeSleeveReturns(
-            run.positions, dedupedTrades,
-            run.influencerPositions ?? [], prevRun.influencerPositions ?? [], prevRun.positions,
-          ),
-        );
-        const patched = await updateRunByDate(date, r => ({
-          ...r,
-          agenticDailyReturn: result?.dailyReturn ?? null,
-          agenticImpliedTransfer: result?.impliedTransfer ?? null,
-          ...patchedSleeves,
-          ...(unlock ? { returnLocked: false } : {}),
-        }));
-        results.patchDate = patched
-          ? `${date}: return = ${result?.dailyReturn != null ? (result.dailyReturn * 100).toFixed(2) + "%" : "null"}${dropKeys.size ? ` (dropped ${dropKeys.size} re-recorded sell)` : ""}${unlock ? " [unlocked]" : ""}, main sleeve = ${patchedSleeves.mainDailyReturn != null ? (patchedSleeves.mainDailyReturn * 100).toFixed(2) + "%" : "null"}`
-          : `no run found for ${date}`;
-      }
+      // From the MERGED day — its latest snapshot and ALL its trades — written onto every run of
+      // the date (lib/run-store recomputeDayReturn). Reading only the newest raw run, as this did,
+      // got a day with an intraday exit wrong: that run carries the exit's trades and none of the
+      // 07:30 run's. Re-recorded sells are dropped inside mergeRunsByDate, as before.
+      const out = await recomputeDayReturn(date, { unlock, writeIfNone: true });
+      results.patchDate = out.detail;
     } catch (e) {
       results.patchDate = `error: ${e}`;
     }
