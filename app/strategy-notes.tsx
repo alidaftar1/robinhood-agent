@@ -7,6 +7,13 @@ import React, { useState } from "react";
 const em = { color: "#e5e5e5", fontWeight: 600 } as const;
 const NOTES: { date: string; label: string; body: React.ReactNode }[] = [
   {
+    date: "2026-11-05",
+    label: "Main-book stops",
+    body: <>
+      Two changes to when the main book sells a falling stock. <span style={em}>(1) No more selling just for being 10% under cost.</span> The agent used to sell a holding more than 10% below its buy price unless it could name a reason to keep it. In a 1999–2026 backtest that rule cost about 2 points a year, and the stocks it sold went on to beat the S&amp;P 500 over the next 60 days, so it is gone. A loss on its own is no longer a reason to sell; bad news, a downgrade or dropping off the shortlist still are. <span style={em}>(2) The same-day −10% crash stop now looks at the sector.</span> A stock down 10% or more in a day is sold only if it also fell at least 10 points more than the other S&amp;P stocks in its sector. A stock falling along with its whole sector is held. This came from 11-05, when the stop sold MU and BE at the low of a sector-wide drop. In the backtest this version beat the plain −10% stop by roughly 1 point a year, but the result is not statistically reliable and nearly all of the gain came before 2012. The influencer sleeve&apos;s stops are unchanged.
+    </>,
+  },
+  {
     date: "2026-10-28",
     label: "Buying into earnings",
     body: <>
