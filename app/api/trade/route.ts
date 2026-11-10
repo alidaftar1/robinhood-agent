@@ -178,7 +178,7 @@ export async function GET(request: Request) {
 
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
-        max_tokens: 3000,
+        max_tokens: 6000,
         // analystRatings passed for the same reason the eval harness now passes it: the dry run is
         // the surface a human reads before trusting a prompt change, so a preview missing a field
         // the live path renders is a preview of a different prompt.
@@ -863,13 +863,15 @@ export async function GET(request: Request) {
         },
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
-          max_tokens: 3000,
+          max_tokens: 6000,
           system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (sleevePositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, buysOpen, valuationSection + convictionSection, marketData.analystRatings),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
       );
       analysisText = analysisResp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
-      console.log("ANALYSIS_DONE", { length: analysisText.length });
+      // stop_reason is logged so a max_tokens cutoff (2026-11-10: prose deliberation ate the 3000 cap and the
+      // TRADE_DECISION payload never closed → zero orders) is distinguishable from a parser bug.
+      console.log("ANALYSIS_DONE", { length: analysisText.length, stopReason: analysisResp.stop_reason });
     } finally {
       clearTimeout(analysisKillTimer);
     }

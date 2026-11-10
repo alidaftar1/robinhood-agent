@@ -387,6 +387,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Was any influencer buy executed for a ticker with fewer than 2 distinct channels behind it in the run's influencer data, or for a ticker listed in the cache's rejectedBuys? Flag HIGH. Also flag (medium) a thesis for an influencer buy that cites news or a business unrelated to what the creators said about the company.",
   },
+  {
+    date: "2026-11-10",
+    title: "Analysis hit max_tokens mid-TRADE_DECISION — whole rebalance day placed zero orders",
+    lesson:
+      "The trade-analyst call had max_tokens 3000. On 11-10 the model deliberated at length in prose (LLY news trim, SNDK vs MU same-business tiebreak) and the output ended before the TRADE_DECISION braces closed, so parseTradeDecision returned unparsed (correctly refusing a partial payload) and NO orders were placed on day 2 of the rebalance window. Cap raised to 6000 (analysis timeout is 150s, maxDuration 300) and stop_reason is now logged in ANALYSIS_DONE.",
+    check:
+      "If buySizingAdjustments says 'NO ORDERS PLACED — ... never closes its braces', treat as HIGH: the cap was hit again. Check the Vercel ANALYSIS_DONE log's stopReason (max_tokens = truncation). The thesis prose length is the tell; do not recommend just re-running without checking.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */
