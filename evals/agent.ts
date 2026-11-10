@@ -39,7 +39,7 @@ export async function runAnalysisAgent(
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 });
   const resp = await (anthropic.messages as any).create({
     model,
-    max_tokens: 3000,
+    max_tokens: 4500, // = ANALYSIS_MAX_TOKENS in app/api/trade/route.ts (pinned by evals/analysis-token-cap.test.ts)
     system: systemPrompt,
     messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
   });

@@ -35,6 +35,11 @@ import { inferSellStrategy } from "@/lib/run-store";
 import { fetchAgenticBalance, fetchAgenticPositions, fetchOwnerBuyEvidence } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
+// The analysis writes its reasoning BEFORE the TRADE_DECISION line, so hitting the cap always cuts the
+// decision itself and the run places no orders. 2026-11-10: 3000 truncated a 9k-char analysis that
+// reconsidered mid-way. Bounded by the 150s analysis kill below: Sonnet 4.6 measured ~45 tok/s on
+// 2026-11-10, so 4500 is ~100s of output plus prompt load; 6000 (~134s) would trade a truncation for an abort.
+const ANALYSIS_MAX_TOKENS = 4500;
 
 // Risk section injected into the buy prompt: current book β vs SPY + sector exposure.
 // Gives the agent the "how much beta / sector risk am I already carrying" baseline so
@@ -178,7 +183,7 @@ export async function GET(request: Request) {
 
       const analysisResp = await (anthropic.beta.messages as any).create({
         model: "claude-sonnet-4-6",
-        max_tokens: 3000,
+        max_tokens: ANALYSIS_MAX_TOKENS,
         // analystRatings passed for the same reason the eval harness now passes it: the dry run is
         // the surface a human reads before trusting a prompt change, so a preview missing a field
         // the live path renders is a preview of a different prompt.
@@ -863,7 +868,7 @@ export async function GET(request: Request) {
         },
         () => (anthropic.beta.messages as any).create({
           model: "claude-sonnet-4-6",
-          max_tokens: 3000,
+          max_tokens: ANALYSIS_MAX_TOKENS,
           system: buildV1AnalysisPrompt(today, shortlistTable, portfolioCtx!, influencerSection, sectorSection, (sleevePositions ?? []).map(p => p.symbol), recentStopouts, marketData.headlines, earningsDatesMap, newsSignals, beatHistory, recentEarnings, change1dOfHeld, change5dOfHeld, recentSells, formatMarketContext(marketData.sectors, marketData.spyContext?.regime ?? null), earningsReleaseSection, buysOpen, valuationSection + convictionSection, marketData.analystRatings),
           messages: [{ role: "user", content: "Analyze and decide. Output your thesis then the TRADE_DECISION line." }],
         }, { signal: analysisController.signal }),
