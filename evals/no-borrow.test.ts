@@ -36,6 +36,17 @@ describe("the agent never spends borrowed money", () => {
     expect(spendableFromPortfolio({ buyingPower: "200", cash: "-15", totalValue: "2365" })?.spendable).toBe(0);
   });
 
+  test("cash unreadable: snapshot cash falls back to unleveraged, not raw buying_power", () => {
+    // Raw buying_power may be margin capacity; storing it as cash would inflate totalValue and the
+    // next day's return baseline.
+    const r = spendableFromPortfolio({ buyingPower: "4730", unleveragedBuyingPower: "384.30", totalValue: "2365" });
+    expect(r?.buyingPower).toBe(384.3);
+    expect(r?.cashKnown).toBe(false);
+    expect(r?.unsettled).toBe(0);
+    // Neither readable: buying_power is the only reading left (spending is still 0 — see above).
+    expect(spendableFromPortfolio({ buyingPower: "4730", totalValue: "2365" })?.buyingPower).toBe(4730);
+  });
+
   test("the spend limit never lowers the stored cash figure", () => {
     // unleveraged below cash (e.g. a margin hold): spending is limited, but snapshot cash stays real,
     // so totalValue and tomorrow's return baseline are not understated.
