@@ -15,8 +15,6 @@ const MCP_URL = "https://agent.robinhood.com/mcp/trading";
  *  buyingPower  the SNAPSHOT cash figure (stored as portfolioAfter.cash; total = it + unsettled +
  *               equity). min(buying_power, cash): never margin capacity, and never lowered to the
  *               spend limit, which would understate stored value and feed the return baseline.
- *               If cash is unreadable, unleveraged_buying_power stands in; raw buying_power only
- *               when neither can be read.
  *  unsettled    cash − buyingPower. ~0 on limited margin (unsettled proceeds are spendable); real on
  *               a cash account. `cashKnown` says whether it was MEASURED — callers must not mistake
  *               a measured 0 for "unknown" and substitute their own estimate (double-counting).
@@ -32,8 +30,7 @@ export function spendableFromPortfolio(p: { buyingPower?: unknown; unleveragedBu
   const unlev = num(p.unleveragedBuyingPower);
   const limits = [...(unlev != null ? [unlev] : []), ...(cash != null ? [cash] : [])];
   const spendable = limits.length === 0 ? 0 : Math.max(0, Math.min(bp, ...limits));
-  // cash unreadable → unleveraged (no margin capacity in it) before raw buying_power, which may be borrowing.
-  const snapshotCash = Math.min(bp, cash ?? unlev ?? bp);
+  const snapshotCash = cash != null ? Math.min(bp, cash) : bp;
   const unsettled = cash != null && cash > snapshotCash ? cash - snapshotCash : 0;
   return (bp > 0 || tv > 0)
     ? { buyingPower: snapshotCash, spendable, totalValue: tv, unsettled, cashKnown: cash != null, capped: spendable < bp }
