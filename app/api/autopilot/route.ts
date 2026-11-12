@@ -510,7 +510,7 @@ export async function GET(request: Request) {
         .filter((sym) => !boughtSyms.has(sym) && !explained(sym));
       if (notBought.length > 0) {
         issues.push(
-          `Decided to buy ${notBought.join(", ")} but no confirmed buy — likely insufficient buying power (sells settle T+1) or a dropped order. Buy-sizing + retry should limit this; flag if it persists.`,
+          `Decided to buy ${notBought.join(", ")} but no confirmed buy — likely insufficient buying power (the live balance re-read after the sells came in below the decided buys) or a dropped order. Buy-sizing + retry should limit this; flag if it persists.`,
         );
       }
     }
