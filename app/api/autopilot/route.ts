@@ -510,7 +510,7 @@ export async function GET(request: Request) {
         .filter((sym) => !boughtSyms.has(sym) && !explained(sym));
       if (notBought.length > 0) {
         issues.push(
-          `Decided to buy ${notBought.join(", ")} but no confirmed buy, and no guard drop explains it. Cause not determined here — check the run's buy-sizing notes, then the broker order history. Flag if it persists.`,
+          `Decided to buy ${notBought.join(", ")} but no confirmed buy. Cause not determined here — check the run's buy-sizing notes first (DEFERRED / WITHHELD means it was never placed; UNVERIFIABLE / NOT CONFIRMED means it may have filled — do not re-place it blind), then the broker order history and the Vercel logs. Flag if it persists.`,
         );
       }
     }
