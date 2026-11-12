@@ -1,3 +1,4 @@
+import { GUARD_DROP } from "../lib/no-trade-cause";
 import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -80,6 +81,19 @@ describe("wiring: ORDER of operations between components", () => {
     // Both checks — per symbol and whole list — share ONE pattern, imported, defined nowhere here.
     expect(s).toContain('classifyNoTradeState, dataFailureMessage, GUARD_DROP } from "@/lib/no-trade-cause"');
     expect(s).not.toMatch(/const GUARD_DROP(_RE)? = \//);
+  });
+
+  test("the DEFERRED note the trade route writes is the wording GUARD_DROP and the churn check read", () => {
+    // 2026-11-12: DEFERRED joined GUARD_DROP so an off-window buy stops raising "unconfirmed buy".
+    // If the route rewords the note, that silently stops matching and the paid dispatch returns —
+    // and the autopilot's churn-intent soft issue goes quiet. Pin both strings at their source.
+    const route = src("app/api/trade/route.ts");
+    expect(route).toContain("main-book buy DEFERRED — outside the weekly rebalance window");
+    expect(route).toContain("(churn intent).");
+    expect(GUARD_DROP.test("X main-book buy DEFERRED — outside the weekly rebalance window")).toBe(true);
+    const auto = src("app/api/autopilot/route.ts");
+    expect(auto).toContain("/churn intent/.test(note)");
+    expect(src("lib/report-consistency.ts")).toContain('import { GUARD_DROP } from "./no-trade-cause"');
   });
 
   test("verify re-asks for uncaptured orders AFTER the capture writes", () => {

@@ -488,6 +488,18 @@ export async function GET(request: Request) {
         const symRe = new RegExp(`(^|[^A-Z0-9.])${escapeRe(sym)}([^A-Z0-9.]|$)`);
         return (todayRun.buySizingAdjustments ?? []).some((note) => GUARD_DROP.test(note) && symRe.test(note));
       };
+      // A DEFERRED off-window buy is explained (above), but off-window the trade route skips its
+      // re-entry/churn flags and relies on the DEFERRED note's own marker — so surface that marker
+      // here or it reaches no one. Soft: email only, nothing to fix in code.
+      const deferredChurn = decided.buys.map((b) => String(b.symbol)).filter((sym) => {
+        const symRe = new RegExp(`(^|[^A-Z0-9.])${escapeRe(sym)}([^A-Z0-9.]|$)`);
+        return (todayRun.buySizingAdjustments ?? []).some((note) => symRe.test(note) && /\bDEFERRED\b/.test(note) && /churn intent/.test(note));
+      });
+      if (deferredChurn.length > 0) {
+        softIssues.push(
+          `Off-window buy of ${deferredChurn.join(", ")} was DEFERRED (nothing placed), but it was a re-buy of a name sold in the last few days (churn intent). Check the re-buy reasoning before the next rebalance window.`,
+        );
+      }
 
       const notSold = decided.sells
         .filter((s) => isFullExit(s, heldQtyOf.get(String(s.symbol))))
@@ -510,7 +522,7 @@ export async function GET(request: Request) {
         .filter((sym) => !boughtSyms.has(sym) && !explained(sym));
       if (notBought.length > 0) {
         issues.push(
-          `Decided to buy ${notBought.join(", ")} but no confirmed buy. Cause not determined here — check the run's buy-sizing notes first (DEFERRED / WITHHELD means it was never placed; UNVERIFIABLE / NOT CONFIRMED means it may have filled — do not re-place it blind), then the broker order history and the Vercel logs. Flag if it persists.`,
+          `Decided to buy ${notBought.join(", ")} but no confirmed buy. Cause not determined here — check the run's buy-sizing notes first (WITHHELD means it was never placed; UNVERIFIABLE / NOT CONFIRMED means it may have filled — do not re-place it blind), then the broker order history and the Vercel logs. Flag if it persists.`,
         );
       }
     }
