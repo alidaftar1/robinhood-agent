@@ -23,27 +23,6 @@ export type NoTradeCause = "data-failure" | "explained" | "unexplained";
  *  the kind lost in a re-type. Callers that need it per symbol must still match the symbol with a
  *  boundary, so a note about AAPL cannot explain away a dropped buy of ticker L. */
 export const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED)\b|off-rails/;
-
-/** The run notes that name `sym`, matched on a ticker boundary (a note about AAPL is not about L,
- *  and BRK.B is not BRK-B). `sym` comes straight from model output, so it is escaped — an unescaped
- *  `(` would throw and 500 the whole autopilot report. */
-export function notesForSymbol(notes: readonly string[], sym: string): string[] {
-  const escaped = sym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const symRe = new RegExp(`(^|[^A-Z0-9.])${escaped}([^A-Z0-9.]|$)`);
-  return notes.filter((note) => symRe.test(note));
-}
-
-/** The autopilot issue for decided buys that never confirmed and that no guard drop explains. It
- *  QUOTES what the run recorded for each symbol rather than guessing a cause: the guesses ("sells
- *  settle T+1", then "the post-sell re-read", then "execution") were each wrong for some path — a
- *  DEFERRED or WITHHELD buy was never placed at all. */
-export function unconfirmedBuysIssue(syms: readonly string[], notes: readonly string[]): string {
-  const recorded = syms.map((sym) => {
-    const mine = notesForSymbol(notes, sym);
-    return `${sym}: ${mine.length ? mine.map((n) => `"${n}"`).join("; ") : "no note recorded for it — check the broker order history"}`;
-  });
-  return `Decided to buy ${syms.join(", ")} but no confirmed buy, and no guard drop explains it. Recorded: ${recorded.join(" | ")}. Flag if it persists.`;
-}
 /** The "we could not establish an input" wording, in any gate that fails closed. It is always a
  *  SEPARATE sentence from the one asserting a real condition, precisely so the two can be told apart
  *  here: one asserts a fact about the company, this asserts a broken input of ours.
