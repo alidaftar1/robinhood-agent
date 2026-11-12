@@ -93,7 +93,7 @@ describe("wiring: ORDER of operations between components", () => {
     expect(GUARD_DROP.test("X main-book buy DEFERRED — outside the weekly rebalance window")).toBe(true);
     const auto = src("app/api/autopilot/route.ts");
     expect(auto).toContain("/churn intent/.test(note)");
-    expect(src("lib/report-consistency.ts")).toContain('import { GUARD_DROP } from "./no-trade-cause"');
+    expect(src("lib/report-consistency.ts")).not.toMatch(/const GUARD_DROP(_RE)? = \//);   // no private copy to drift
   });
 
   test("verify re-asks for uncaptured orders AFTER the capture writes", () => {

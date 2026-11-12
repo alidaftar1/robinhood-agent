@@ -93,7 +93,7 @@ export const FIXTURES: ReviewerFixture[] = [
     note: "07-06: TSLA decided but dropped by buy-sizing; ~$408 sat idle.",
     run: mkRun({
       date: "2026-07-06", cash: 408.15, unsettled: 553,
-      buySizingAdjustments: ["TSLA DROPPED — whole share needs ~$413 but only $40 settled buying power left; ~$413 stays idle until the next run"],
+      buySizingAdjustments: ["TSLA DROPPED — whole share needs ~$413 but only $40 spendable budget left; ~$413 stays idle until the next run"],
       positions: [p("AAPL", "1", "311"), p("DXC", "6", "10"), p("MRNA", "2", "81")],
       summary: "## Analysis\nBought DXC. TRADE_DECISION:{\"thesis\":\"...\",\"sells\":[],\"buys\":[{\"symbol\":\"TSLA\",\"quantity\":1,\"price\":405.22,\"strategy\":\"influencer\"},{\"symbol\":\"DXC\",\"quantity\":6,\"price\":10,\"strategy\":\"main\"}]}",
     }),

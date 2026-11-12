@@ -1993,7 +1993,7 @@ Include only BUY orders placed today that are filled or pending (not cancelled/r
             !reverified
               ? `A retry was ${retryReached ? "placed" : "attempted (it may not have reached the broker)"} for these buys and the follow-up check failed, so their state is unknown: ${missing.map(b => b.symbol).join(", ")}.\nDo not assume they are unbought — reconcile in Robinhood before the next run.`
               : retried
-                ? `These decided buys did NOT execute even after a retry: ${missing.map(b => b.symbol).join(", ")}.\nLikely insufficient buying power (e.g. a sale that funded it had not filled) or a dropped order. Place manually if still wanted; the next run re-evaluates.`
+                ? `These decided buys did NOT execute even after a retry: ${missing.map(b => b.symbol).join(", ")}.\nThe broker never verified a fill; the cause is not determined here. Check the Robinhood order history before placing manually; the next run re-evaluates.`
                 : `These decided buys were not confirmed and NO retry was attempted (the place session aborted, so an order may still be in flight): ${missing.map(b => b.symbol).join(", ")}.\nVerify in Robinhood before assuming they are unbought.`,
           );
         }

@@ -68,7 +68,7 @@ export function fitBuysToBudget<T extends { symbol: string; quantity: number; pr
       // be redeployed deterministically without distorting the thesis/sector mix, so it stays
       // idle and the NEXT run re-evaluates with fresh analysis. Recorded loudly (persisted to
       // the run) so the drop is never silent — the reviewer/email must see it.
-      adjustments.push(`${b.symbol} DROPPED — whole share needs ~$${Math.round(unit)} but only $${Math.round(budget)} settled buying power left; ~$${Math.round(unit)} stays idle until the next run re-evaluates`);
+      adjustments.push(`${b.symbol} DROPPED — whole share needs ~$${Math.round(unit)} but only $${Math.round(budget)} spendable budget left; ~$${Math.round(unit)} stays idle until the next run re-evaluates`);
     }
   }
   return { sized, adjustments };

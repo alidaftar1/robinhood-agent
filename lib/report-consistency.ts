@@ -22,7 +22,6 @@
 // "do these sentences disagree?" check would need a model and would produce false positives, which
 // is how a banner stops being read — the exact failure these entries are about.
 // ─────────────────────────────────────────────────────────────────────────────
-import { GUARD_DROP } from "./no-trade-cause";
 
 export interface ReportContradiction {
   /** Short stable id, so a recurrence is greppable. */
@@ -98,16 +97,10 @@ export function findReportContradictions(input: ReportInput): ReportContradictio
     }
   }
 
-  // 4. The 2026-10-13 instance. A guard that dropped every buy and said why EXPLAINS an empty
-  //    trade list; calling it a possible analysis issue flips the banner on a healthy day.
-  const noTrades = has(issues, /No trades executed but buying power/);
-  if (noTrades) {
-    const dropNote = has(notes, GUARD_DROP);
-    if (dropNote) {
-      out.push({ id: "no-trades-vs-explained",
-        detail: `issues calls an empty trade list a possible analysis issue while the run records why it is empty: "${dropNote.slice(0, 110)}…".` });
-    }
-  }
+  // 4. (Removed 2026-11-12.) The 2026-10-13 "possible analysis issue beside a guard note" check could
+  //    no longer fire: the autopilot decides that case with classifyNoTradeState on the SAME
+  //    GUARD_DROP pattern before it writes the line, and the line now goes to softIssues, which this
+  //    function is not passed. The ordering is pinned in evals/no-trade-cause.test.ts and wiring.test.ts.
 
   // 5. Not a pair, a SMELL, and it earned its place: "an unknown condition" shipped to the owner on
   //    2026-10-15 from a branch that had run out of hypotheses and guessed. If a report cannot name

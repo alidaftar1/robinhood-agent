@@ -55,13 +55,6 @@ describe("the report is checked against itself", () => {
     })).toContain("reconciles-vs-live-mismatch");
   });
 
-  test("2026-10-13: 'possible analysis issue' beside a note explaining the empty trade list", () => {
-    expect(ids({ ...base,
-      issues: ["No trades executed but buying power is $174.68 — possible analysis issue (main-book buys were OPEN today)."],
-      notes: ["GOOGL buy DROPPED — main book at its 6-position cap (6 held at the start; no slots were open; 0 left for GOOGL)"],
-    })).toContain("no-trades-vs-explained");
-  });
-
   test("a line that names no established cause is itself the defect", () => {
     expect(ids({ ...base, notes: ["DAILY RETURN NOT COMPUTED — an unknown condition, so there is no baseline."] }))
       .toContain("unnamed-cause");

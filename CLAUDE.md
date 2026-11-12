@@ -99,7 +99,7 @@ Response shape:
 Interpret results:
 - `status: "ok"` — nothing to do
 - `status: "discrepancy"` — review `discrepancies[]` array and `diff` fields
-  - `cashDiff > $10`: investigate. Likely T+1 settlement or uncaptured trade.
+  - `cashDiff > $10`: investigate. Likely an uncaptured trade (often the owner's own manual fill). Not T+1 settlement: the account has been on limited margin since 2026-10-24, so unsettled cash is ~0.
   - `cashDiff > $100`: flag in email, do not auto-fix without understanding why.
   - `positionIssues` with type `missing_from_live_no_sell_record` → run `patchTrades`
   - `uncapturedOrders` → trades executed in Robinhood but not stored — note in email
