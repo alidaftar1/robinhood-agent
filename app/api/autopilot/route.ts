@@ -38,7 +38,7 @@ export const maxDuration = 200;
 // How many of a channel's picks the ledger table lists. Enough to audit a hit rate against the
 // actual names, few enough that one watchlist video (Everything Money named 17 tickers in a single
 // video) does not swamp the email. The overflow is always counted, never silently truncated.
-import { classifyNoTradeState, dataFailureMessage, GUARD_DROP } from "@/lib/no-trade-cause";
+import { classifyNoTradeState, dataFailureMessage, GUARD_DROP, notesForSymbol, unconfirmedBuysIssue } from "@/lib/no-trade-cause";
 import { findReportContradictions } from "@/lib/report-consistency";
 
 const LEDGER_PICKS_SHOWN = 14;
@@ -480,14 +480,7 @@ export async function GET(request: Request) {
       // lowercase prose that merely SPECULATES ("...may be rejected or crowd out later buys") for a
       // buy that was NOT dropped. Matching that case-insensitively would explain away a genuine
       // execution failure.
-      const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const explained = (sym: string) => {
-        // `symbol` comes straight from model output and is never validated, so an unescaped `(` or
-        // `[` would throw SyntaxError here — uncaught, that 500s the whole autopilot GET and kills
-        // the morning report. `BRK.B` would also compile to a wildcard matching `BRK-B`.
-        const symRe = new RegExp(`(^|[^A-Z0-9.])${escapeRe(sym)}([^A-Z0-9.]|$)`);
-        return (todayRun.buySizingAdjustments ?? []).some((note) => GUARD_DROP.test(note) && symRe.test(note));
-      };
+      const explained = (sym: string) => notesForSymbol(todayRun.buySizingAdjustments ?? [], sym).some((note) => GUARD_DROP.test(note));
 
       const notSold = decided.sells
         .filter((s) => isFullExit(s, heldQtyOf.get(String(s.symbol))))
@@ -509,9 +502,7 @@ export async function GET(request: Request) {
         .map((b) => String(b.symbol))
         .filter((sym) => !boughtSyms.has(sym) && !explained(sym));
       if (notBought.length > 0) {
-        issues.push(
-          `Decided to buy ${notBought.join(", ")} but no confirmed buy, and no DROPPED/BLOCKED/REJECTED guard note explains it — so it was most likely placed and failed at EXECUTION (broker rejection, an aborted buy session, or a fill that never confirmed). Check the run's buy-sizing notes (a 'skipped' or 'sized as-is' buy is not a guard drop), then the broker order history; flag if it persists.`,
-        );
+        issues.push(unconfirmedBuysIssue(notBought, todayRun.buySizingAdjustments ?? []));
       }
     }
   }
