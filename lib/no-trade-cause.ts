@@ -21,8 +21,15 @@ export type NoTradeCause = "data-failure" | "explained" | "unexplained";
  *  autopilot's per-SYMBOL check asks the same question of one note that classifyNoTradeState asks
  *  of the whole list, and two copies of this pattern would drift — the case rules above are exactly
  *  the kind lost in a re-type. Callers that need it per symbol must still match the symbol with a
- *  boundary, so a note about AAPL cannot explain away a dropped buy of ticker L. */
-export const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED)\b|off-rails/;
+ *  boundary, so a note about AAPL cannot explain away a dropped buy of ticker L.
+ *
+ *  DEFERRED added 2026-11-12: a main-book buy decided outside the weekly rebalance window is held by
+ *  a calendar guard ("<SYM> main-book buy DEFERRED — outside the weekly rebalance window"), never
+ *  placed, and was raising an "unconfirmed buy" issue that dispatched the paid cloud fixer. It only
+ *  occurs off-window, where an empty trade list is already treated as expected, so the day-level
+ *  classification is unchanged. NOT "WITHHELD": "main-book buys WITHHELD (quality screen
+ *  unavailable)" is an OUTAGE, and calling it explained would hide it — the fail-open direction. */
+export const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED|DEFERRED)\b|off-rails/;
 /** The "we could not establish an input" wording, in any gate that fails closed. It is always a
  *  SEPARATE sentence from the one asserting a real condition, precisely so the two can be told apart
  *  here: one asserts a fact about the company, this asserts a broken input of ours.

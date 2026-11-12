@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { classifyNoTradeState, dataFailureMessage, unestablishedInputOf } from "@/lib/no-trade-cause";
+import { classifyNoTradeState, dataFailureMessage, GUARD_DROP, unestablishedInputOf } from "@/lib/no-trade-cause";
 import { applySectorBudget } from "@/lib/buy-sizing";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,6 +68,19 @@ describe("an empty trade list is classified by WHY, with a missing input outrank
     expect(classifyNoTradeState(["AAA $200→$150 (shrunk to fit budget), may be rejected or crowd out later buys"]).cause)
       .toBe("unexplained");
     expect(classifyNoTradeState(["AAA buy DID NOT CONFIRM after retry"]).cause).toBe("unexplained");
+  });
+
+  // 2026-11-12: a main-book buy decided off-window is DEFERRED by the calendar guard and never
+  // placed; it raised an "unconfirmed buy" issue that dispatched the paid cloud fixer.
+  test("a DEFERRED off-window buy counts as a guard drop (exact note wording from app/api/trade)", () => {
+    const note = "LLY main-book buy DEFERRED — outside the weekly rebalance window (main-book buys run on the first two trading days of the week; sells and risk exits still run daily). Re-evaluated at the next window.";
+    expect(GUARD_DROP.test(note)).toBe(true);
+    expect(classifyNoTradeState([note]).cause).toBe("explained");
+  });
+
+  test("CONTROL: a quality-screen OUTAGE (WITHHELD) is NOT explained — calling it a guard decision would hide it", () => {
+    expect(classifyNoTradeState(["main-book buys WITHHELD (quality screen unavailable — fail closed): LLY, MU"]).cause).toBe("unexplained");
+    expect(GUARD_DROP.test("main-book buys WITHHELD (quality screen unavailable — fail closed): LLY")).toBe(false);
   });
 
   // WIDENED 2026-10-22. Three gates emit the "could NOT establish" shape and only the earnings one

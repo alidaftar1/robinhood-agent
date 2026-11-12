@@ -22,6 +22,7 @@
 // "do these sentences disagree?" check would need a model and would produce false positives, which
 // is how a banner stops being read — the exact failure these entries are about.
 // ─────────────────────────────────────────────────────────────────────────────
+import { GUARD_DROP } from "./no-trade-cause";
 
 export interface ReportContradiction {
   /** Short stable id, so a recurrence is greppable. */
@@ -56,7 +57,6 @@ const fillKeys = (text: string): Set<string> => {
   return out;
 };
 
-const GUARD_DROP = /\b(DROPPED|BLOCKED|REJECTED)\b|off-rails/;
 
 export function findReportContradictions(input: ReportInput): ReportContradiction[] {
   const out: ReportContradiction[] = [];
