@@ -1,6 +1,7 @@
 // ── Pre-flight buy sizing ────────────────────────────────────────────────────
-// The model sizes buys against an estimated budget, but (a) today's sells settle T+1
-// so they DON'T add to today's buying power, (b) the live price ticks above the 7:30am
+// The model sizes buys against an estimated budget, but (a) the budget is an estimate (on the
+// cash account today's sells settled T+1; on limited margin since 2026-10-24 their proceeds are
+// spendable same-day but only ESTIMATED here — see SELL_PROCEEDS_HAIRCUT), (b) the live price ticks above the 7:30am
 // thesis estimate, and (c) the broker keeps a small buffer — so a marginal buy gets
 // REJECTED and its cash sits idle (GPN squeezed out 07-01 ~$302; TSLA 07-06 ~$405).
 // Fix deterministically BEFORE placing orders: reserve a BUFFER, cost each buy with a

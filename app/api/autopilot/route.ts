@@ -510,7 +510,7 @@ export async function GET(request: Request) {
         .filter((sym) => !boughtSyms.has(sym) && !explained(sym));
       if (notBought.length > 0) {
         issues.push(
-          `Decided to buy ${notBought.join(", ")} but no confirmed buy — likely insufficient buying power (the live balance re-read after the sells came in below the decided buys) or a dropped order. Buy-sizing + retry should limit this; flag if it persists.`,
+          `Decided to buy ${notBought.join(", ")} but no confirmed buy, and no DROPPED/BLOCKED/REJECTED guard note explains it — so it was most likely placed and failed at EXECUTION (broker rejection, an aborted buy session, or a fill that never confirmed). Check the run's buy-sizing notes (a 'skipped' or 'sized as-is' buy is not a guard drop), then the broker order history; flag if it persists.`,
         );
       }
     }
