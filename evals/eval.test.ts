@@ -486,7 +486,7 @@ describe("per-stock news: material-event flag renders in the shortlist", () => {
     const news = new Map([["PLTR", { direction: "-", summary: "DoD contract under review" }]]);
     const prompt = buildV1AnalysisPrompt("2026-07-30", "(t)", ctx, "", "", ["PLTR"], [], [], {}, news);
     expect(prompt).toMatch(/PLTR.*⚡NEWS↓ "DoD contract under review"/); // held influencer name gets it
-    expect(prompt).toMatch(/\(2\) NEWS — if it shows a bearish ⚡NEWS/);   // influencer trim exception
+    expect(prompt).toMatch(/\(2\) NEWS — a bearish ⚡NEWS↓ that passes the NEWS SELL TEST/);   // influencer exception, gated by the test (2026-11-13)
   });
 });
 
