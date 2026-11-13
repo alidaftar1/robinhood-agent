@@ -35,7 +35,7 @@
  */
 import { describe, it, expect } from "bun:test";
 import Anthropic from "@anthropic-ai/sdk";
-import { extractMaterialNews, isAboutOtherCompany, isPriceRecap, FAILED } from "@/lib/news";
+import { extractMaterialNews, isAboutOtherCompany, isPriceRecap, isMinorBearish, FAILED } from "@/lib/news";
 import { LLM_EVALS_ENABLED } from "./llm-budget";
 import CASES from "./news-reader-cases.json";
 
@@ -44,9 +44,10 @@ type Expect = { material: boolean | "either"; direction?: "+" | "-" | "0"; forbi
 type ExtractionCase = { id: string; symbol: string; companyName: string; headlines: Headline[]; expect: Expect; why: string };
 type IdentityCase = { id: string; symbol: string; companyName: string; item: Headline; other: boolean };
 type RecapCase = { id: string; symbol: string; companyName: string; item: Headline; recap: boolean };
+type MinorCase = { id: string; symbol: string; companyName: string; item: Headline; minor: boolean };
 
 const MIN_ACCURACY = 0.85;
-const MAX_CALLS = 90;
+const MAX_CALLS = 110;   // ~50 extraction (+ the bearish fourth look) + 6 identity + 7 recap + 9 minor
 
 /** Counts and caps model calls. The extractor makes its own calls, so the shared llm-budget
  *  reservation cannot sit in front of them; this does the same job for this file. */
@@ -103,6 +104,8 @@ describe("news-reader grading (deterministic)", () => {
     expect(id.some(c => c.other) && id.some(c => !c.other)).toBe(true);
     const rc = CASES.recap as RecapCase[];
     expect(rc.some(c => c.recap) && rc.some(c => !c.recap)).toBe(true);
+    const mc = CASES.minor as MinorCase[];
+    expect(mc.some(c => c.minor) && mc.some(c => !c.minor)).toBe(true);   // both directions, so it cannot pass one-way
     expect(ex.some(c => c.expect.material === true && c.expect.direction === "-")).toBe(true);  // bearish recall too
   });
 });
@@ -145,6 +148,21 @@ describe.skipIf(!LLM_EVALS_ENABLED)("news-reader (LLM): frozen real headlines", 
       if (said !== c.recap) wrong.push(`${c.id}: said ${said ? "RECAP" : "not RECAP"}, expected ${c.recap ? "RECAP" : "EVENT"} — ${c.item.headline.slice(0, 70)}`);
     }
     console.log(`\n── news-reader recap: ${(CASES.recap as RecapCase[]).length - wrong.length}/${(CASES.recap as RecapCase[]).length} ──`);
+    for (const w of wrong) console.log(`  ✗ ${w}`);
+    expect(wrong).toEqual([]);
+  }, 300_000);
+
+  // 2026-11-13 (lib/news isMinorBearish): drops a bearish event only on a clear MINOR. MAJOR controls
+  // include the review's two traps — a negative FDA advisory vote (formally a "recommendation") and
+  // a reinstated verdict in an already-public case — and the MINOR side carries a held-out analog of
+  // the GOOGL incident, so the check is not just recalling one example.
+  it("minor-bearish check: MINOR for procedural or small items, never for consequential ones", async () => {
+    const wrong: string[] = [];
+    for (const c of CASES.minor as MinorCase[]) {
+      const said = await isMinorBearish(client, c.symbol, c.companyName, c.item);
+      if (said !== c.minor) wrong.push(`${c.id}: said ${said ? "MINOR" : "not MINOR"}, expected ${c.minor ? "MINOR" : "MAJOR"} — ${c.item.headline.slice(0, 70)}`);
+    }
+    console.log(`\n── news-reader minor: ${(CASES.minor as MinorCase[]).length - wrong.length}/${(CASES.minor as MinorCase[]).length} ──`);
     for (const w of wrong) console.log(`  ✗ ${w}`);
     expect(wrong).toEqual([]);
   }, 300_000);

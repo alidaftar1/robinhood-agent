@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractMaterialNews, isAboutOtherCompany, isPriceRecap, FAILED } from "../lib/news";
+import { extractMaterialNews, isAboutOtherCompany, isPriceRecap, isMinorBearish, FAILED } from "../lib/news";
 
 // 2026-11-03: Finnhub served "Merck to Divest CDMO Business to Lonza" under MRK (Merck & Co.). It
 // was Merck KGaA of Darmstadt, Germany. The extractor saw only "MRK headlines", tagged it ⚡NEWS↓,
@@ -117,5 +117,46 @@ describe("news: a bearish event that is only a price-move recap is dropped", () 
     await extractMaterialNews(f.client, "SNDK", [recapItem], "SanDisk Corporation");
     expect(f.calls[0].system).toContain("START your reply with the NEWS: line");
     expect(f.calls[0].max_tokens).toBeGreaterThanOrEqual(400);
+  });
+});
+
+// 2026-11-13: GOOGL was sold on a ⚡NEWS↓ for a non-binding court adviser's opinion on an
+// already-annulled fine. A bearish event that survives the recap check gets a fourth look: MINOR or MAJOR?
+const agItem = { headline: "Google faces renewed challenge over $1.66bn advertising fine", date: "2026-11-13", summary: "An adviser to the EU's top court said the annulment of the AdSense fine should be set aside." };
+const agBearish = 'NEWS:{"material":true,"direction":"-","summary":"Google faces renewed challenge over $1.66bn advertising fine","date":"2026-11-13","n":1}';
+
+describe("news: a bearish event judged MINOR for the company is dropped", () => {
+  test("identity SAME, recap EVENT, minor check MINOR → no event; the check sees the item and the company", async () => {
+    const f = fake([agBearish, "SAME", "EVENT", "MINOR"]);
+    expect(await extractMaterialNews(f.client, "GOOGL", [agItem], "Alphabet Inc.")).toBeNull();
+    expect(f.calls.length).toBe(4);
+    expect(f.calls[3].content).toContain("renewed challenge");
+    expect(f.calls[3].content).toContain("adviser to the EU");   // the summary is passed
+    expect(f.calls[3].system).toContain("Alphabet Inc. (GOOGL)");
+  });
+
+  test("MAJOR, UNSURE, an empty reply or an error keeps the bearish event — only a clear MINOR drops one", async () => {
+    for (const fourth of ["MAJOR", "UNSURE", "", new Error("529")] as Reply[]) {
+      expect(await extractMaterialNews(fake([agBearish, "SAME", "EVENT", fourth]).client, "GOOGL", [agItem], "Alphabet Inc.")).toMatchObject({ direction: "-" });
+    }
+  });
+
+  test("a bullish event is never sent to the minor check", async () => {
+    const f = fake([bullish, "SAME", "MINOR"]);
+    expect(await extractMaterialNews(f.client, "MRK", [recapItem], "Merck & Co Inc")).toMatchObject({ direction: "+" });
+    expect(f.calls.length).toBe(2);
+  });
+
+  test("a RECAP verdict drops the event before the minor check runs", async () => {
+    const f = fake([bearish, "SAME", "RECAP", "MAJOR"]);
+    expect(await extractMaterialNews(f.client, "MRK", [recapItem], "Merck & Co Inc")).toBeNull();
+    expect(f.calls.length).toBe(3);
+  });
+
+  test("isMinorBearish: only a leading MINOR counts", async () => {
+    expect(await isMinorBearish(fake(["MINOR"]).client, "GOOGL", null, agItem)).toBe(true);
+    expect(await isMinorBearish(fake(["MAJOR — not minor"]).client, "GOOGL", null, agItem)).toBe(false);
+    expect(await isMinorBearish(fake(["UNSURE"]).client, "GOOGL", null, agItem)).toBe(false);
+    expect(await isMinorBearish(fake([new Error("x")]).client, "GOOGL", null, agItem)).toBe(false);
   });
 });

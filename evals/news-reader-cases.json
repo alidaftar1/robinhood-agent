@@ -1,5 +1,5 @@
 {
- "_note": "Frozen Finnhub headlines (top 15 by recency, 200-char summaries) captured 2026-11-04, labeled by hand. Labels and reasons in each case; msft-injection is synthetic. See evals/news-reader.test.ts. fis-bearish/dg-bearish and the recap cases were added 2026-11-05. googl-adsense-ag-opinion and nvda-ceo-resigns added 2026-11-13 (reconstructed point-in-time from Finnhub: GOOGL as of 14:00Z 11-13, NVDA as of 15:30Z 11-12).",
+ "_note": "Frozen Finnhub headlines (top 15 by recency, 200-char summaries) captured 2026-11-04, labeled by hand. Labels and reasons in each case; msft-injection is synthetic. See evals/news-reader.test.ts. fis-bearish/dg-bearish and the recap cases were added 2026-11-05. googl-adsense-ag-opinion and nvda-ceo-resigns added 2026-11-13 (reconstructed point-in-time from Finnhub: GOOGL as of 14:00Z 11-13, NVDA as of 15:30Z 11-12). The 'minor' group (bearish fourth-look check, lib/news isMinorBearish) was added 2026-11-13: real items plus SYNTHETIC held-out analogs and controls, labeled in each case.",
  "extraction": [
   {
    "id": "lly-quiet",
@@ -2916,6 +2916,116 @@
     "summary": "Fidelity beat earnings but guided for a soft fourth quarter, and its CFO stepped down."
    },
    "recap": false
+  }
+ ],
+ "minor": [
+  {
+   "id": "minor-googl-ag-opinion",
+   "symbol": "GOOGL",
+   "companyName": "Alphabet Inc.",
+   "item": {
+    "headline": "Google faces renewed challenge over $1.66bn advertising fine",
+    "date": "2026-11-13",
+    "summary": "Advocate General Juliane Kokott has advised the Court of Justice of the EU to set aside the General Court's September 2024 judgment and return the case for a new ruling."
+   },
+   "minor": true,
+   "why": "REAL, 2026-11-13: non-binding Advocate General opinion on the AdSense fine annulled in 2024 — procedural, and small for Alphabet. The incident that sold GOOGL."
+  },
+  {
+   "id": "minor-meta-ag-opinion",
+   "symbol": "META",
+   "companyName": "Meta Platforms, Inc.",
+   "item": {
+    "headline": "EU court adviser says Meta's €798m Marketplace fine should be partly reconsidered",
+    "date": "2026-11-13",
+    "summary": "An Advocate General of the EU Court of Justice issued a non-binding opinion on Meta's appeal of the 2024 Facebook Marketplace fine, proposing the case return to the General Court. A ruling is expected next year."
+   },
+   "minor": true,
+   "why": "SYNTHETIC held-out analog of the GOOGL case: same structure, different company, so the check is not recalling one example."
+  },
+  {
+   "id": "minor-classaction-solicitation",
+   "symbol": "DELL",
+   "companyName": "Dell Technologies Inc.",
+   "item": {
+    "headline": "INVESTOR ALERT: Law Firm Announces Investigation on Behalf of Dell Technologies Inc. Investors",
+    "date": "2026-11-13",
+    "summary": "The firm is investigating whether Dell and certain officers made materially false statements. Investors who purchased shares are encouraged to contact the firm to discuss their rights."
+   },
+   "minor": true,
+   "why": "SYNTHETIC: a law-firm solicitation press release — a 'lawsuit' headline that decides nothing."
+  },
+  {
+   "id": "minor-hearing-scheduled",
+   "symbol": "AAPL",
+   "companyName": "Apple Inc.",
+   "item": {
+    "headline": "Judge sets March hearing date in Apple App Store antitrust case",
+    "date": "2026-11-13",
+    "summary": "A federal judge scheduled oral arguments for March in the long-running dispute over App Store payment rules. No ruling was issued."
+   },
+   "minor": true,
+   "why": "SYNTHETIC: a scheduling step in a known case."
+  },
+  {
+   "id": "major-nvda-ceo",
+   "symbol": "NVDA",
+   "companyName": "NVIDIA Corporation",
+   "item": {
+    "headline": "Jensen Huang resigns as Nvidia CEO",
+    "date": "2026-11-12",
+    "summary": "Nvidia (NVDA) CEO Jensen Huang has resigned. Yahoo Finance takes a closer look at this developing story."
+   },
+   "minor": false,
+   "why": "REAL 2026-11-12: CEO resigned effective immediately; shares -11%."
+  },
+  {
+   "id": "major-fis-guidance",
+   "symbol": "FIS",
+   "companyName": "Fidelity National Information Services, Inc.",
+   "item": {
+    "headline": "Fidelity National Cuts Full-Year Outlook After Quarterly Beat; Shares Plunge",
+    "date": "2026-11-04",
+    "summary": "Fidelity National Information Services (FIS) lowered its 2026 financial guidance even as its third-q"
+   },
+   "minor": false,
+   "why": "REAL: guidance cut (from fis-bearish)."
+  },
+  {
+   "id": "major-dg-ftc",
+   "symbol": "DG",
+   "companyName": "Dollar General Corp",
+   "item": {
+    "headline": "Dollar General hit with FTC lawsuit over allegedly overcharging shoppers millions — here's what consumers need to know",
+    "date": "2026-11-04",
+    "summary": "The discount retailer faces the FTC and 20 states over claims it repeatedly charged more at checkout than advertised."
+   },
+   "minor": false,
+   "why": "REAL: FTC lawsuit filed (from dg-bearish)."
+  },
+  {
+   "id": "major-lly-adcom",
+   "symbol": "LLY",
+   "companyName": "Eli Lilly and Company",
+   "item": {
+    "headline": "FDA advisory panel votes 9-4 against Lilly's Alzheimer's drug, citing safety concerns",
+    "date": "2026-11-13",
+    "summary": "An FDA advisory committee voted that the benefits of the drug do not outweigh its risks. The FDA is not bound by the panel's recommendation but usually follows it."
+   },
+   "minor": false,
+   "why": "SYNTHETIC control for the review's finding: a negative advisory-committee vote is formally a non-binding recommendation, and must stay MAJOR."
+  },
+  {
+   "id": "major-verdict-reinstated",
+   "symbol": "MMM",
+   "companyName": "3M Company",
+   "item": {
+    "headline": "Appeals court reinstates $6.1 billion verdict against 3M in earplug litigation",
+    "date": "2026-11-13",
+    "summary": "A federal appeals court reversed a lower-court ruling and reinstated jury awards totaling $6.1 billion, in a case that has been public for years."
+   },
+   "minor": false,
+   "why": "SYNTHETIC control: a decided ruling in an already-public case that imposes a large penalty must stay MAJOR."
   }
  ]
 }
