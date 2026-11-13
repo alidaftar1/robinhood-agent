@@ -29,7 +29,7 @@ describe("loss from cost is not a sell reason", () => {
     expect(p).toMatch(/does NOT appear in the shortlist table at all HAS fallen off it: that is reason \(a\), sell it/);
   });
   it("the risk sells that remain are still listed on a closed day", () => {
-    expect(pOff).toMatch(/bearish ⚡NEWS↓ event or ↓FIRM/);
+    expect(pOff).toMatch(/bearish ⚡NEWS↓ event that passes the NEWS SELL TEST, or a ↓FIRM/);
   });
   it("no '(5d …)' tag on an underwater line any more", () => {
     const line = p.split("\n").find((l) => l.trimStart().startsWith("MU ×")) ?? "";

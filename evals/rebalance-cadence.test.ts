@@ -179,7 +179,7 @@ describe("the rendered prompt honours the rebalance window", () => {
     // from cost was one of these until 2026-11-05; it was removed as a sell reason, see
     // evals/loss-discipline.test.ts.)
     expect(off).toContain("SELLS remain available for RISK ONLY");
-    expect(off).toMatch(/bearish ⚡NEWS↓ event or ↓FIRM/);
+    expect(off).toMatch(/bearish ⚡NEWS↓ event that passes the NEWS SELL TEST, or a ↓FIRM/);
     expect(off).not.toMatch(/loss discipline/i);
   });
 });

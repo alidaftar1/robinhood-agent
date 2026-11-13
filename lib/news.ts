@@ -174,7 +174,8 @@ direction = likely stock impact (+ bullish, - bearish, 0 mixed/unclear). date = 
       return null;
     }
     const direction = (["+", "-", "0"].includes(parsed.direction ?? "") ? parsed.direction : "0") as "+" | "-" | "0";
-    // Third look, BEARISH events only (a ⚡NEWS↓ is a verified exit reason in lib/sell-rail): is the
+    // Third look, BEARISH events only (a ⚡NEWS↓ lets the sell rail accept a sale, though the prompt's
+    // NEWS SELL TEST says the tag alone is not a reason to sell — 2026-11-13): is the
     // source item a real corporate event, or a price-move recap that names the company? 2026-11-04:
     // "Moderna Climbs 5%…, Merck Slides 2% Amid New Phase 3 Trial" — a multi-company daily recap —
     // became MRK ⚡NEWS↓ despite the prompt's own exclusion. Same failure direction as the identity

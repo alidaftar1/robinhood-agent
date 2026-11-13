@@ -386,6 +386,13 @@ export const KNOWN_ISSUES: KnownIssue[] = [
       "A creator recommended Coherent (COHR); the extractor wrote COR (Cencora, a drug distributor). One explicit buy call scores 3 = INFLUENCER_BUY_FLOOR, so a single video bought COR, and the model justified it with Cencora's own unrelated news. Two fixes (owner decision 2026-10-29): the extractor now returns the company name said and verifyBuyNames (lib/influencer-signals) drops any buy ticker whose official company does not match it (lookup/verifier failure = drop, recorded in cache.rejectedBuys); and a sleeve buy needs calls from >= MIN_BUY_CHANNELS (2) different channels (buyChannelCounts / sleeveBuyQualifies), enforced in the trade route's net-floor guard.",
     check:
       "Was any influencer buy executed for a ticker with fewer than 2 distinct channels behind it in the run's influencer data, or for a ticker listed in the cache's rejectedBuys? Flag HIGH. Also flag (medium) a thesis for an influencer buy that cites news or a business unrelated to what the creators said about the company.",
+  },  {
+    date: "2026-11-13",
+    title: "Holding sold on a ⚡NEWS↓ tag for a non-material item",
+    lesson:
+      "The 7:30 run sold GOOGL (influencer sleeve, +4.8%) on a ⚡NEWS↓ for 'Google faces renewed challenge over $1.66bn advertising fine' — a non-binding EU court adviser's opinion on a fine annulled in 2024, small for Alphabet. The model first wrote 'lean hold', then reversed because the prompt called any ⚡NEWS↓ 'a real reason to trim/exit'. Owner decision 2026-11-13: the prompt's NEWS SELL TEST now treats the tag as a reason to CONSIDER a sale; sell only if the thesis says why the event is material for the company (a genuinely new development, big enough to change its outlook), else hold.",
+    check:
+      "For each sell with reason 'news-down', does the thesis say why the event is material for THIS company — a new development (not a non-binding opinion, an appeal or hearing, or another step in an already-public matter) big enough to change its outlook? Flag MEDIUM a news sale whose thesis only restates the headline, or whose event is small next to the company or procedural. Do not flag a sale on a guidance cut, failed trial, regulator rejection, top-executive exit, collapsed deal, or a large penalty.",
   },
 ];
 
