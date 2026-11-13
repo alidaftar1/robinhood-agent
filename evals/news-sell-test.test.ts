@@ -25,7 +25,7 @@ describe("a ⚡NEWS↓ tag is a reason to consider a sale, not a sell signal", (
   });
   it("every news sell path points at it — main rule, sleeve exception, closed-day risk sells", () => {
     expect(on).toContain("a bearish ⚡NEWS↓ event that passes the NEWS SELL TEST below");
-    expect(on).toContain("(2) NEWS — a bearish ⚡NEWS↓ that passes the NEWS SELL TEST below");
+    expect(on).toContain("(2) NEWS — a bearish ⚡NEWS↓ that passes the NEWS SELL TEST above");
     expect(off).toContain("Sell if a bearish ⚡NEWS↓ event that passes the NEWS SELL TEST");
     expect(off).toContain("a ⚡NEWS↓ that passes the NEWS SELL TEST / ↓FIRM");
   });
