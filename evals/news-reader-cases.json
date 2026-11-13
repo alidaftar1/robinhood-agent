@@ -1,5 +1,5 @@
 {
- "_note": "Frozen Finnhub headlines (top 15 by recency, 200-char summaries) captured 2026-11-04, labeled by hand. Labels and reasons in each case; msft-injection is synthetic. See evals/news-reader.test.ts. fis-bearish/dg-bearish and the recap cases were added 2026-11-05.",
+ "_note": "Frozen Finnhub headlines (top 15 by recency, 200-char summaries) captured 2026-11-04, labeled by hand. Labels and reasons in each case; msft-injection is synthetic. See evals/news-reader.test.ts. fis-bearish/dg-bearish and the recap cases were added 2026-11-05. googl-adsense-ag-opinion and nvda-ceo-resigns added 2026-11-13 (reconstructed point-in-time from Finnhub: GOOGL as of 14:00Z 11-13, NVDA as of 15:30Z 11-12).",
  "extraction": [
   {
    "id": "lly-quiet",
@@ -2593,6 +2593,182 @@
     "direction": "-"
    },
    "why": "FTC lawsuit over allegedly overcharging shoppers (2026-11-04)"
+  },
+  {
+   "id": "googl-adsense-ag-opinion",
+   "symbol": "GOOGL",
+   "companyName": "Alphabet Inc.",
+   "headlines": [
+    {
+     "headline": "Is Tesla Stock Worth Buying Now on Robotaxi & FSD Progress?",
+     "date": "2026-11-13",
+     "summary": "Tesla's robotaxi expansion and FSD adoption signal progress, but regulatory hurdles and rising costs raise questions about whether TSLA stock is a buy now."
+    },
+    {
+     "headline": "Google's Latest Cloud Bet Comes Down to Speed",
+     "date": "2026-11-13",
+     "summary": "More usage could help justify Alphabet's rising infrastructure bill."
+    },
+    {
+     "headline": "Berkshire Hathaway’s Greg Abel Bought Back a Record $9.6 Billion of Stock Last Quarter. Here’s Why That Pace Might Not Continue.",
+     "date": "2026-11-13",
+     "summary": "Despite solid earnings and ample cash, Abel could halt share repurchases this month."
+    },
+    {
+     "headline": "What You’ll Actually Own If You Buy Into the Anthropic IPO",
+     "date": "2026-11-13",
+     "summary": "Anthropic shares come with a capped vote, a trust that picks the board, and a single share that outvotes everyone else. Before you chase the ticker, find out what your money actually buys and which da"
+    },
+    {
+     "headline": "This Week In Cloud AI - Data Center Boom Fueled By AI Advancements",
+     "date": "2026-11-13",
+     "summary": "The global data center accelerators market is experiencing substantial growth, projected to increase from $119.4 billion in 2025 to $392.9 billion by 2031, driven by a 23.4% compound annual growth rat"
+    },
+    {
+     "headline": "Bill Ackman Explicitly Avoids Micron’s Volatile Cash Flows Focusing Here Instead",
+     "date": "2026-11-13",
+     "summary": "Ackman passed on Micron's boom-and-bust memory cycle and bought a stock he calls predictable. But a spending surge is straining that promise, and the shares still lag the market. Can the cash flows he"
+    },
+    {
+     "headline": "Anthropic IPO: Buy Day One Or Wait?",
+     "date": "2026-11-13",
+     "summary": "More on the Anthropic IPO: our Anthropic IPO storyline page collects our pieces on it."
+    },
+    {
+     "headline": "Nvidia Is 6.1% Of Your S&P 500 Fund. What Is Your Number?",
+     "date": "2026-11-13",
+     "summary": "More on the AI trade: our AI storyline page collects our pieces on AI stocks."
+    },
+    {
+     "headline": "Social Buzz: Wallstreetbets Stocks Mixed Pre-Bell Friday; Nvidia to Advance, Microsoft to Decline",
+     "date": "2026-11-13",
+     "summary": "The most-talked-about stocks in the Reddit subforum Wallstreetbets were mixed hours before Friday's"
+    },
+    {
+     "headline": "Google faces renewed challenge over $1.66bn advertising fine",
+     "date": "2026-11-13",
+     "summary": "Advocate General Juliane Kokott has advised the Court of Justice of the EU to set aside the General Court's September 2024 judgment and return the case for a new ruling."
+    },
+    {
+     "headline": "State Street Comm Services SPDR (XLC) Adds Meta and Alphabet on Nov. 11",
+     "date": "2026-11-13",
+     "summary": "The fund bought $84.3 million of stock, lifting 21 positions and trimming none, with Meta and both Alphabet share classes the largest additions."
+    },
+    {
+     "headline": "Goldman Sachs S&P 500 Premium Income (GPIX) Adds Alphabet and Apple on Nov. 11",
+     "date": "2026-11-13",
+     "summary": "The fund bought $86.9 million of stock and sold nothing, lifting 117 positions."
+    },
+    {
+     "headline": "SPDR Portfolio S&P 500 Growth (SPYG) Buys $11.2 Million More NVDA on Nov. 11",
+     "date": "2026-11-13",
+     "summary": "The fund added $92.9 million in net new positions, led by a $11.2 million purchase of NVIDIA, with all 152 positions increased and none decreased."
+    },
+    {
+     "headline": "iShares MSCI ACWI (ACWI) Adds Apple and Nvidia on Nov. 11",
+     "date": "2026-11-13",
+     "summary": "The $32.70 billion fund bought $239.0 million in stocks, increasing 549 positions and trimming none."
+    },
+    {
+     "headline": "State Street SPDR Portfolio S&P 500 (SPYM) Adds Apple and Nvidia on Wednesday",
+     "date": "2026-11-13",
+     "summary": "The fund bought $326.0 million of stock, lifting 501 positions and trimming none, with Apple and Nvidia its largest additions."
+    }
+   ],
+   "expect": {
+    "material": "either",
+    "forbid": [
+     "-"
+    ]
+   },
+   "why": "2026-11-13: sold GOOGL on this. 'Renewed challenge over $1.66bn advertising fine' = a NON-BINDING Advocate General opinion (2026-11-12) on the 2019 AdSense fine that the General Court ANNULLED in 2024; she proposes a referral back and a reduced fine; ruling 2026-27. Not new, not final, and ~0.05% of Alphabet's value. Must not be bearish."
+  },
+  {
+   "id": "nvda-ceo-resigns",
+   "symbol": "NVDA",
+   "companyName": "NVIDIA Corporation",
+   "headlines": [
+    {
+     "headline": "Former Nvidia CEO Jensen Huang Had An Intimate Relationship With A Second Employee, Sources Say",
+     "date": "2026-11-12",
+     "summary": "-Reuters Exclusive"
+    },
+    {
+     "headline": "Warren Buffett Said ‘We Can Afford to Lose Money’ But Not ‘Even a Shred of Reputation’ — Nvidia’s Board Just Showed What That Means With Jensen Huang’s Exit",
+     "date": "2026-11-12",
+     "summary": "Nvidia&#39;s board backed Jensen Huang, then accepted his resignation 3 days later. Warren Buffett&#39;s decades-old reputation rule shows what was at stake."
+    },
+    {
+     "headline": "Nvidia Crisis – Visionary Huang’s Resignation Puts America's AI Advantage at Risk; Gold Falls Below $4000",
+     "date": "2026-11-12",
+     "summary": "America’s AI Advantage At Risk\n\n\n\nPlease click here for an enlarged weekly chart of NVIDIA Corp (NASDAQ:NVDA).\n\n\n\nNote the following:\n\n\n\n\nAt this time, it is critical for investors to remember our pri"
+    },
+    {
+     "headline": "Jensen Huang Is Out At Nvidia: 4 Private Equity Giants with Big Bets on Its AI Infrastructure Future",
+     "date": "2026-11-12",
+     "summary": "Jensen Huang&#39;s departure from Nvidia is raising questions about the future of the AI and the private equity giants supporting it."
+    },
+    {
+     "headline": "Why Is Qualcomm Stock Surging on Thursday?",
+     "date": "2026-11-12",
+     "summary": "Find out why Qualcomm (NASDAQ: QCOM) stock is rising on Thursday as capital rotates out of NVIDIA (NASDAQ: NVDA) into competing AI semiconductor stocks."
+    },
+    {
+     "headline": "Super Micro Stock Plunges Amid DOJ Probe Rumors",
+     "date": "2026-11-12",
+     "summary": "Super Micro Computer shares are sliding Thursday after a Semafor report said the company could face a Justice Department probe."
+    },
+    {
+     "headline": "What Is Going on With Apple Stock on Thursday?",
+     "date": "2026-11-12",
+     "summary": "Apple (AAPL) stock rose nearly 1% Thursday as its $5 trillion valuation, $2,000 iPhone Duo pricing power, and expanding AI plans widened its lead over NVIDIA."
+    },
+    {
+     "headline": "Can Nvidia Pull A Tim Cook? Apple's Post-Jobs Performance Offers Clues",
+     "date": "2026-11-12",
+     "summary": "Nvidia Jensen Huang resigns. Apple&#39;s experience after Steve Jobs left offers investors a lesson ahead of Nvidia&#39;s next earnings."
+    },
+    {
+     "headline": "Melius Research Downgrades NVIDIA to Hold, Lowers Price Target to $185",
+     "date": "2026-11-12",
+     "summary": "Melius Research  analyst Ben Reitzes   downgrades NVIDIA (NASDAQ:NVDA) from Buy to Hold and lowers the price target from $315 to $185."
+    },
+    {
+     "headline": "Nasdaq 100 Turns Green Despite Nvidia's 5% Drop on Huang Exit: Stock Market Today",
+     "date": "2026-11-12",
+     "summary": "The Nasdaq 100 turned green as Nvidia recovered from a 14.3% plunge on Jensen Huang&#39;s exit, while AMD and Broadcom rallied and Treasury yields jumped."
+    },
+    {
+     "headline": "DA Davidson Maintains Buy on NVIDIA, Lowers Price Target to $200",
+     "date": "2026-11-12",
+     "summary": "DA Davidson  analyst Gil Luria   maintains NVIDIA (NASDAQ:NVDA) with a Buy and lowers the price target from $300 to $200."
+    },
+    {
+     "headline": "Nvidia ETFs Have a New Problem: Life After Jensen Huang",
+     "date": "2026-11-12",
+     "summary": "Nvidia ETF holdings are under scrutiny now that Jensen Huang is out of the company. Here&#39;s what it means for SMH, QQQ and VGT."
+    },
+    {
+     "headline": "Nvidia: Jensen's Resignation Is Worse Than It Looks",
+     "date": "2026-11-12",
+     "summary": "Nvidia Corporation is a hold; it faces heightened uncertainty following CEO Jensen Huang's abrupt resignation. Read more on NVDA stock here."
+    },
+    {
+     "headline": "Wall Street Lunch: Nvidia Tumbles As CEO Huang Quits Amid Scandal",
+     "date": "2026-11-12",
+     "summary": "Our top story so far, the Jensen Huang era at Nvidia (NVDA) is over after 33 years."
+    },
+    {
+     "headline": "Jensen Huang resigns as Nvidia CEO",
+     "date": "2026-11-12",
+     "summary": "Nvidia (NVDA) CEO Jensen Huang has resigned. Yahoo Finance takes a closer look at this developing story."
+    }
+   ],
+   "expect": {
+    "material": true,
+    "direction": "-"
+   },
+   "why": "2026-11-12 control: Jensen Huang resigned as CEO effective immediately (SEC 8-K), shares -11%. A genuinely material bearish executive change must still come through after any materiality bar."
   }
  ],
  "identity": [
