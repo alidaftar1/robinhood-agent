@@ -270,6 +270,15 @@ export async function GET(request: Request) {
       getRecentSells(today),
     ]);
     console.log("MARKET_DATA_OK", { stocks: marketData.stocks.length });
+    // An empty analyst map is ambiguous — a quiet day or a dead feed. Recorded on EVERY run where the
+    // feed failed, not only when the sell rail has exits to bound (its own note is gated on that), so
+    // a bad key or a spent quota shows up in the report the first morning instead of as silence.
+    if (marketData.analystFeedStatus !== "ok") {
+      contextWarnings.push(
+        `⚠️ Analyst feed unavailable (FMP: ${marketData.analystFeedStatus}) — no ↑FIRM/↓FIRM tags this run, and the sell rail cannot verify downgrade exits. ` +
+        `If this repeats, check the FMP key, plan and quota.`,
+      );
+    }
     if (agenticBalance) {
       console.log("AGENTIC_BALANCE_OK", { buyingPower: agenticBalance.buyingPower, totalValue: agenticBalance.totalValue });
     } else {

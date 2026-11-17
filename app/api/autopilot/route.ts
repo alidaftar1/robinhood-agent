@@ -685,6 +685,11 @@ export async function GET(request: Request) {
     issues.push(`REPORT CONTRADICTS ITSELF (${c.id}) — ${c.detail} Fix the report before acting on it.`);
   }
 
+  // The trade run records a dead analyst feed on every run (app/api/trade). Email-only: it needs the
+  // owner's FMP account, not a code fix, so it must not dispatch the cloud fixer.
+  const analystFeedNote = (todayRun?.buySizingAdjustments ?? []).find((n) => n.startsWith("⚠️ Analyst feed unavailable"));
+  if (analystFeedNote) softIssues.push(analystFeedNote);
+
   const allIssues = [...issues, ...softIssues];
   const needsAttention = allIssues.length > 0 || seriousConcerns.length > 0 || seriousReconcile.length > 0;
   const statusLabel = needsAttention ? "⚠️ NEEDS ATTENTION" : "✅ HEALTHY";

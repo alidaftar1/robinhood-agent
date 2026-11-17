@@ -90,19 +90,28 @@ function parsePrevPT(title: string): number | undefined {
   return m ? parseFloat(m[1]) : undefined;
 }
 
-export async function getAnalystRatings(): Promise<Record<string, AnalystRating[]>> {
+/** Why the feed returned what it did. Every failure used to collapse to {} — indistinguishable from
+ *  "no analyst actions today" — so a dead key or a quota hit looked like a quiet market. 2026-11-17:
+ *  the sell rail recorded 0 analyst symbols on 11-03 and 11-16 and nothing said why. */
+export type AnalystFeedStatus = "ok" | "no-key" | `http-${number}` | "bad-shape" | "error";
+
+export async function fetchAnalystRatings(): Promise<{ ratings: Record<string, AnalystRating[]>; status: AnalystFeedStatus }> {
+  const fail = (status: AnalystFeedStatus) => {
+    console.error("ANALYST_FEED_FAILED", { status });
+    return { ratings: {}, status };
+  };
   const apiKey = process.env.FMP_API_KEY;
-  if (!apiKey) return {};
+  if (!apiKey) return fail("no-key");
 
   try {
     const res = await fetch(
       `https://financialmodelingprep.com/stable/price-target-latest-news?apikey=${apiKey}`,
       { signal: AbortSignal.timeout(8000) }
     );
-    if (!res.ok) return {};
+    if (!res.ok) return fail(`http-${res.status}`);
 
     const data = await res.json() as FMPPriceTargetItem[];
-    if (!Array.isArray(data)) return {};
+    if (!Array.isArray(data)) return fail("bad-shape");
 
     const symbolSet = new Set(SP500_UNIVERSE);
     const cutoff = new Date(Date.now() - ANALYST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
@@ -138,8 +147,12 @@ export async function getAnalystRatings(): Promise<Record<string, AnalystRating[
       (result[item.symbol] ??= []).push(rating);
     }
 
-    return result;
+    return { ratings: result, status: "ok" };
   } catch {
-    return {};
+    return fail("error");
   }
+}
+
+export async function getAnalystRatings(): Promise<Record<string, AnalystRating[]>> {
+  return (await fetchAnalystRatings()).ratings;
 }

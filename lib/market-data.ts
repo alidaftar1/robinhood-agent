@@ -4,7 +4,7 @@ import { STOCK_INDUSTRY } from "./stock-industry";
 import { formatNewsTag } from "./news-tag";
 import { formatAnalystTag, ANALYST_LOOKBACK_DAYS } from "./analyst-tag";
 import { getInsiderBuys, type InsiderBuy } from "./insider";
-import { getAnalystRatings, type AnalystRating } from "./analyst";
+import { fetchAnalystRatings, type AnalystRating, type AnalystFeedStatus } from "./analyst";
 import { fetchUpcomingEarnings, formatPostEarnings, formatEarningsRecord, IMMINENT_EARNINGS_DAYS } from "./earnings";
 import { INFLUENCER_BUY_FLOOR } from "./influencer-signals";
 
@@ -180,15 +180,17 @@ export interface MarketData {
   fetchedAt: string;
   insiderBuys: Record<string, InsiderBuy[]>;
   analystRatings: Record<string, AnalystRating[]>;
+  /** Why analystRatings is what it is — an empty map is ambiguous on its own (lib/analyst). */
+  analystFeedStatus: AnalystFeedStatus;
   spyContext: { change1d: number; change30d: number; regime: { riskOn: boolean; spy: number; ma: number } | null } | null;
 }
 
 export async function getMarketData(): Promise<MarketData> {
-  const [priceResult, headlines, insiderBuys, analystRatings, upcomingEarnings] = await Promise.all([
+  const [priceResult, headlines, insiderBuys, analystFeed, upcomingEarnings] = await Promise.all([
     getPriceData(),
     getNewsHeadlines(),
     getInsiderBuys(),
-    getAnalystRatings(),
+    fetchAnalystRatings(),
     fetchUpcomingEarnings(30),
   ]);
   // Backstop earningsDate from FMP. Yahoo's chart API no longer returns
@@ -205,7 +207,8 @@ export async function getMarketData(): Promise<MarketData> {
     headlines,
     fetchedAt: new Date().toISOString(),
     insiderBuys,
-    analystRatings,
+    analystRatings: analystFeed.ratings,
+    analystFeedStatus: analystFeed.status,
     spyContext: priceResult.spyContext,
   };
 }

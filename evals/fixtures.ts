@@ -120,6 +120,7 @@ export function buildMarketData(
     ],
     fetchedAt: "2026-06-08T16:00:00.000Z",
     insiderBuys,
+    analystFeedStatus: "ok",
     analystRatings,
     spyContext: SPY_MOCK,
   };
