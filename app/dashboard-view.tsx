@@ -843,7 +843,7 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                   {/* HOLD means THE AGENT did nothing on this date. A run carrying only trades the
                       owner filled on an earlier day is still a hold for the agent, and saying
                       otherwise credits it with activity it had no part in. */}
-                  {pv && (run.trades ?? []).filter((t) => (t.tradedOn ?? run.date) === run.date && t.actor !== "human").length === 0 && (
+                  {pv && (run.trades ?? []).filter((t) => (t.tradedOn ?? run.date) === run.date && t.actor !== "human" && t.actor !== "dividend").length === 0 && (
                     <span style={{ ...s.badge, color: "#888", borderColor: "#2a2a2a" }}>HOLD</span>
                   )}
                   {run.spyPrice && (
@@ -885,6 +885,9 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
                             the strategy's track record. */}
                         {t.actor === "human" && (
                           <span style={{ fontSize: 10, opacity: 0.8 }} title="Placed manually by you, not by the agent">👤 manual</span>
+                        )}
+                        {t.actor === "dividend" && (
+                          <span style={{ fontSize: 10, opacity: 0.8 }} title="Robinhood's automatic dividend reinvestment — not placed by you or the agent">💰 dividend reinvested</span>
                         )}
                       </span>
                     ))}

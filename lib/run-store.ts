@@ -34,9 +34,14 @@ export interface TradeSnapshot {
    *
    * "agent"  — placed by /api/trade, /api/drop-check or /api/earnings-exit.
    * "human"  — discovered at the broker by planCapture with no agent order behind it.
+   * "dividend" — discovered the same way, but the broker marks it placed_agent "drip": Robinhood's
+   *            automatic dividend reinvestment. Neither the agent's trade nor the owner's. 2026-11-17:
+   *            a $0.15 AAPL reinvestment was recorded as the owner's buy and shown on the dashboard.
    * absent   — written before this field existed. UNKNOWN, not "agent": do not default it.
+   *
+   * To ask "did the agent place this?" use notAgentPlaced(), never `actor !== "human"`.
    */
-  actor?: "agent" | "human";
+  actor?: "agent" | "human" | "dividend";
   /** The date the fill actually happened, when the broker told us — NOT the run's date.
    *
    *  A run snapshots at 07:30, so a trade made during a session falls between that snapshot and the
@@ -1438,9 +1443,24 @@ export function buildInferredSells(
 /** A filled order as /api/verify reads it back from the broker. */
 export type LiveOrder = {
   symbol: string; side: string; quantity: string; avgPrice: string; state: string; createdAt?: string;
+  /** The broker's placed_agent, copied unchanged: "agentic" (this agent), "user" (the owner), "drip"
+   *  (automatic dividend reinvestment), or absent on records from before it was requested. */
+  placedBy?: string;
   /** Full created_at timestamp, transcribed by an LLM — a HINT input only, never a gate. */
   createdAtTs?: string;
 };
+
+/** Who a captured broker fill belongs to. Only the broker's own "drip" mark makes it a dividend
+ *  reinvestment; anything else — including an absent or unrecognised mark — stays "human", as before. */
+export function actorForFill(o: LiveOrder): "human" | "dividend" {
+  return String(o.placedBy ?? "").trim().toLowerCase() === "drip" ? "dividend" : "human";
+}
+
+/** True when the agent did NOT place this trade (the owner, or a dividend reinvestment). An absent
+ *  actor is UNKNOWN and returns false, matching the old `actor !== "human"` checks it replaces. */
+export function notAgentPlaced(t: { actor?: string }): boolean {
+  return t.actor === "human" || t.actor === "dividend";
+}
 
 /** A run cannot place an order later than its start + the function's hard maximum (5 min) + slack. */
 export const RUN_MAX_MS = 6 * 60_000;
@@ -1694,7 +1714,7 @@ export function planCapture(
       used.add(o);
       record.push({
         symbol, side: o.side as "buy" | "sell", quantity: (qty.get(o) ?? 0).toFixed(6),
-        avgPrice: parseFloat(o.avgPrice).toFixed(2), state: "filled", actor: "human",
+        avgPrice: parseFloat(o.avgPrice).toFixed(2), state: "filled", actor: actorForFill(o),
         ...(o.createdAt ? { tradedOn: o.createdAt } : {}),
         strategy: o.side === "buy" ? buySleeve(symbol) : inferSellStrategy(symbol, heldRun.influencerPositions, heldRun.trades ?? []),
       });
@@ -1718,7 +1738,7 @@ export function planCapture(
     }
     used.add(hit);
     record.push({
-      ...est, avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled", actor: "human",
+      ...est, avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled", actor: actorForFill(hit),
       ...(hit.createdAt ? { tradedOn: hit.createdAt } : {}),
     });
     supersede.push(...inferredSells.filter(t => t.symbol === est.symbol));
@@ -1737,7 +1757,7 @@ export function planCapture(
     used.add(hit);
     record.push({
       symbol: u.symbol, side: "buy", quantity: u.excessQty.toFixed(6),
-      avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled", actor: "human",
+      avgPrice: parseFloat(hit.avgPrice).toFixed(2), state: "filled", actor: actorForFill(hit),
       ...(hit.createdAt ? { tradedOn: hit.createdAt } : {}),
       strategy: buySleeve(u.symbol),
     });
@@ -1820,7 +1840,7 @@ export function applySellTagBackfill(
  */
 export function applyActorTag(
   run: TradeRun,
-  tags: Array<{ symbol: string; side: string; actor?: "agent" | "human"; tradedOn?: string }>,
+  tags: Array<{ symbol: string; side: string; actor?: "agent" | "human" | "dividend"; tradedOn?: string }>,
   /**
    * Replace a value that is already recorded. Off by default, because a later guess must not
    * override what a writer knew first-hand.

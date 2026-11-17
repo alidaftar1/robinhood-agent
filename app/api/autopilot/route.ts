@@ -224,7 +224,7 @@ export async function GET(request: Request) {
   {
     const cap = (verifyResult as { capture?: { recorded?: number; reconciles?: boolean; trades?: string[]; residual?: unknown[] } } | null)?.capture;
     if (cap?.recorded) {
-      autoFixed.push(`Recorded ${cap.recorded} of your own fill(s) from the broker: ${(cap.trades ?? []).join(", ")}.`);
+      autoFixed.push(`Recorded ${cap.recorded} fill(s) the agent did not place, from the broker: ${(cap.trades ?? []).join(", ")}.`);
       // Refetch so the auto-repair phase below sees the captured trades and does not re-derive a
       // discrepancy that no longer exists.
       runs = await getRuns(30);
@@ -367,7 +367,7 @@ export async function GET(request: Request) {
   // A fill made during a session lands on the NEXT run, because runs snapshot at 07:30. Correct for
   // the return window, misleading as a date — so say so when the broker told us it differs.
   const whenFilled = (t: { tradedOn?: string; actor?: string }) =>
-    (t.actor === "human" ? " 👤manual" : "")
+    (t.actor === "human" ? " 👤manual" : t.actor === "dividend" ? " 💰dividend reinvested" : "")
     + (t.tradedOn && t.tradedOn !== today ? ` (filled ${t.tradedOn})` : "");
 
   // ─── Derive display data from (possibly repaired) run ────────────────────────

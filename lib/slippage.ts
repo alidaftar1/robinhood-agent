@@ -61,7 +61,7 @@ export function collectFills(runs: TradeRun[]): Fill[] {
       // left to fall out of the missing-refPrice check below: that is an accident of the owner not
       // having a decision price, and the day someone stamps one it would silently start polluting
       // the one measurement that resolves in weeks.
-      if (t.actor === "human") continue;
+      if (t.actor === "human" || t.actor === "dividend") continue;   // not an agent decision
       const bps = slippageBps(t);
       if (bps == null) continue;
       out.push({ date: r.date, symbol: t.symbol, side: t.side, slippageBps: bps });

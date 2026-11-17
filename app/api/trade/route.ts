@@ -7,7 +7,7 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildV1AnalysisPrompt, SP500_UNIVERSE, maxPositionDollars, isMainRebalanceDay, mainBuysOpen, type PortfolioContext, STALE_DAYS, staleReasonOf } from "@/lib/strategy";
 import { getMarketData, fetchCurrentPrice, fetchMomentum, buildV1Shortlist, formatV1Shortlist, enrichPriceMap, formatMarketContext, STOCK_SECTOR, industryOf } from "@/lib/market-data";
 import { getQualityScores, withBudget, QUALITY_CALL_BUDGET_MS } from "@/lib/quality";
-import { saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
+import { notAgentPlaced, saveRun, updateLatestRun, getLatestRun, getRuns, getPreviousDayRun, computeDailyReturn, buildInferredSells, findUnpriceableTrades, computeSleeveReturns, sleeveReturnsForStorage, mergeRunsByDate, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { sortOwnerBuys, confirmMisfits, ownerBuySectorNotes } from "@/lib/owner-buys";
 import { getInfluencerSignals, formatInfluencerSignals, isInfluencerDowntrend, isSleeveEligible, netScores, buyChannelCounts, sleeveBuyQualifies, MIN_BUY_CHANNELS, INFLUENCER_BUY_FLOOR, toMomentumSignal, type MomentumSignal } from "@/lib/influencer-signals";
 import { applyRebuyCooldown, findPostSaleCatalyst, type CooldownExit } from "@/lib/rebuy-cooldown";
@@ -581,7 +581,7 @@ export async function GET(request: Request) {
       const firstSort = sortOwnerBuys({
         heldNow: (portfolioCtx?.positions ?? []).map(p => p.symbol),
         prevHeld: (previousRun.positions ?? []).map(p => p.symbol),
-        prevAgentBuys: (previousRun.trades ?? []).filter(t => t.side === "buy" && t.actor !== "human").map(t => t.symbol),
+        prevAgentBuys: (previousRun.trades ?? []).filter(t => t.side === "buy" && !notAgentPlaced(t)).map(t => t.symbol),
         onMainList: quality ? (sym) => v1ShortlistSet.has(sym) || v1Retained.some(r => r.symbol === sym) : null,
         // In the universe but unpriced / no momentum this morning: a data gap, not a verdict.
         // v1Buy is in momentum order; its first TARGET_MAIN_POSITIONS are the book's strongest names.

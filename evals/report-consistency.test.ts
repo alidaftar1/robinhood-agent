@@ -29,6 +29,13 @@ describe("the report is checked against itself", () => {
     })).toContain("recorded-and-uncaptured");
   });
 
+  test("2026-11-17: the new capture wording (dividend reinvestments included) still feeds the check", () => {
+    expect(ids({ ...base,
+      autoFixed: ["Recorded 1 fill(s) the agent did not place, from the broker: buy AAPL x0.000424 @$353.76[influencer] (dividend reinvestment)."],
+      issues: ["Live verify: Uncaptured order: buy AAPL ×0.000424 @$353.76 (filled)"],
+    })).toContain("recorded-and-uncaptured");
+  });
+
   test("...matched on SYMBOL + SIDE + QUANTITY, never the symbol alone", () => {
     // Registry #1: two lists joined on vibes. A recorded BUY does not explain an uncaptured SELL,
     // and a different symbol explains nothing.

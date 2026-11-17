@@ -497,6 +497,20 @@ describe("planCapture", () => {
     expect(p.reconciles).toBe(true);
   });
 
+  test("2026-11-17: a broker-marked dividend reinvestment is recorded as 'dividend', not as the owner's buy", () => {
+    // Robinhood bought 0.000424 AAPL ($0.15) with the AAPL dividend, order placed_agent "drip". It was
+    // recorded actor "human" and the dashboard showed it as the owner's purchase.
+    const latest = { positions: [pos("KO", "0.637741", "85.86"), pos("APA", "11.787693", "43.52"), pos("HWM", "0.5", "227.80")],
+                     trades: [] as TradeSnapshot[] };
+    const actorFor = (placedBy?: string) =>
+      planCapture(held, latest, [order("buy", "HWM", "0.50", "227.80", placedBy === undefined ? {} : { placedBy })], T).record.map(t => t.actor);
+    expect(actorFor("drip")).toEqual(["dividend"]);
+    expect(actorFor("DRIP ")).toEqual(["dividend"]);   // the mark is LLM-transcribed: tolerate case/space
+    expect(actorFor("user")).toEqual(["human"]);
+    expect(actorFor(undefined)).toEqual(["human"]);   // CONTROL: no mark → the old default, unchanged
+    expect(actorFor("agentic")).toEqual(["human"]);   // an agent order reaching capture is not relabelled here
+  });
+
   test("a PARTIAL sale is captured at the exact shortfall", () => {
     const latest = { positions: [pos("KO", "0.637741", "85.86"), pos("APA", "6", "43.52")], trades: [] as TradeSnapshot[] };
     const p = planCapture(held, latest, [order("sell", "APA", "5.79", "44.14")], T);

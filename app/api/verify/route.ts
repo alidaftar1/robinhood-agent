@@ -82,8 +82,8 @@ Use instrument_symbol, quantity, average_buy_price. If none, output LIVE_POSITIO
     haiku(
       anthropic, accessToken,
       `Call get_equity_orders for account ${ACCOUNT} to get the most recent orders. Output exactly one line:
-LIVE_ORDERS:[{"symbol":"XX","side":"buy|sell","quantity":"X.XX","avgPrice":"XX.XX","state":"filled|cancelled|pending","createdAt":"YYYY-MM-DD","createdAtTs":"<created_at exactly as returned>"}]
-Include only the 20 most recent orders. Use instrument_symbol, side, quantity, average_price, state fields. For createdAt, use the date portion of created_at (first 10 chars). For createdAtTs, copy the full created_at value unchanged. Output nothing else.`,
+LIVE_ORDERS:[{"symbol":"XX","side":"buy|sell","quantity":"X.XX","avgPrice":"XX.XX","state":"filled|cancelled|pending","createdAt":"YYYY-MM-DD","createdAtTs":"<created_at exactly as returned>","placedBy":"<placed_agent exactly as returned>"}]
+Include only the 20 most recent orders. Use instrument_symbol, side, quantity, average_price, state fields. For createdAt, use the date portion of created_at (first 10 chars). For createdAtTs, copy the full created_at value unchanged. For placedBy, copy placed_agent unchanged (empty string if absent). Output nothing else.`,
       `Fetch recent orders for account ${ACCOUNT}.`,
       // 2048, not 1024: with createdAtTs, 20 orders run ~1,100-1,300 tokens. A truncated line fails
       // JSON.parse → liveOrders null → NO uncaptured-order checks and NO capture, silently.
@@ -344,7 +344,7 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
           // reconciles=false means something is STILL unexplained — the day is not clean just
           // because records were written, and the caller must keep reporting it.
           reconciles: plan.reconciles, residual: plan.residual,
-          trades: plan.record.map(t => `${t.side} ${t.symbol} x${t.quantity} @$${t.avgPrice}[${t.strategy ?? "?"}]`),
+          trades: plan.record.map(t => `${t.side} ${t.symbol} x${t.quantity} @$${t.avgPrice}[${t.strategy ?? "?"}]${t.actor === "dividend" ? " (dividend reinvestment)" : " (yours)"}`),
           dailyReturn: agentic?.dailyReturn ?? null,
         };
       }

@@ -319,7 +319,7 @@ export async function GET(request: Request) {
   }
 
   // Stamp provenance on trades written before `actor` existed. Format:
-  //   ?tagActor=DATE:SYMBOL:SIDE:agent|human[:YYYY-MM-DD][,...]   (actor "-" = date only)
+  //   ?tagActor=DATE:SYMBOL:SIDE:agent|human|dividend[:YYYY-MM-DD][,...]   (actor "-" = date only)
   // Needed because provenance is NOT recoverable from the record — a human fill and an agent fill
   // are both state:"filled" with no refPrice — so the only correct source is someone who knows.
   // Never overwrites a tag a writer set first-hand; it only fills gaps.
@@ -328,16 +328,16 @@ export async function GET(request: Request) {
     // DATE:SYMBOL:SIDE:actor[:filledOn][,...] — filledOn optional, and `actor` may be "-" to set
     // only the date on a trade whose provenance is already recorded.
     const [date, ...rest] = tagActor.split(":");
-    const tags: Array<{ symbol: string; side: string; actor?: "agent" | "human"; tradedOn?: string }> = [];
+    const tags: Array<{ symbol: string; side: string; actor?: "agent" | "human" | "dividend"; tradedOn?: string }> = [];
     for (const part of rest.join(":").split(",")) {
       const [symbol, side, actor, filledOn] = part.split(":");
       if (!symbol || (side !== "buy" && side !== "sell")) continue;
-      const a = actor === "agent" || actor === "human" ? actor : undefined;
+      const a = actor === "agent" || actor === "human" || actor === "dividend" ? actor : undefined;
       const d = /^\d{4}-\d{2}-\d{2}$/.test(filledOn ?? "") ? filledOn : undefined;
       if (a || d) tags.push({ symbol, side, ...(a ? { actor: a } : {}), ...(d ? { tradedOn: d } : {}) });
     }
     if (!date || tags.length === 0) {
-      results.tagActor = "bad format — use DATE:SYMBOL:SIDE:agent|human[:YYYY-MM-DD][,...]";
+      results.tagActor = "bad format — use DATE:SYMBOL:SIDE:agent|human|dividend[:YYYY-MM-DD][,...]";
     } else {
       let changed = { actors: 0, dates: 0 };
       // &force=1 replaces a value already recorded — needed when a WRITER's own tag is a false
