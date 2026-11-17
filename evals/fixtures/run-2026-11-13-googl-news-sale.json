@@ -1,0 +1,128 @@
+{
+ "timestamp": "2026-11-13T15:30:48.319Z",
+ "date": "2026-11-13",
+ "summary": "## Analysis\n\n### Main Book Review\n\n**Today is a non-rebalance day** — main-book buys are closed. I need to check only for genuine risk sells.\n\n**Checking each holding for risk-sell triggers:**\n\n- **LLY** ◆HELD: ⚡NEWS↑ (China approval, new plant). No sell reason. Hold.\n- **MU** ◆HELD: ⚡NEWS↑ today (\"Micron highlights AI leadership\"). No sell reason. Hold.\n- **REGN** ◆HELD: Still on shortlist, positive momentum. No sell reason. Hold.\n- **BE** ◆HELD: Still on shortlist, positive momentum. No sell reason. Hold.\n- **DELL** ◆HELD: Still on shortlist, ⚠EARN 2026-11-24 (11 days away — not imminent ≤3 days). Has 📈EARN-RECORD beat 4/4 avg +28% ✓SERIAL. No sell reason today. Hold.\n- **PM** ◆HELD: JP Morgan reinstated Neutral at $200 — that's a neutral rating, not a downgrade/PT cut. Still on shortlist. No sell reason.\n\nNo main-book risk sells triggered. Main book is unchanged pending rebalance.\n\n### Influencer Sleeve Review\n\n**Current influencer holdings:**\n- **AAPL** × 0.572246, worth ~$205, held 6d, +2.4% since entry → up, inside 25 days, NOT stale. Keep.\n- **GOOGL** × 1.000000, worth ~$296, held 9d, +4.8% since entry → up, inside 25 days, NOT stale by either clock. BUT: ⚡NEWS↓ today \"Google faces renewed challenge over $1.66bn advertising fine\" — this is a material bearish event (litigation/regulatory). This warrants consideration of a trim/exit. The fine is €1.66bn from the EU ad tech case; it's a real regulatory headwind. However, GOOGL is +4.8% since entry and the news is an ongoing legal matter rather than a sudden new development that breaks the thesis. I'll lean hold — the influencer sleeve's −10% stop protects downside, and the position is not at that threshold. Actually, re-reading: the ⚡NEWS↓ is listed as \"today\" and the reason code says \"a bearish ⚡NEWS↓ material event (lawsuit/cut guidance/deal collapse/regulatory action), that is a real reason to trim/exit — name the event in your thesis.\" This is a real EU regulatory fine — I should exit this influencer position. The fine is substantial (€1.66bn) and is a fresh, material regulatory action cited today.\n\n**New influencer buys:**\n\nQualifying picks (net ≥ 3, ≥ 2 channels, no ⛔DOWNTREND):\n- **NVDA**: ⛔DOWNTREND (5d: -14%, hi: -22%), PLUS ⚡NEWS↓ (Jensen Huang resigned as CEO — extremely material). Hard reject.\n- **GOOGL**: ⚠1 CHANNEL — NOT BUYABLE. Disqualified.\n- **PLTR**: net=4, 2 channels, no ⛔DOWNTREND tag, 5d: +3%, hi: -7%. Both thresholds clear (5d better than -8%, hi better than -15%). No imminent earnings. **QUALIFIES.**\n- **ADBE**: ⚠1 CHANNEL — NOT BUYABLE. Disqualified.\n- **EL**: net=2 < 3 floor. Disqualified.\n\n**PLTR** is the only qualifying pick. Net=4, 2 channels, no downtrend tag, no imminent earnings. Buy.\n\n### Budget Calculation\n\nSelling GOOGL (influencer): proceeds = ~$296 (1.0 share × $295.64 ≈ $296)\n\nBudget = $18.45 (buying power) + $296 (GOOGL sale proceeds) = ~$314.45\n\nPLTR buy: $296 (keeping within cap of $439, reasonable sleeve sizing ~25% of ~$2,198 portfolio = ~$550 target but limited by budget; I'll allocate most of the freed proceeds). I'll size at $296 to deploy the proceeds meaningfully while staying within the $439 cap and the total budget.\n\nSum of buys: $296 ≤ $314.45 ✓\n\nTRADE_DECISION:{\"thesis\":\"MAIN BOOK UNCHANGED — no risk-sell triggers today (non-rebalance day, no ↓FIRM, no bearish ⚡NEWS↓ on main holdings; LLY, MU, DELL, REGN, BE, PM all retain valid shortlist standing and positive catalysts). INFLUENCER SLEEVE: exiting GOOGL on the ⚡NEWS↓ material EU regulatory action today ('Google faces renewed challenge over $1.66bn advertising fine') — a fresh, substantial litigation/regulatory event is an explicit trim/exit trigger for the sleeve regardless of the +4.8% gain since entry. Rotating into PLTR (net=4, 2 channels, Tom Nash + Financial Education, no ⛔DOWNTREND tag, 5d +3%, hi -7% — both thresholds clear), the only qualifying influencer signal this run; AAPL sleeve position held as it is up +2.4% in 6 days and not stale by either clock.\",\"sells\":[{\"symbol\":\"GOOGL\",\"exit\":\"all\",\"strategy\":\"influencer\",\"reason\":\"news-down\"}],\"buys\":[{\"symbol\":\"PLTR\",\"dollarAmount\":296,\"strategy\":\"influencer\"}]}",
+ "market": {
+  "stocksLoaded": 503,
+  "headlinesLoaded": 20
+ },
+ "bookBeta": {
+  "beta": 1.4007320024740124,
+  "coveragePct": 100,
+  "bySymbol": {
+   "AAPL": 1.0375069161656258,
+   "PLTR": 1.9422559483408346,
+   "LLY": 0.5473442249804549,
+   "MU": 2.5326245543772243,
+   "REGN": 0.5336295218664602,
+   "BE": 2.460659083854458,
+   "DELL": 2.050054941363756,
+   "PM": 0.055004868358091534
+  }
+ },
+ "mainBuysOpen": false,
+ "buySizingAdjustments": [
+  "CONTEXT — P/E withheld for: HST (reported 2026-11-04) — each reported on the date shown and our CACHED filing data predates that print, and SEC was not consulted this cycle (the cached copy had not yet lapsed). Withheld to avoid dividing a post-print price by pre-print earnings — this says our copy is stale, NOT that the filing is missing. Says nothing about the companies. No order was affected.",
+  "CONTEXT — P/E SUPPRESSED for: MNST (reported 2026-11-05) — each reported on the date shown and SEC filings do not yet carry that print, so any multiple would divide a post-print price by pre-print earnings. Absent from the valuation block; this does NOT mean cheap or expensive. No order was affected.",
+  "CONTEXT — conviction research shown to the model: 2026-09-21 (53d old), picks MRK, ROST, GOOGL, EXPD, KO; 5 rejected theme(s); macro DROPPED (past its 45d shelf life). Advisory only; it confers no eligibility and every buy still passed the code gates. It CAN influence which of the already-eligible names was chosen and at what size — that is its purpose, so treat a buy citing it as conviction-driven.",
+  "Influencer candidates EXCLUDED as non-S&P-500: CELH (net=4), ELF (net=4). The sleeve buys index members only, so these were never shown to the model or added to the buy-allowlist. This is the universe rule working, not missing data."
+ ],
+ "spyPrice": 750.18,
+ "portfolioAfter": {
+  "totalValue": "2198.15",
+  "cash": "18.67",
+  "equity": "2179.48",
+  "unsettledCash": "0.00",
+  "unsettledMeasured": true
+ },
+ "positions": [
+  {
+   "symbol": "AAPL",
+   "quantity": "0.572246",
+   "avgCost": "349.50",
+   "price": "357.99"
+  },
+  {
+   "symbol": "PLTR",
+   "quantity": "1.789926",
+   "avgCost": "165.37",
+   "price": "165.875"
+  },
+  {
+   "symbol": "LLY",
+   "quantity": "0.261883",
+   "avgCost": "1169.30",
+   "price": "1429.76"
+  },
+  {
+   "symbol": "MU",
+   "quantity": "0.439057",
+   "avgCost": "683.28",
+   "price": "764.705"
+  },
+  {
+   "symbol": "REGN",
+   "quantity": "0.373943",
+   "avgCost": "802.26",
+   "price": "946.09"
+  },
+  {
+   "symbol": "BE",
+   "quantity": "1.371183",
+   "avgCost": "172.38",
+   "price": "187.565"
+  },
+  {
+   "symbol": "DELL",
+   "quantity": "0.536943",
+   "avgCost": "350.13",
+   "price": "342.73"
+  },
+  {
+   "symbol": "PM",
+   "quantity": "0.873316",
+   "avgCost": "194.50",
+   "price": "197.57"
+  }
+ ],
+ "trades": [
+  {
+   "symbol": "GOOGL",
+   "side": "sell",
+   "quantity": "1.000000",
+   "avgPrice": "295.646900",
+   "state": "filled",
+   "actor": "agent",
+   "strategy": "influencer",
+   "refPrice": "295.64"
+  },
+  {
+   "symbol": "PLTR",
+   "side": "buy",
+   "quantity": "1.789926",
+   "avgPrice": "165.369900",
+   "state": "filled",
+   "actor": "agent",
+   "strategy": "influencer",
+   "refPrice": "165.875"
+  }
+ ],
+ "influencerPositions": [
+  {
+   "symbol": "AAPL",
+   "quantity": "0.572246",
+   "avgCost": "349.50",
+   "price": "357.99"
+  },
+  {
+   "symbol": "PLTR",
+   "quantity": "1.789926",
+   "avgCost": "165.37",
+   "price": "165.875"
+  }
+ ],
+ "agenticDailyReturn": -0.015983261552208118,
+ "agenticImpliedTransfer": 0.004208818400286418,
+ "influencerDailyReturn": 0.002587452293238757,
+ "mainDailyReturn": -0.02157690782376288
+}

@@ -3,6 +3,8 @@ import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import type { TradeRun, PositionSnapshot } from "@/lib/run-store";
 import { llmJudge } from "./llm-judge";
 import { reserveLlmCall, llmBudgetCanAfford } from "./llm-budget";
+import GOOGL_NEWS_SALE from "./fixtures/run-2026-11-13-googl-news-sale.json";
+import DELL_BELOW_COST from "./fixtures/run-2026-11-17-dell-below-cost.json";
 
 // ── Reviewer-recall harness: evaluate the WATCHER, not the worker ─────────────
 // The agent's normal evals check the worker (does it decide well). This checks the WATCHER: run
@@ -55,6 +57,14 @@ export interface ReviewerFixture {
   expected?: string;     // what a correct concern would say (fed to the grading judge)
   note: string;          // the real incident this is reconstructed from
   run: TradeRun;
+  /** The severity a correct catch must carry. Only concerns above "low" reach the owner as an alert
+   *  (autopilot seriousConcerns), so a catch filed as "low" is invisible in practice. 2026-11-13: the
+   *  GOOGL news sale WAS flagged, at low, and nothing alerted. Unset = any severity counts. */
+  minSeverity?: "medium" | "high";
+  /** CLEAN fixtures only: a specific false concern that must NOT appear (any severity). When set, the
+   *  fixture is scored on that alone — a real run can carry other legitimate concerns, so "quiet"
+   *  would mislabel it. */
+  forbidden?: string;
 }
 
 // Reconstructed from real incidents (numbers/tickers are the real ones); labeled by hand.
@@ -78,6 +88,7 @@ export const FIXTURES: ReviewerFixture[] = [
   {
     id: "sector-vs-thesis",
     shouldFlag: true,
+    minSeverity: "medium",   // real money / a thesis contradicting the book — must alert, not FYI
     expected: "the book is actually ~50-57% Technology (AAPL+PANW+PLTR+DXC), over the 40% cap, while the thesis claims it is ~34-37%",
     note: "07-06: thesis computed ~37% tech using total value incl. cash; true invested-equity concentration was ~57%.",
     run: mkRun({
@@ -89,6 +100,7 @@ export const FIXTURES: ReviewerFixture[] = [
   {
     id: "stranded-decided-buy",
     shouldFlag: true,
+    minSeverity: "medium",   // real money / a thesis contradicting the book — must alert, not FYI
     expected: "a decided buy (TSLA) did not execute, leaving a large idle settled-cash balance (~$400) undeployed",
     note: "07-06: TSLA decided but dropped by buy-sizing; ~$408 sat idle.",
     run: mkRun({
@@ -128,6 +140,31 @@ export const FIXTURES: ReviewerFixture[] = [
     }),
   },
   {
+    // 2026-11-13, the REAL stored run (personal-account field stripped). The influencer sleeve sold
+    // GOOGL (+4.8%) on a ⚡NEWS↓ for a non-binding EU court adviser's opinion on a fine annulled in
+    // 2024, and rotated into PLTR. The reviewer flagged it — at LOW ("the exit causes no loss"), so no
+    // alert. Judging a decision by its outcome is the miss; a sale for a reason that does not hold
+    // up is at least medium.
+    id: "news-sale-on-immaterial-item",
+    shouldFlag: true,
+    minSeverity: "medium",
+    expected: "GOOGL was sold on a ⚡NEWS↓ for an item that is not material for Alphabet — a non-binding court adviser's opinion / continuing step in an old, already-public fine that is small for the company — so the sale's stated reason does not hold up",
+    note: "11-13: caught at low severity only; seriousConcerns ignores low, so the owner was never alerted.",
+    run: GOOGL_NEWS_SALE as unknown as TradeRun,
+  },
+  {
+    // 2026-11-17, the REAL stored run (personal-account field stripped). DELL sat 9% below cost with
+    // earnings in 7 days; the reviewer filed MEDIUM that it was "~1% from the -10% hard stop". There is
+    // no from-cost stop on the main book (removed 2026-11-05); the crash stop reads the same-day move
+    // and only fires 10+ points worse than the sector. A medium there flipped the report to NEEDS
+    // ATTENTION on a healthy day. Low FYIs (idle $13, an analyst-feed note) are tolerated.
+    id: "main-holding-below-cost-not-a-stop",
+    shouldFlag: false,
+    forbidden: "a main-book holding (DELL) is near, approaching or about to trigger an automatic stop / hard stop because of how far it is below its COST (e.g. '-10% from avgCost')",
+    note: "11-17: false MEDIUM — reviewer invented a -10%-from-cost stop for a main-book holding.",
+    run: DELL_BELOW_COST as unknown as TradeRun,
+  },
+  {
     id: "clean-run-control",
     shouldFlag: false,
     note: "A healthy, internally-consistent, diversified run — the reviewer should stay quiet (specificity).",
@@ -144,7 +181,8 @@ export const FIXTURES: ReviewerFixture[] = [
 
 const OK_VERIFY = { status: "ok", cashDiff: 0, valueDiff: 0, positionIssues: 0, uncapturedOrders: 0 } as const;
 
-export type Outcome = "TP" | "FN" | "TN" | "FP";
+/** UR = under-rated: the problem was caught, but below the fixture's minSeverity, so it never alerts. Counts as a miss. */
+export type Outcome = "TP" | "FN" | "TN" | "FP" | "UR";
 
 // K repeated runs per fixture. pass^K measures CONSISTENCY, not a lucky single run: a fixture only
 // counts as "held" when the reviewer gets it right on ALL K runs. A run "passes" when the reviewer
@@ -179,7 +217,7 @@ async function graded(concerns: ReviewConcern[], expected: string): Promise<bool
 // runs all K times or not at all — pass^K is never computed from a partial sample. A reviewer error
 // or a judge-budget refusal mid-run aborts the fixture as skipped rather than reporting a short K.
 async function runFixtureKTimes(anthropic: Anthropic, f: ReviewerFixture, K: number): Promise<ReviewerResult> {
-  const callsPerRun = f.shouldFlag ? 2 : 1; // reviewer (+ judge, for should-flag)
+  const callsPerRun = f.shouldFlag ? (f.minSeverity ? 3 : 2) : f.forbidden ? 2 : 1; // reviewer (+ judge; + a second judge to tell UR from FN)
   const outcomes: Outcome[] = [];
   let concernsSample: ReviewConcern[] = [];
   const done = (skipped: boolean, error?: string): ReviewerResult =>
@@ -194,9 +232,22 @@ async function runFixtureKTimes(anthropic: Anthropic, f: ReviewerFixture, K: num
     if (i === 0) concernsSample = concerns;
     let outcome: Outcome;
     if (f.shouldFlag) {
-      const caught = await graded(concerns, f.expected!); // graded → llmJudge reserves its own call
+      // With a minSeverity, grade only the concerns that would ALERT; a miss there is then re-graded
+      // against all concerns to tell "never noticed" (FN) from "noticed but filed as low" (UR).
+      const rank = { low: 0, medium: 1, high: 2 } as const;
+      const alerting = f.minSeverity ? concerns.filter((c) => rank[c.severity] >= rank[f.minSeverity!]) : concerns;
+      const caught = await graded(alerting, f.expected!); // graded → llmJudge reserves its own call
       if (caught == null) return done(true); // judge refused → don't report a partial K
-      outcome = caught ? "TP" : "FN";
+      if (caught || !f.minSeverity) outcome = caught ? "TP" : "FN";
+      else {
+        const anySeverity = await graded(concerns, f.expected!);
+        if (anySeverity == null) return done(true);
+        outcome = anySeverity ? "UR" : "FN";
+      }
+    } else if (f.forbidden) {
+      const said = await graded(concerns, f.forbidden);
+      if (said == null) return done(true);
+      outcome = said ? "FP" : "TN";
     } else {
       // Clean run: a HIGH/MEDIUM concern is a false alarm; a bare "low" FYI is tolerated.
       outcome = concerns.some((c) => c.severity !== "low") ? "FP" : "TN";
@@ -254,10 +305,12 @@ export function renderReviewerScoreboard(results: ReviewerResult[]): string {
   const rows = results.map((r) => {
     const verdict = r.skipped ? "SKIP" : r.kPass === r.kRan ? `pass^${r.kRan}` : r.kPass === 0 ? "FAIL" : "FLAKY";
     const kk = r.skipped && r.kRan === 0 ? "—" : `${r.kPass}/${r.kRan}`;
-    const tail = r.error ? "(" + r.error + ")" : r.concernsSample.map((c) => c.title).slice(0, 2).join("; ");
+    const ur = r.outcomes.filter((o) => o === "UR").length;
+    const sev = r.concernsSample.map((c) => `[${c.severity}] ${c.title}`).slice(0, 2).join("; ");
+    const tail = r.error ? "(" + r.error + ")" : (ur ? `UNDER-RATED ${ur}/${r.kRan} (caught, but below the alert line) · ` : "") + sev;
     return `  ${r.id.padEnd(24)} ${(r.shouldFlag ? "should-flag" : "clean").padEnd(12)} ${kk.padEnd(7)} ${verdict.padEnd(8)} ${tail}`;
   });
-  const needCalls = results.reduce((n, r) => n + (r.shouldFlag ? 2 : 1) * s.K, 0);
+  const needCalls = FIXTURES.reduce((n, f) => n + (f.shouldFlag ? (f.minSeverity ? 3 : 2) : f.forbidden ? 2 : 1) * s.K, 0);
   return [
     "  fixture                  kind         k-pass  verdict  reviewer concern(s)",
     ...rows,

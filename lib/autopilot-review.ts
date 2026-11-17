@@ -6,6 +6,7 @@ import { isMarketHoliday } from "@/lib/holidays";
 import Anthropic from "@anthropic-ai/sdk";
 import type { TradeRun } from "@/lib/run-store";
 import { formatKnownIssues } from "@/lib/autopilot-known-issues";
+import { computeSectorBreakdown } from "@/lib/risk-metrics";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SKEPTICAL-REVIEWER PASS
@@ -151,6 +152,8 @@ periodically, and those fills are a NORMAL state, not a defect. Every trade carr
   · "human" — the OWNER placed it. It is already reconciled; report it as context if it matters
     (concentration, cash), never as a lost agent order or an execution failure.
   · "agent" — placed by the trade run, drop-check or earnings-exit.
+  · "dividend" — the broker's automatic dividend reinvestment (a few cents of a held name). Neither the
+    owner's trade nor the agent's; never a lost order, an execution failure or a strategy decision.
   · "unknown" — written before the field existed. Unknown is NOT "agent"; do not assume either way.
 A fill you have no agent decision record for is therefore expected. Before claiming a DECIDED buy
 executed without being recorded, INTERSECT the symbols: if nothing in the run's decided buys appears
@@ -179,7 +182,7 @@ RECOMPUTE BEFORE ASSERTING ARITHMETIC: when you claim a derived figure (a blende
 Respond with ONLY a JSON object, no prose, in this exact shape:
 {"concerns":[{"severity":"high|medium|low","title":"short label","detail":"one or two sentences citing specifics"}]}
 
-Severity: high = likely real money/data error or bad trade needing action today; medium = probable issue worth a look; low = FYI / minor.`;
+Severity: high = likely real money/data error or bad trade needing action today; medium = probable issue worth a look; low = FYI / minor. Judge the DECISION, not how it turned out: a trade made for a reason that does not hold up (a sale on a non-material or misread item, a buy that fails a stated screen), a decided trade that did not execute with nothing explaining it, or a thesis that contradicts the book's own numbers is at least MEDIUM — even if it happened to cost little or no money today. Keep LOW for observations that call for no review of a decision. (2026-11-13: a GOOGL sale on a non-material news item was filed LOW because "the exit causes no loss"; LOW never alerts, so the owner was not told.)`;
 
 /** Compact reconciliation result from /api/verify, fed to the reviewer so it
  *  doesn't re-flag (or hallucinate) cash/position/composition mismatches that
@@ -210,6 +213,16 @@ ${v.ownerTradeHints?.length ? `- POSSIBLE OWNER TRADES among them — UNCONFIRME
   : "→ Reconciliation flagged the discrepancies above; the deterministic layer already patches these — only corroborate, don't duplicate."}`;
 }
 
+/** The book's sector mix, computed in code from today's positions (qty × price, both sleeves).
+ *  The reviewer was given positions but no sector map, so it could not see concentration or check a
+ *  thesis's stated exposure: the recall fixture "sector-vs-thesis" (book ~57% Technology while the
+ *  thesis says ~37%) went 0/3. Same computation as the dashboard's sector panel. */
+export function formatSectorForReview(run: TradeRun): string {
+  const slices = computeSectorBreakdown(run);
+  if (slices.length === 0) return "SECTOR EXPOSURE: not computable (no priced positions).";
+  return `SECTOR EXPOSURE (computed in code from today's positions, both sleeves, by value — authoritative; if the thesis states a different exposure, the thesis is wrong):\n${slices.map((s) => `  • ${s.name}: ${s.pct.toFixed(0)}% ($${s.value.toFixed(0)})`).join("\n")}`;
+}
+
 function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[], verify?: VerifyContext | null): string {
   // History window: a too-short window cannot tell a genuinely unverifiable ancient lot apart from
   // one it simply was not shown — that produced a false "impossible to verify" concern on 08-14
@@ -233,6 +246,8 @@ ${formatVerify(verify)}
 
 TODAY'S RUN:
 ${JSON.stringify(compactRun(todayRun, buysOpenFor(todayRun)), null, 2)}
+
+${formatSectorForReview(todayRun)}
 
 TODAY'S RUN SUMMARY (full — includes the per-name thesis and the trailing TRADE_DECISION line):
 ${(todayRun.summary ?? "").slice(0, SUMMARY_CHAR_LIMIT)}

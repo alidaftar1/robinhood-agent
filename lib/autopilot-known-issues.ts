@@ -394,6 +394,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "For each sell with reason 'news-down', does the thesis say why the event is material for THIS company — a new development (not a non-binding opinion, an appeal or hearing, or another step in an already-public matter) big enough to change its outlook? Flag MEDIUM a news sale whose thesis only restates the headline, or whose event is small next to the company or procedural. Do not flag a sale on a guidance cut, failed trial, regulator rejection, top-executive exit, collapsed deal, or a large penalty.",
   },
+  {
+    date: "2026-11-17",
+    title: "Reviewer invented a from-cost stop for a main-book holding",
+    lesson:
+      "The reviewer filed MEDIUM that DELL (9% below cost, earnings in 7 days) was '~1% from the -10% hard stop' and could be sold before its print. There is no from-cost stop on the main book: the loss-from-cost sell rule was removed 2026-11-05 (backtest: it cost ~2 pp/yr). The automatic exits are: MAIN book — the drop-check sells only on a SAME-DAY move of -10% or worse that is ALSO at least 10 points worse than the name's sector peers that day (a sector-wide fall is held); INFLUENCER sleeve — -10% measured from the buy price, and +40% take-profit; a name bought TODAY is measured from its buy price either way. A false medium flips the whole report to NEEDS ATTENTION.",
+    check:
+      "Before warning that a holding is near an automatic exit, apply the rule for its book: main-book distance from COST is never a stop trigger (do not compute one); only an intraday crash that also beats its sector by 10+ points is. A sleeve holding near -10% from its buy price IS near its stop. Do not raise a main-book 'near the stop' concern from cost basis at any severity.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */
