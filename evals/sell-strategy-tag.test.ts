@@ -508,7 +508,7 @@ describe("planCapture", () => {
     expect(actorFor("DRIP ")).toEqual(["dividend"]);   // the mark is LLM-transcribed: tolerate case/space
     expect(actorFor("user")).toEqual(["human"]);
     expect(actorFor(undefined)).toEqual(["human"]);   // CONTROL: no mark → the old default, unchanged
-    expect(actorFor("agentic")).toEqual(["human"]);   // an agent order reaching capture is not relabelled here
+    expect(actorFor("agentic")).toEqual(["agent"]);   // the broker says the agent placed it: an unrecorded agent order, not the owner's
   });
 
   test("a PARTIAL sale is captured at the exact shortfall", () => {

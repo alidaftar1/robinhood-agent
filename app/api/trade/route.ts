@@ -1637,8 +1637,10 @@ export async function GET(request: Request) {
       // Both news and analyst ratings fail to an EMPTY map on an outage or a missing key, which
       // would make every bearish-news/downgrade exit unverifiable — the rail tightening exactly
       // when its evidence is weakest.
+      // The feed STATUS, not an empty map: a working feed can have no S&P actions in its window, and
+      // that is a quiet day, not degraded evidence (lib/analyst, 2026-11-17).
       const evidenceDegraded =
-        Object.keys(marketData.analystRatings ?? {}).length === 0 || newsSignals.size === 0;
+        marketData.analystFeedStatus !== "ok" || newsSignals.size === 0;
       // RECORDED, not just logged. Standing down is correct — but it disables a live guard, and a
       // guard that switches itself off silently is indistinguishable from one that is working. A
       // persistent provider failure (plan change → 403, expired key) degrades evidence on EVERY

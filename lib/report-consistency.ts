@@ -78,9 +78,9 @@ export function findReportContradictions(input: ReportInput): ReportContradictio
   // 2. The 2026-10-14 instance. Matched on symbol+side+quantity, never on the symbol alone —
   //    registry #1 is about exactly that join being made on vibes.
   const recorded = new Set<string>();
-  // Both wordings: "of your own fill(s)" (until 2026-11-17) and "fill(s) the agent did not place" (since
-  // dividend reinvestments are captured too). Matching only one would switch this check off silently.
-  for (const f of autoFixed) if (/Recorded \d+ (of your own fill|fill\(s\) the agent did not place)/.test(f)) for (const k of fillKeys(f)) recorded.add(k);
+  // Both wordings: "of your own fill(s)" (until 2026-11-17) and "broker fill(s) missing from the run
+  // records" (since capture labels each fill's source). Matching only one would switch this off silently.
+  for (const f of autoFixed) if (/Recorded \d+ (of your own fill|broker fill\(s\) missing from the run records)/.test(f)) for (const k of fillKeys(f)) recorded.add(k);
   for (const i of [...issues, ...discrepancies]) {
     if (!/Uncaptured order/.test(i)) continue;
     for (const k of fillKeys(i)) if (recorded.has(k)) {

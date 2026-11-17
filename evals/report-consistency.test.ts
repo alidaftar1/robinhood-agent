@@ -31,7 +31,7 @@ describe("the report is checked against itself", () => {
 
   test("2026-11-17: the new capture wording (dividend reinvestments included) still feeds the check", () => {
     expect(ids({ ...base,
-      autoFixed: ["Recorded 1 fill(s) the agent did not place, from the broker: buy AAPL x0.000424 @$353.76[influencer] (dividend reinvestment)."],
+      autoFixed: ["Recorded 1 broker fill(s) missing from the run records: buy AAPL x0.000424 @$353.76[influencer] (dividend reinvestment)."],
       issues: ["Live verify: Uncaptured order: buy AAPL ×0.000424 @$353.76 (filled)"],
     })).toContain("recorded-and-uncaptured");
   });

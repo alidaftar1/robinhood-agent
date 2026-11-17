@@ -4,7 +4,7 @@ import { recordSell } from "@/lib/stopouts";
 import Anthropic from "@anthropic-ai/sdk";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
-import { getRuns, mergeRunsByDate, planCapture, findUncapturedOrders, likelyOwnerBuys, type LiveOrder, updateRunByDate, computeDailyReturn, computeSleeveReturns, sleeveReturnsForStorage } from "@/lib/run-store";
+import { captureSourceLabel, getRuns, mergeRunsByDate, planCapture, findUncapturedOrders, likelyOwnerBuys, type LiveOrder, updateRunByDate, computeDailyReturn, computeSleeveReturns, sleeveReturnsForStorage } from "@/lib/run-store";
 
 export const maxDuration = 90;
 
@@ -87,7 +87,8 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
       `Fetch recent orders for account ${ACCOUNT}.`,
       // 2048, not 1024: with createdAtTs, 20 orders run ~1,100-1,300 tokens. A truncated line fails
       // JSON.parse → liveOrders null → NO uncaptured-order checks and NO capture, silently.
-      2048, 30_000
+      // 3072 since placedBy (2026-11-17): ~10 more tokens per order on a line measured at ~1,100-1,300.
+      3072, 30_000
     ),
   ]);
 
@@ -344,7 +345,7 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
           // reconciles=false means something is STILL unexplained — the day is not clean just
           // because records were written, and the caller must keep reporting it.
           reconciles: plan.reconciles, residual: plan.residual,
-          trades: plan.record.map(t => `${t.side} ${t.symbol} x${t.quantity} @$${t.avgPrice}[${t.strategy ?? "?"}]${t.actor === "dividend" ? " (dividend reinvestment)" : " (yours)"}`),
+          trades: plan.record.map(t => `${t.side} ${t.symbol} x${t.quantity} @$${t.avgPrice}[${t.strategy ?? "?"}] (${captureSourceLabel(t.actor)})`),
           dailyReturn: agentic?.dailyReturn ?? null,
         };
       }

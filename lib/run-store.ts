@@ -1450,10 +1450,20 @@ export type LiveOrder = {
   createdAtTs?: string;
 };
 
-/** Who a captured broker fill belongs to. Only the broker's own "drip" mark makes it a dividend
- *  reinvestment; anything else — including an absent or unrecognised mark — stays "human", as before. */
-export function actorForFill(o: LiveOrder): "human" | "dividend" {
-  return String(o.placedBy ?? "").trim().toLowerCase() === "drip" ? "dividend" : "human";
+/** Who a captured broker fill belongs to, from the broker's own placed_agent mark: "drip" → a
+ *  dividend reinvestment, "agentic" → an AGENT order the run failed to record (a crash after placing),
+ *  anything else — "user", absent, unrecognised — → "human", the default before the mark was read. */
+export function actorForFill(o: LiveOrder): "human" | "dividend" | "agent" {
+  const mark = String(o.placedBy ?? "").trim().toLowerCase();
+  return mark === "drip" ? "dividend" : mark === "agentic" ? "agent" : "human";
+}
+
+/** What the capture can honestly say about a recorded fill's source. "human" covers both a broker
+ *  mark of "user" and no mark at all, so it claims no more than that. */
+export function captureSourceLabel(actor: string | undefined): string {
+  return actor === "dividend" ? "dividend reinvestment"
+    : actor === "agent" ? "agent order the run did not record"
+    : "yours, or not labelled by the broker";
 }
 
 /** True when the agent did NOT place this trade (the owner, or a dividend reinvestment). An absent

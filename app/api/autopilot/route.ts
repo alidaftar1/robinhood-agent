@@ -224,7 +224,7 @@ export async function GET(request: Request) {
   {
     const cap = (verifyResult as { capture?: { recorded?: number; reconciles?: boolean; trades?: string[]; residual?: unknown[] } } | null)?.capture;
     if (cap?.recorded) {
-      autoFixed.push(`Recorded ${cap.recorded} fill(s) the agent did not place, from the broker: ${(cap.trades ?? []).join(", ")}.`);
+      autoFixed.push(`Recorded ${cap.recorded} broker fill(s) missing from the run records: ${(cap.trades ?? []).join(", ")}.`);
       // Refetch so the auto-repair phase below sees the captured trades and does not re-derive a
       // discrepancy that no longer exists.
       runs = await getRuns(30);
@@ -687,7 +687,9 @@ export async function GET(request: Request) {
 
   // The trade run records a dead analyst feed on every run (app/api/trade). Email-only: it needs the
   // owner's FMP account, not a code fix, so it must not dispatch the cloud fixer.
-  const analystFeedNote = (todayRun?.buySizingAdjustments ?? []).find((n) => n.startsWith("⚠️ Analyst feed unavailable"));
+  // Any of today's runs: a later same-day run (drop-check, earnings-exit) carries no trade-route notes.
+  const analystFeedNote = runs.filter((r) => r.date === today).flatMap((r) => r.buySizingAdjustments ?? [])
+    .find((n) => n.startsWith("⚠️ Analyst feed unavailable"));
   if (analystFeedNote) softIssues.push(analystFeedNote);
 
   const allIssues = [...issues, ...softIssues];

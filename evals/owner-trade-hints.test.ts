@@ -44,6 +44,6 @@ describe("wiring: the hint never touches discrepancies or status", () => {
   });
   test("the order read has room for the longer line (truncation would silently disable capture)", () => {
     const orders = verify.slice(verify.indexOf("LIVE_ORDERS:["), verify.indexOf("const liveOrders"));
-    expect(orders).toContain("2048, 30_000");
+    expect(orders).toContain("3072, 30_000");   // 2048 until placedBy was added (2026-11-17)
   });
 });

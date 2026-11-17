@@ -152,7 +152,3 @@ export async function fetchAnalystRatings(): Promise<{ ratings: Record<string, A
     return fail("error");
   }
 }
-
-export async function getAnalystRatings(): Promise<Record<string, AnalystRating[]>> {
-  return (await fetchAnalystRatings()).ratings;
-}
