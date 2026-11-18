@@ -1450,20 +1450,21 @@ export type LiveOrder = {
   createdAtTs?: string;
 };
 
-/** Who a captured broker fill belongs to, from the broker's own placed_agent mark: "drip" → a
- *  dividend reinvestment, "agentic" → an AGENT order the run failed to record (a crash after placing),
- *  anything else — "user", absent, unrecognised — → "human", the default before the mark was read. */
-export function actorForFill(o: LiveOrder): "human" | "dividend" | "agent" {
-  const mark = String(o.placedBy ?? "").trim().toLowerCase();
-  return mark === "drip" ? "dividend" : mark === "agentic" ? "agent" : "human";
+const brokerMark = (o: LiveOrder) => String(o.placedBy ?? "").trim().toLowerCase();
+
+/** Who a captured broker fill belongs to. Only the broker's "drip" mark changes the label: a dividend
+ *  reinvestment. Everything else — "user", absent, unrecognised, and "agentic" too — stays "human",
+ *  the default before the mark was read. "agentic" is NOT relabelled "agent": the mark is transcribed
+ *  by a model, and one misread would feed an owner fill into agent-only logic (prevAgentBuys, slippage,
+ *  the reviewer). An "agentic" fill no run recorded is ALERTED instead (CapturePlan.agentMarked). */
+export function actorForFill(o: LiveOrder): "human" | "dividend" {
+  return brokerMark(o) === "drip" ? "dividend" : "human";
 }
 
-/** What the capture can honestly say about a recorded fill's source. "human" covers both a broker
- *  mark of "user" and no mark at all, so it claims no more than that. */
+/** What the capture can honestly say about a recorded fill's source. "human" covers a broker mark of
+ *  "user" and no mark at all, so it claims no more than that. */
 export function captureSourceLabel(actor: string | undefined): string {
-  return actor === "dividend" ? "dividend reinvestment"
-    : actor === "agent" ? "agent order the run did not record"
-    : "yours, or not labelled by the broker";
+  return actor === "dividend" ? "dividend reinvestment" : "yours, or not labelled by the broker";
 }
 
 /** True when the agent did NOT place this trade (the owner, or a dividend reinvestment). An absent
@@ -1544,6 +1545,10 @@ export type CapturePlan = {
   residual: InferredSellPlan["unreconstructable"];
   /** True when every discrepancy was matched, i.e. the book reconciles from records afterwards. */
   reconciles: boolean;
+  /** Recorded fills the BROKER marks placed_agent "agentic" — the agent placed them, yet no run wrote
+   *  them down: a crash or lost save after an order went out. Recorded like any capture (the shares
+   *  are real), but the caller must ALERT on these, never file them as routine. */
+  agentMarked: string[];
 };
 
 /**
@@ -1778,9 +1783,11 @@ export function planCapture(
   // day as reconciled just because something was written.
   const after = [...realTrades.filter(t => !supersede.includes(t)), ...record];
   const check = buildInferredSells(heldRun, { positions: latest.positions, trades: after });
+  const agentMarked = [...used].filter(o => brokerMark(o) === "agentic").map(o => `${o.side} ${o.symbol} x${o.quantity} @$${o.avgPrice}`);
   return {
     record, supersede, residual,
     reconciles: check.sells.length === 0 && check.unreconstructable.length === 0,
+    agentMarked,
   };
 }
 

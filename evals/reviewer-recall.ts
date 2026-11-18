@@ -202,6 +202,11 @@ export interface ReviewerResult {
   error?: string;
 }
 
+/** Reviewer call + judge call(s) per run: a minSeverity miss is re-graded (UR vs FN); a forbidden
+ *  concern is graded once; a plain clean fixture needs no judge. One definition for the budget
+ *  pre-check and the scoreboard hint. */
+const callsPerRunOf = (f: ReviewerFixture) => 1 + (f.shouldFlag ? (f.minSeverity ? 2 : 1) : f.forbidden ? 1 : 0);
+
 const passCount = (outcomes: Outcome[]) => outcomes.filter((o) => o === "TP" || o === "TN").length;
 
 // Grade whether the reviewer's concerns cover the expected issue (LLM-as-judge). Returns null if
@@ -217,7 +222,7 @@ async function graded(concerns: ReviewConcern[], expected: string): Promise<bool
 // runs all K times or not at all — pass^K is never computed from a partial sample. A reviewer error
 // or a judge-budget refusal mid-run aborts the fixture as skipped rather than reporting a short K.
 async function runFixtureKTimes(anthropic: Anthropic, f: ReviewerFixture, K: number): Promise<ReviewerResult> {
-  const callsPerRun = f.shouldFlag ? (f.minSeverity ? 3 : 2) : f.forbidden ? 2 : 1; // reviewer (+ judge; + a second judge to tell UR from FN)
+  const callsPerRun = callsPerRunOf(f);
   const outcomes: Outcome[] = [];
   let concernsSample: ReviewConcern[] = [];
   const done = (skipped: boolean, error?: string): ReviewerResult =>
@@ -310,7 +315,7 @@ export function renderReviewerScoreboard(results: ReviewerResult[]): string {
     const tail = r.error ? "(" + r.error + ")" : (ur ? `UNDER-RATED ${ur}/${r.kRan} (caught, but below the alert line) · ` : "") + sev;
     return `  ${r.id.padEnd(24)} ${(r.shouldFlag ? "should-flag" : "clean").padEnd(12)} ${kk.padEnd(7)} ${verdict.padEnd(8)} ${tail}`;
   });
-  const needCalls = FIXTURES.reduce((n, f) => n + (f.shouldFlag ? (f.minSeverity ? 3 : 2) : f.forbidden ? 2 : 1) * s.K, 0);
+  const needCalls = FIXTURES.filter((f) => results.some((r) => r.id === f.id)).reduce((n, f) => n + callsPerRunOf(f) * s.K, 0);
   return [
     "  fixture                  kind         k-pass  verdict  reviewer concern(s)",
     ...rows,

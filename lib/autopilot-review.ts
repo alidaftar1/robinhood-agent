@@ -152,6 +152,8 @@ periodically, and those fills are a NORMAL state, not a defect. Every trade carr
   · "human" — the OWNER placed it. It is already reconciled; report it as context if it matters
     (concentration, cash), never as a lost agent order or an execution failure.
   · "agent" — placed by the trade run, drop-check or earnings-exit.
+    (A fill the broker marks as the agent's but no run recorded is NOT relabelled; the deterministic
+    layer raises it as an issue, so do not re-report it.)
   · "dividend" — the broker's automatic dividend reinvestment (a few cents of a held name). Neither the
     owner's trade nor the agent's; never a lost order, an execution failure or a strategy decision.
   · "unknown" — written before the field existed. Unknown is NOT "agent"; do not assume either way.
@@ -182,7 +184,7 @@ RECOMPUTE BEFORE ASSERTING ARITHMETIC: when you claim a derived figure (a blende
 Respond with ONLY a JSON object, no prose, in this exact shape:
 {"concerns":[{"severity":"high|medium|low","title":"short label","detail":"one or two sentences citing specifics"}]}
 
-Severity: high = likely real money/data error or bad trade needing action today; medium = probable issue worth a look; low = FYI / minor. Judge the DECISION, not how it turned out: a trade made for a reason that does not hold up (a sale on a non-material or misread item, a buy that fails a stated screen), a decided trade that did not execute with nothing explaining it, or a thesis that contradicts the book's own numbers is at least MEDIUM — even if it happened to cost little or no money today. Keep LOW for observations that call for no review of a decision. (2026-11-13: a GOOGL sale on a non-material news item was filed LOW because "the exit causes no loss"; LOW never alerts, so the owner was not told.)`;
+Severity: high = likely real money/data error or bad trade needing action today; medium = probable issue worth a look; low = FYI / minor. Judge the DECISION, not how it turned out: a trade made for a reason that does not hold up (a sale on a non-material or misread item, a buy that fails a stated screen), or a thesis that contradicts the matching computed figure (main book with main book), is at least MEDIUM — even if it happened to cost little or no money today. Keep LOW for observations that call for no review of a decision. (2026-11-13: a GOOGL sale on a non-material news item was filed LOW because "the exit causes no loss"; LOW never alerts, so the owner was not told.)`;
 
 /** Compact reconciliation result from /api/verify, fed to the reviewer so it
  *  doesn't re-flag (or hallucinate) cash/position/composition mismatches that
@@ -218,9 +220,16 @@ ${v.ownerTradeHints?.length ? `- POSSIBLE OWNER TRADES among them — UNCONFIRME
  *  thesis's stated exposure: the recall fixture "sector-vs-thesis" (book ~57% Technology while the
  *  thesis says ~37%) went 0/3. Same computation as the dashboard's sector panel. */
 export function formatSectorForReview(run: TradeRun): string {
-  const slices = computeSectorBreakdown(run);
-  if (slices.length === 0) return "SECTOR EXPOSURE: not computable (no priced positions).";
-  return `SECTOR EXPOSURE (computed in code from today's positions, both sleeves, by value — authoritative; if the thesis states a different exposure, the thesis is wrong):\n${slices.map((s) => `  • ${s.name}: ${s.pct.toFixed(0)}% ($${s.value.toFixed(0)})`).join("\n")}`;
+  const sleeve = new Set((run.influencerPositions ?? []).map((p) => p.symbol));
+  const fmt = (slices: ReturnType<typeof computeSectorBreakdown>) => slices.map((s) => `  • ${s.name}: ${s.pct.toFixed(0)}% ($${s.value.toFixed(0)})`).join("\n");
+  const whole = computeSectorBreakdown(run);
+  if (whole.length === 0) return "SECTOR EXPOSURE: not computable (no priced positions).";
+  const main = computeSectorBreakdown({ ...run, positions: (run.positions ?? []).filter((p) => !sleeve.has(p.symbol)) });
+  return `SECTOR EXPOSURE (computed in code from today's positions, by value). Compare like with like: the thesis and the sector caps are about the MAIN book; the whole book adds the influencer sleeve.
+MAIN BOOK:
+${main.length ? fmt(main) : "  (no main-book positions)"}
+WHOLE BOOK (main + sleeve):
+${fmt(whole)}`;
 }
 
 function buildUserPrompt(todayRun: TradeRun, recentRuns: TradeRun[], verify?: VerifyContext | null): string {

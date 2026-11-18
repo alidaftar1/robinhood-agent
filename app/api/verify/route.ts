@@ -346,6 +346,7 @@ Include only the 20 most recent orders. Use instrument_symbol, side, quantity, a
           // because records were written, and the caller must keep reporting it.
           reconciles: plan.reconciles, residual: plan.residual,
           trades: plan.record.map(t => `${t.side} ${t.symbol} x${t.quantity} @$${t.avgPrice}[${t.strategy ?? "?"}] (${captureSourceLabel(t.actor)})`),
+          ...(plan.agentMarked.length ? { agentMarked: plan.agentMarked } : {}),
           dailyReturn: agentic?.dailyReturn ?? null,
         };
       }

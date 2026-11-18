@@ -222,7 +222,12 @@ export async function GET(request: Request) {
   }
 
   {
-    const cap = (verifyResult as { capture?: { recorded?: number; reconciles?: boolean; trades?: string[]; residual?: unknown[] } } | null)?.capture;
+    const cap = (verifyResult as { capture?: { recorded?: number; reconciles?: boolean; trades?: string[]; residual?: unknown[]; agentMarked?: string[] } } | null)?.capture;
+    // The broker says the AGENT placed these, yet no run recorded them: a crash or lost save after an
+    // order went out. Live money — an issue, never a routine auto-fix (a rerun could double-buy).
+    if (cap?.agentMarked?.length) {
+      issues.push(`Broker shows order(s) placed by the agent that no run recorded: ${cap.agentMarked.join(", ")}. Likely a crash or lost save after placing — check the trade run's logs, and that a rerun did not place them twice.`);
+    }
     if (cap?.recorded) {
       autoFixed.push(`Recorded ${cap.recorded} broker fill(s) missing from the run records: ${(cap.trades ?? []).join(", ")}.`);
       // Refetch so the auto-repair phase below sees the captured trades and does not re-derive a
@@ -687,9 +692,12 @@ export async function GET(request: Request) {
 
   // The trade run records a dead analyst feed on every run (app/api/trade). Email-only: it needs the
   // owner's FMP account, not a code fix, so it must not dispatch the cloud fixer.
-  // Any of today's runs: a later same-day run (drop-check, earnings-exit) carries no trade-route notes.
-  const analystFeedNote = runs.filter((r) => r.date === today).flatMap((r) => r.buySizingAdjustments ?? [])
-    .find((n) => n.startsWith("⚠️ Analyst feed unavailable"));
+  // Today's LATEST TRADE run (its summary carries the TRADE_DECISION): drop-check/earnings-exit runs carry
+  // no trade-route notes, and an earlier failed attempt's note must not outlive a later healthy run.
+  const latestTradeRun = runs
+    .filter((r) => r.date === today && (r.summary ?? "").includes("TRADE_DECISION"))
+    .sort((a, b) => (b.timestamp ?? "").localeCompare(a.timestamp ?? ""))[0];
+  const analystFeedNote = (latestTradeRun?.buySizingAdjustments ?? []).find((n) => n.startsWith("⚠️ Analyst feed unavailable"));
   if (analystFeedNote) softIssues.push(analystFeedNote);
 
   const allIssues = [...issues, ...softIssues];
