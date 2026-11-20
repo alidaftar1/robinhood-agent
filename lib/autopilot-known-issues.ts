@@ -394,6 +394,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "For each sell with reason 'news-down', does the thesis say why the event is material for THIS company — a new development (not a non-binding opinion, an appeal or hearing, or another step in an already-public matter) big enough to change its outlook? Flag MEDIUM a news sale whose thesis only restates the headline, or whose event is small next to the company or procedural. Do not flag a sale on a guidance cut, failed trial, regulator rejection, top-executive exit, collapsed deal, or a large penalty.",
   },
+  {
+    date: "2026-11-20",
+    title: "Stock split read as 'shares-appeared' and locked the day's return",
+    lesson:
+      "SNDK 8:1 forward split: qty 0.3036 -> 2.4289 (exactly 8x), avgCost 810.25 -> 101.28, no trade. inferSellPlan saw heldQty+bought-sold-qtyNow < 0 and withheld + locked 2026-11-20's return, needing a manual unlock. isForwardSplit (lib/run-store) now skips a symbol with no trades whose qty rose by a near-integer ratio >= 2 and whose cost basis (qty x avgCost) is conserved within 2%; anything else still withholds.",
+    check:
+      "If a position's share count jumped by an integer ratio with avgCost falling by the same ratio and no trade, treat it as a split (benign); but if cost basis changed, or the ratio is not an integer, that is an unrecorded fill — flag it.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

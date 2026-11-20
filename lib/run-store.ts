@@ -426,6 +426,29 @@ interface DayFlow {
 const QTY_EPSILON = 1e-4;
 
 /**
+ * True when a symbol's holding changed by a forward SPLIT rather than an order: no trades, the
+ * share count rose by a near-integer ratio r >= 2, and the average cost fell by that same ratio
+ * (so qty x avgCost, the cost basis, is conserved). Fails CLOSED: any unreadable/zero input, a
+ * non-integer ratio, or a cost basis that moved by > 2% returns false, so the gap is still
+ * WITHHELD as before. Reverse splits are not handled (they surface as a shortfall, not shares-appeared).
+ */
+export function isForwardSplit(
+  held: PositionSnapshot[], now: PositionSnapshot[], symbol: string,
+): boolean {
+  const h = held.filter(p => p.symbol === symbol);
+  const n = now.filter(p => p.symbol === symbol);
+  if (h.length !== 1 || n.length !== 1) return false;
+  const hq = parseFloat(h[0].quantity), nq = parseFloat(n[0].quantity);
+  const hc = parseFloat(h[0].avgCost), nc = parseFloat(n[0].avgCost);
+  if (![hq, nq, hc, nc].every(x => Number.isFinite(x) && x > 0)) return false;
+  const r = nq / hq;
+  if (r < 2 || Math.abs(r - Math.round(r)) > 0.01 * r) return false;
+  return Math.abs((nq * nc) / (hq * hc) - 1) <= 0.02;
+}
+
+
+
+/**
  * Brings a day's positions snapshot into line with the day's trades — but ONLY when the snapshot
  * demonstrably hasn't caught up with them.
  *
@@ -1396,6 +1419,8 @@ export function buildInferredSells(
     }
 
     const unexplained = heldQty + boughtQty - soldQty - qtyNow;
+    if (unexplained < -QTY_EPSILON && boughtQty === 0 && soldQty === 0
+        && isForwardSplit(heldRun.positions, missingRun.positions, symbol)) continue;
     if (unexplained < -QTY_EPSILON) {
       unreconstructable.push({ symbol, reason: "shares-appeared", excessQty: -unexplained });
       continue;
