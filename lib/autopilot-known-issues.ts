@@ -410,6 +410,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "A [RISK-EXIT] run lists each established main-book stop the sector rule judged, under 'HELD by the sector-relative stop' or 'NOT held by the sector-relative stop' ('N points worse; the bar is 10'). Flag MEDIUM a 'NOT held' entry with fewer than 10 points worse — it should have been held. A 'NOT held' name may still have been held on sympathy; it is a sale only if it is in the run's trades. Flag MEDIUM a sold name that was in the PREVIOUS run's positions, is NOT in its influencerPositions, and was not bought today, yet appears on neither line — the rule did not run for it. Do not apply this to sleeve names or same-day buys: they are measured from their buy price and never judged. A 'sector move unknown' entry is LOW.",
   },
+  {
+    date: "2026-11-20",
+    title: "Stock split read as 'shares-appeared' and locked the day's return",
+    lesson:
+      "SNDK 8:1 forward split: qty 0.3036 -> 2.4289 (exactly 8x), avgCost 810.25 -> 101.28, no trade. inferSellPlan saw heldQty+bought-sold-qtyNow < 0 and withheld + locked 2026-11-20's return, needing a manual unlock. isForwardSplit (lib/run-store) now skips a symbol with no trades whose qty rose by a near-integer ratio >= 2 and whose cost basis (qty x avgCost) is conserved within 2%; anything else still withholds.",
+    check:
+      "If a position's share count jumped by an integer ratio with avgCost falling by the same ratio and no trade, treat it as a split (benign); but if cost basis changed, or the ratio is not an integer, that is an unrecorded fill — flag it.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */
