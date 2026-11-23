@@ -432,10 +432,11 @@ const QTY_EPSILON = 1e-4;
 
 /**
  * True when a symbol's holding changed by a forward SPLIT rather than an order: no trades, the
- * share count rose by a near-integer ratio r >= 2, and the average cost fell by that same ratio
- * (so qty x avgCost, the cost basis, is conserved). Fails CLOSED: any unreadable/zero input, a
- * non-integer ratio, or a cost basis that moved by > 2% returns false, so the gap is still
- * WITHHELD as before. Reverse splits are not handled (they surface as a shortfall, not shares-appeared).
+ * share count is an EXACT whole multiple r >= 2 of the old one, and the average cost fell by that
+ * same ratio (so qty x avgCost, the cost basis, is conserved). Fails CLOSED: any unreadable/zero
+ * input, a non-whole multiple, or a cost basis that moved by > 2% returns false, so the gap is still
+ * WITHHELD as before. NOT handled: fractional splits (3:2), a split on a day the symbol also traded,
+ * and reverse splits — a reverse split surfaces as a shortfall and is inferred as a SELL.
  */
 export function isForwardSplit(
   held: PositionSnapshot[], now: PositionSnapshot[], symbol: string,
@@ -446,12 +447,13 @@ export function isForwardSplit(
   const hq = parseFloat(h[0].quantity), nq = parseFloat(n[0].quantity);
   const hc = parseFloat(h[0].avgCost), nc = parseFloat(n[0].avgCost);
   if (![hq, nq, hc, nc].every(x => Number.isFinite(x) && x > 0)) return false;
-  const r = nq / hq;
-  if (r < 2 || Math.abs(r - Math.round(r)) > 0.01 * r) return false;
+  // EXACT whole multiple, to the broker's share precision: a proportional tolerance absorbed a small
+  // unrecorded fill made near a split (0.3036 -> 8:1 -> owner sells 0.02 still read as 7.93 ~ 8) and
+  // published a day with a phantom move — the fail-open direction.
+  const ratio = Math.round(nq / hq);
+  if (ratio < 2 || Math.abs(nq - ratio * hq) > QTY_EPSILON) return false;
   return Math.abs((nq * nc) / (hq * hc) - 1) <= 0.02;
 }
-
-
 
 /**
  * Brings a day's positions snapshot into line with the day's trades — but ONLY when the snapshot
@@ -1424,8 +1426,12 @@ export function buildInferredSells(
     }
 
     const unexplained = heldQty + boughtQty - soldQty - qtyNow;
-    if (unexplained < -QTY_EPSILON && boughtQty === 0 && soldQty === 0
-        && isForwardSplit(heldRun.positions, missingRun.positions, symbol)) continue;
+    if (unexplained < -QTY_EPSILON && boughtQty < QTY_EPSILON && soldQty < QTY_EPSILON
+        && isForwardSplit(heldRun.positions, missingRun.positions, symbol)) {
+      // Not silent: a split assumed here skips reconciliation for the symbol, so say so.
+      console.warn("FORWARD_SPLIT_ASSUMED", { symbol, heldQty, qtyNow });
+      continue;
+    }
     if (unexplained < -QTY_EPSILON) {
       unreconstructable.push({ symbol, reason: "shares-appeared", excessQty: -unexplained });
       continue;

@@ -202,9 +202,14 @@ export async function GET(request: Request) {
     // when the name fell with its sector's other S&P members rather than apart from them. Only an
     // established main-book holding (sectorRuleApplies) — any sleeve row, mixed lots included, and a
     // name bought today are not a sector question. Unknown sector move → no hold (the plain bar).
-    const sectorJudged = judgeSectorStops(
+    // Without the sleeve list, "not influencer" is unknown rather than true: every sleeve name would
+    // read as an established main holding and could be HELD past its own from-buy rule. No list, no
+    // sector hold — the plain bar applies to everything (fail closed), and the log says why.
+    const sleeveListKnown = Array.isArray(previousRun?.influencerPositions);
+    if (!sleeveListKnown) console.warn("DROP_CHECK_SECTOR_RULE_OFF — latest run has no influencerPositions; plain bar for all stops");
+    const sectorJudged = sleeveListKnown ? judgeSectorStops(
       droppedPositions.map((e) => ({ symbol: e.position.symbol, reason: e.reason, change1d: e.change1d, ctx: e.ctx })),
-      marketData.stocks, (sym) => STOCK_SECTOR[sym]);
+      marketData.stocks, (sym) => STOCK_SECTOR[sym]) : [];
     const sectorHolds = new Map(sectorJudged.filter((j) => j.held).map((j) => [j.symbol, { change: j.change, peer: j.peer! }]));
     // Every judged stop is logged, held or not: 11-05..11-20 the rule never ran and nothing said so.
     if (sectorJudged.length > 0) console.log("DROP_CHECK_SECTOR_JUDGED", Object.fromEntries(sectorJudged.map((j) => [j.symbol,

@@ -116,6 +116,11 @@ describe("drop-check wiring", () => {
     expect(s).not.toMatch(/stopThresholdFor\(ctx\)\s*===/);
     expect(at).toBeLessThan(s.indexOf("RISK-EXIT DECISION"));
   });
+  it("no sleeve list on the latest run turns the sector hold OFF (fail closed), with a log line", () => {
+    expect(s).toContain("const sleeveListKnown = Array.isArray(previousRun?.influencerPositions);");
+    expect(s).toMatch(/const sectorJudged = sleeveListKnown \? judgeSectorStops\(/);
+    expect(s).toContain("DROP_CHECK_SECTOR_RULE_OFF");
+  });
   it("the run summary names the stops the sector rule did NOT hold, with the figures", () => {
     expect(s).toContain("NOT held by the sector-relative stop");
     expect(s).toContain("(sector move unknown)");
