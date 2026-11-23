@@ -27,6 +27,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { isFullExit, type TradeDecisionSell } from "./trade-decision";
+import { IMMINENT_EARNINGS_DAYS } from "./earnings";
+import { triggerFromReason } from "./exit-ledger";
 
 /** Discretionary FULL exits allowed per decision. With a ~6-name target, 2-3 is an ordinary
  *  rotation and 5+ is a restructuring. Trims are never counted — a 50% trim is not a liquidation,
@@ -79,7 +81,7 @@ export function justifiedReason(symbol: string, ctx: SellRailContext): string | 
   if (ctx.hasDowngrade(symbol)) return "analyst downgrade";
   if (ctx.hasBearishNews(symbol)) return "bearish material news";
   const d = ctx.daysToEarnings(symbol);
-  if (d != null && d >= 0 && d <= 3) return `earnings in ${d}d`;
+  if (d != null && d >= 0 && d <= IMMINENT_EARNINGS_DAYS) return `earnings in ${d}d`;
   if (ctx.isOverConcentrationCap(symbol)) return "⚠CONCEN — over the concentration cap";
   if (ctx.reportedRecently(symbol)) return "just reported earnings";
   return null;
@@ -141,6 +143,122 @@ export function applySellRail(
     return { sells: kept, dropped, notes };
   } catch (e) {
     console.error("SELL_RAIL_FAILED_OPEN — letting every sell through", e instanceof Error ? e.message : String(e));
+    return { sells, dropped: [], notes: [] };
+  }
+}
+
+/**
+ * NO ROTATION BELOW TARGET (2026-11-16 BE). On a rebalance day the prompt allows selling a ◆HELD
+ * main name "to free a slot for a clearly higher-conviction NEW name" — but when the main book is
+ * BELOW its target a slot is already free, so such a sell is really raising cash to swap into a
+ * better-ranked name, which the hysteresis rule forbids. 11-16: 6 of 7 held, BE (+1.4%, ◆HELD, no
+ * news) sold to fund SNDK. The rail let it through: one discretionary exit is under its cap, and it
+ * had stood down on an analyst-feed outage.
+ *
+ * A full exit the run can PROVE (justifiedReason) always passes and is counted first, since it opens
+ * a slot on its own. Each unproven full exit then passes only while the book — net of the exits kept
+ * before it in this batch — is still at or above target, so one real slot-freeing rotation cannot
+ * carry a second and third behind it. Called on REBALANCE days only (the day that clause exists);
+ * off-window the prompt allows risk sells only and the rail bounds the rest.
+ *
+ * A full exit "for sector concentration" is NOT a proven reason here, deliberately: the prompt's own
+ * SECTOR EXPOSURE text says a sector-cap reduction is a TRIM, and "a full exit needs its OWN reason".
+ * Trims pass this guard untouched.
+ *
+ * It does NOT stand down on degraded evidence: every legitimate model reason comes from the same
+ * feeds (no news signals means no ⚡NEWS↓ to cite, no ratings means no ↓FIRM), so a missing feed
+ * removes the reason along with the means of verifying it. Same edges as the rail: unheld, unpriced
+ * and trims pass. FAILS OPEN on a throw.
+ */
+export function applyNoRotationBelowTarget(
+  sells: TradeDecisionSell[],
+  ctx: SellRailContext,
+  book: { mainHeld: number; target: number },
+): SellRailResult {
+  try {
+    // Judged ONCE per sell: is it outside this guard's remit, and can the run prove it?
+    const judged = sells.map((s) => {
+      const symbol = String(s.symbol ?? "");
+      const pos = ctx.positionOf(symbol);
+      const exempt = !pos || !isFullExit(s, pos.quantity) || pos.price == null || !Number.isFinite(pos.price);
+      // An UNPRICED full exit is kept unjudged (unknown must not mean blockable) — but it still
+      // leaves the book, so it opens a slot like a proven one.
+      const leavesUnjudged = !!pos && exempt && isFullExit(s, pos.quantity);
+      return { s, symbol, exempt, proven: !exempt && justifiedReason(symbol, ctx) != null, leavesUnjudged };
+    });
+    // Held count once the exits that leave regardless are gone — each opens a slot (one per name).
+    let held = book.mainHeld - new Set(judged.filter(j => j.proven || j.leavesUnjudged).map(j => j.symbol)).size;
+    const kept: TradeDecisionSell[] = [];
+    const dropped: string[] = [];
+    const notes: string[] = [];
+    const verdict = new Map<string, boolean>();   // first copy of a name decides every copy
+    for (const { s, symbol, exempt, proven } of judged) {
+      if (exempt || proven) { kept.push(s); continue; }
+      // A repeated full exit of one name frees ONE slot: judged once, and every copy follows that
+      // verdict — kept with it, or dropped with it and SAID (a silent removal reads as a lost sell).
+      if (!verdict.has(symbol)) {
+        const keep = held >= book.target;
+        if (keep) held--;
+        verdict.set(symbol, keep);
+        if (!keep) notes.push(
+          `${symbol} SELL DROPPED — no rotation below target: after this decision's other exits the main ` +
+          `book holds ${held} of a ~${book.target} target, so a slot is already free and there is none to ` +
+          `free. The exit had no code-verifiable reason (still ranked, not ⏳STALE, no downgrade, no bearish ` +
+          `news, no imminent earnings, not over the concentration cap), so it was a swap on ranking — the ` +
+          `hysteresis rule.`,
+        );
+      }
+      if (verdict.get(symbol)) kept.push(s); else dropped.push(symbol);
+    }
+    return { sells: kept, dropped, notes };
+  } catch (e) {
+    console.error("NO_ROTATION_GUARD_FAILED_OPEN — letting every sell through", e instanceof Error ? e.message : String(e));
+    return { sells, dropped: [], notes: [] };
+  }
+}
+
+/**
+ * A "stale" sell must be stale in the DATA (2026-11-19 AAPL). The model sold a sleeve holding at
+ * −0.1% after 10 days as "stale"; the code's clock needs MORE than −2%, so no ⏳STALE tag was shown
+ * and the line read "do not sell here". Sleeve sells bypass the rail, so nothing checked it.
+ *
+ * Reads the reason token only to BLOCK, never to permit — so it hands the model no way around a
+ * guard (the rail's rule against trusting the token stands). A "stale" sell the code does not call
+ * stale is dropped UNLESS `otherReason` proves a different valid exit (fell off the shortlist,
+ * imminent earnings, …): a mislabelled token must not block an exit the rules require. The caller
+ * leaves bearish news OUT of `otherReason` on purpose — 11-19 AAPL carried a ⚡NEWS↓ the model itself
+ * judged not to pass the NEWS SELL TEST, and then reached for "stale" instead. Unknown staleness
+ * (no price or age) passes, and so does a TRIM (`isFull` false) — the stale clock governs full exits. FAILS OPEN on a throw.
+ */
+export function dropUnverifiedStaleSells(
+  sells: TradeDecisionSell[],
+  isFull: (s: TradeDecisionSell) => boolean,
+  isStale: (symbol: string) => boolean | null,
+  otherReason: (symbol: string) => boolean,
+): SellRailResult {
+  try {
+    const kept: TradeDecisionSell[] = [];
+    const dropped: string[] = [];
+    const notes: string[] = [];
+    // The exit ledger's OWN normalisation, so the guard and the ledger can never disagree on "stale".
+    const claimsStale = (s: TradeDecisionSell) => triggerFromReason(s.reason) === "stale";
+    // Judged PER NAME: if another FULL exit of the name gives a different reason, the name sells
+    // anyway, so no copy is reported dropped. Only a full exit counts — a trim beside a bogus "stale"
+    // full exit must not carry the whole position out (the 11-19 AAPL shape through a side door).
+    const otherwiseSold = new Set(sells.filter(s => !claimsStale(s) && isFull(s)).map(s => String(s.symbol ?? "")));
+    for (const s of sells) {
+      const symbol = String(s.symbol ?? "");
+      if (!claimsStale(s) || !isFull(s) || otherwiseSold.has(symbol) || isStale(symbol) !== false || otherReason(symbol)) { kept.push(s); continue; }
+      dropped.push(symbol);
+      notes.push(
+        `${symbol} SELL DROPPED — given as "stale", but the holding is not ⏳STALE by the code's clocks ` +
+        `(no tag was shown) and no other verifiable exit reason applies. Staleness is computed in code, ` +
+        `not judged by the model.`,
+      );
+    }
+    return { sells: kept, dropped, notes };
+  } catch (e) {
+    console.error("STALE_CLAIM_GUARD_FAILED_OPEN — letting every sell through", e instanceof Error ? e.message : String(e));
     return { sells, dropped: [], notes: [] };
   }
 }

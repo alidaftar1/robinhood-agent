@@ -16,12 +16,12 @@ import { sendAlert } from "@/lib/alert";
 import { parseTradeDecision, isFullExit, type TradeDecision } from "@/lib/trade-decision";
 import { isMarketHoliday, holidayTableCovers } from "@/lib/holidays";
 import { fitNotionalBuysToBudget, usableNotionalBudget, applyPerPositionCap, applySectorBudget, applySleeveSectorRule, applyConcentrationTrim, resolveSellQuantity, estimateSellProceeds, refitBuysAfterSells, MIN_BUY_DOLLARS } from "@/lib/buy-sizing";
-import { getRecentStopouts, getRecentSells, recordSell } from "@/lib/stopouts";
+import { getRecentStopouts, getRecentSells, recordSell, INFLUENCER_DROP_THRESHOLD_PCT } from "@/lib/stopouts";
 import { recordSignalPicks, type SignalPick } from "@/lib/signal-ledger";
 import { recordExits, triggerFromReason, type ExitRecord } from "@/lib/exit-ledger";
 import { screenMeanReversionCandidates, recordMeanRevShadow } from "@/lib/mean-reversion";
 import { buildFeatureRows, recordFeatureCapture } from "@/lib/feature-capture";
-import { applySellRail, MAX_DISCRETIONARY_EXITS } from "@/lib/sell-rail";
+import { applySellRail, applyNoRotationBelowTarget, dropUnverifiedStaleSells, justifiedReason, MAX_DISCRETIONARY_EXITS } from "@/lib/sell-rail";
 import { TARGET_MAIN_POSITIONS } from "@/lib/position-target";
 import { screenGivebackStops, recordGivebackShadow } from "@/lib/giveback-shadow";
 import { fetchNewsSignals } from "@/lib/news";
@@ -1230,6 +1230,182 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── CLAIM GUARDS (2026-11-16 BE, 2026-11-19 AAPL) ──────────────────────────
+    // Verify the model's "free a slot" and "stale" claims from run data. HERE, before any buy-side
+    // step reads decision.sells: the slot caps below count a full exit as freeing a slot, so a sell
+    // dropped AFTER them left its buy admitted for a slot that never opened (sleeve past 2, book past
+    // 7). Runs on the model's own sells only. Code-added exits (concentration trims, owner misfits)
+    // still join later, AFTER the caps — they only ADD exits, so the caps undercount free slots and
+    // proceeds (the safe direction); a future code-added exit must not be inserted here unguarded.
+    // Neither guard stands down on degraded evidence (see each function's note).
+    // ONE derivation of "is this holding stale", from the SAME inputs the prompt's ⏳STALE tag reads
+    // (buildV1AnalysisPrompt): heldDays and price vs avgCost. null = unknown (no position/age/price).
+    const staleOf = (sym: string, sleeve: boolean): boolean | null => {
+      const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
+      const avg = p ? parseFloat(p.avgCost) : NaN;
+      if (!p || p.heldDays == null || p.price == null || !(avg > 0)) return null;   // as the rail read it before
+      return staleReasonOf(sleeve, p.heldDays, ((p.price - avg) / avg) * 100) != null;
+    };
+    const mainHeldForRail = (portfolioCtx?.positions ?? []).filter(p => !influencerHeld.has(p.symbol)).length;
+    // OWNERSHIP decides the book, never the model's strategy tag (2026-11-23): a main exit the model
+    // tagged "influencer" used to skip the sell rail's cap entirely. influencerHeld already includes
+    // the owner's buys the sort placed in the sleeve this run.
+    // Fallback only when the sleeve list itself is missing (no previous run): then the tag is the
+    // best evidence left, and ignoring it would judge real sleeve exits on the main book's rules.
+    const sleeveListKnown = Array.isArray(sleevePositions);
+    const isSleeveOwned = (x: { symbol: string; strategy?: string }) =>
+      influencerHeld.has(x.symbol) || (!sleeveListKnown && x.strategy === "influencer");
+    const railCtx = {
+      positionOf: (sym: string) => {
+        const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
+        return p ? { avgCost: parseFloat(p.avgCost), price: p.price, quantity: parseFloat(p.quantity) } : undefined;
+      },
+      stillRanked: (sym: string) => v1ShortlistSet.has(sym) || v1Retained.some(r => r.symbol === sym),
+      hasBearishNews: (sym: string) => newsSignals.get(sym)?.direction === "-",
+      hasDowngrade: (sym: string) => (marketData.analystRatings[sym] ?? []).some(r => r.action === "downgrade" || r.action === "lower_pt"),
+      daysToEarnings: (sym: string) => {
+        const ed = earningsDatesMap[sym];
+        if (!ed) return null;
+        const d = Math.round((new Date(ed).getTime() - new Date(today).getTime()) / 86_400_000);
+        return Number.isFinite(d) ? d : null;
+      },
+      // The prompt MANDATES reducing a ⚠CONCEN name and authorises a full exit when its thesis
+      // has weakened — and such a name is a WINNER that grew past the cap, so no distress test
+      // fires. Without this the rail could block an exit the prompt required.
+      isOverConcentrationCap: (sym: string) => {
+        const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
+        const val = p?.price != null ? p.price * (parseFloat(p.quantity) || 0) : null;
+        // The SAME trigger the ⚠CONCEN flag and applyConcentrationTrim use (maxPos x 1.25), not
+        // bare maxPos — otherwise the rail justifies an exit for a name never shown ⚠CONCEN.
+        return val != null && val > maxPositionDollars(portfolioCtx?.totalValue) * 1.25;
+      },
+      // A post-print DROP can be well under 10% below entry and so invisible to loss discipline,
+      // while the prompt tells the model to reassess or exit on exactly that. Gated on the
+      // direction: "reported at all" would exempt any name in a 7-day window, and through
+      // earnings season that is most of an 11-name book — the rail would quietly become a no-op
+      // in the regime that produces mass restructuring.
+      reportedRecently: (sym: string) =>
+        recentEarnings.has(sym) && ((change1dOfHeld[sym] ?? 0) < -3 || (change5dOfHeld[sym] ?? 0) < -5),
+          // Unknown staleness reads as NOT stale here, as before: the rail must not wave an exit through on a gap.
+      isStale: (sym: string) => staleOf(sym, false) === true,
+    };
+    {
+      // OWNERSHIP (isSleeveOwned), never the model's tag. These run BEFORE the sell rail: a bogus claim
+      // dropped after the rail would have used up one of its discretionary slots and cost a real exit.
+      const proposed = decision.sells.filter(x => !isSleeveOwned(x));
+      // The book is counted exactly as the prompt's "NEW MAIN NAMES YOU CAN ADD TODAY" and the main
+      // slot cap count it (owner misfits included): the guard must not disagree with the number the
+      // model was shown, nor claim a slot is free that the slot cap will not see.
+      const rotation = buysOpen
+        ? applyNoRotationBelowTarget(proposed, railCtx, { mainHeld: mainHeldForRail, target: TARGET_MAIN_POSITIONS })
+        : { sells: proposed, dropped: [] as string[], notes: [] as string[] };
+      // No sleeve list (no previous run): which clock applies is unknown, so the stale guard stands
+      // down rather than judge a sleeve name on the main book's 60-day clock.
+      const staleClaims = !sleeveListKnown
+        ? { sells: [...rotation.sells, ...decision.sells.filter(isSleeveOwned)], dropped: [] as string[], notes: [] as string[] }
+        : dropUnverifiedStaleSells(
+        [...rotation.sells, ...decision.sells.filter(isSleeveOwned)],
+        // A TRIM labelled "stale" passes: only a full exit is the rotation the stale clock governs.
+        (s) => { const p = railCtx.positionOf(String(s.symbol ?? "")); return !!p && isFullExit(s, p.quantity); },
+        (sym) => staleOf(sym, influencerHeld.has(sym)),
+        // Another PROVABLE exit reason. Bearish news is left out on purpose (dropUnverifiedStaleSells).
+        (sym) => {
+          const d = railCtx.daysToEarnings(sym);
+          // Sleeve: the prompt's earnings exception. Main: any provable reason (earnings included).
+          if (influencerHeld.has(sym)) {
+            // Sleeve: the prompt's earnings exception, or past the sleeve's own stop from its buy price
+            // (a real exit the model mislabelled — drop-check would sell it anyway).
+            if (d != null && d >= 0 && d <= IMMINENT_EARNINGS_DAYS) return true;
+            const p = railCtx.positionOf(sym);
+            return !!p && p.price != null && p.avgCost > 0 && ((p.price - p.avgCost) / p.avgCost) * 100 <= INFLUENCER_DROP_THRESHOLD_PCT;
+          }
+          return justifiedReason(sym, { ...railCtx, hasBearishNews: () => false, isStale: () => false }) != null;
+        },
+      );
+      const claimDropped = [...rotation.dropped, ...staleClaims.dropped];
+      if (claimDropped.length > 0) {
+        // Keep the MODEL'S order (a filter, not the two halves concatenated): the rail after this counts
+        // discretionary exits in order, and execution follows it.
+        const keptSells = new Set(staleClaims.sells);
+        decision.sells = decision.sells.filter(x => keptSells.has(x));
+        buySizingAdjustments.push(...rotation.notes, ...staleClaims.notes);
+        console.error("SELL_CLAIM_GUARD_DROPPED", { rotation: rotation.dropped, stale: staleClaims.dropped });
+        await sendAlert(
+          `⚠️ Sell claim guard dropped ${new Set(claimDropped).size} sell(s) — ${today}`,
+          `The decision's sell(s) ${[...new Set(claimDropped)].join(", ")} claimed a reason the run data does not support ` +
+          `(a "free a slot" swap with a slot already free, or "stale" on a holding the code does not call stale). ` +
+          `They were not placed; the notes are in the run. Investigate if this recurs.`,
+        ).catch(() => {});
+      }
+    }
+
+
+    // ── SELL VOLUME RAIL ──────────────────────────────────────────────────────
+    // Bounds DISCRETIONARY main-book full exits. Measured 2026-09-29: the model proposed selling
+    // the entire main book in 1 of 4 runs. Sells previously passed one filter (is it held) while
+    // buys passed six. Provable risk exits are never capped, and the automatic stop path
+    // (/api/drop-check, its own cron) does not come through here at all. Fails OPEN.
+    // Runs HERE, before the slot caps and buy sizing read decision.sells (moved 2026-11-23 with the
+    // claim guards): a sell the rail drops after them leaves its buy admitted for a slot that never
+    // opened and sized on proceeds that never arrive. It therefore sees the MODEL's sells only —
+    // code-added concentration trims (partial, exempt anyway) and owner-misfit exits come later.
+    {
+      // Ownership, not the model's tag. The tag is model-emitted and never validated, so an
+      // untagged sleeve exit would route to the MAIN rail and be judged on the 60-day main clock —
+      // while the sleeve's clocks are 10/25 days and the prompt makes that rotation a MUST.
+      const mainSells = decision.sells.filter(x => !isSleeveOwned(x));
+      const sleeveSells = decision.sells.filter(isSleeveOwned);
+      // Scaled on the rebalance day: the prompt explicitly adds "free a slot for a clearly
+      // higher-conviction NEW name" to the valid-sell list there, and the book holds ~11 against a
+      // 6-name target, so a legitimate consolidation is larger than 3. Off-window that trigger is
+      // withdrawn, so the tighter cap is the right one.
+      const railMax = buysOpen
+        ? Math.max(MAX_DISCRETIONARY_EXITS, Math.ceil((mainHeldForRail - TARGET_MAIN_POSITIONS) / 2))
+        : MAX_DISCRETIONARY_EXITS;
+      // Both news and analyst ratings fail to an EMPTY map on an outage or a missing key, which
+      // would make every bearish-news/downgrade exit unverifiable — the rail tightening exactly
+      // when its evidence is weakest.
+      // A failed feed (status) OR an empty map: "ok" only means a 200 with a list, and a plan change can
+      // return an empty or all-filtered list — with no downgrade data the rail must not bound exits.
+      const evidenceDegraded =
+        marketData.analystFeedStatus !== "ok" || Object.keys(marketData.analystRatings ?? {}).length === 0 || newsSignals.size === 0;
+      // RECORDED, not just logged. Standing down is correct — but it disables a live guard, and a
+      // guard that switches itself off silently is indistinguishable from one that is working. A
+      // persistent provider failure (plan change → 403, expired key) degrades evidence on EVERY
+      // run, so without this the rail would be permanently off with nothing to show for it. Gated
+      // on there actually being exits to bound, so a quiet day does not emit noise.
+      if (evidenceDegraded && mainSells.length > 0) {
+        console.error("SELL_RAIL_STOOD_DOWN", {
+          proposedExits: mainSells.length,
+          analystSymbols: Object.keys(marketData.analystRatings ?? {}).length,
+          newsSignals: newsSignals.size,
+        });
+        // "proposed", not "executed": mainSells is the DECIDED count here. Downstream, an unheld
+        // name is dropped (SELL_SKIPPED_NOT_HELD) and placement can fail, so claiming execution
+        // would assert something this line cannot know — the decision and the claim stay separate.
+        buySizingAdjustments.push(
+          `⚠️ Sell-volume rail STOOD DOWN — evidence degraded (analyst ratings: ` +
+          `${Object.keys(marketData.analystRatings ?? {}).length} symbols, news signals: ${newsSignals.size}). ` +
+          `${mainSells.length} main-book exit(s) proposed, none bounded by the rail. It stands down when it ` +
+          `cannot verify bearish-news/downgrade reasons, so it does not tighten hardest when it sees least — ` +
+          `but if this repeats daily, a provider is down and the guard is effectively off.`,
+        );
+      }
+      const rail = applySellRail(mainSells, railCtx, railMax, { evidenceDegraded });
+      if (rail.dropped.length > 0) {
+        const railKept = new Set([...rail.sells, ...sleeveSells]);
+        decision.sells = decision.sells.filter(x => railKept.has(x));   // the model's order, kept
+        buySizingAdjustments.push(...rail.notes);
+        console.error("SELL_RAIL_TRIMMED", { dropped: rail.dropped, kept: rail.sells.length });
+        await sendAlert(
+          `⚠️ Sell-volume rail trimmed ${rail.dropped.length} exit(s) — ${today}`,
+          `The decision proposed more discretionary full exits than the rail allows: ${rail.dropped.join(", ")}. ` +
+          `Provable risk exits (underwater, stale, off-shortlist, downgrade, bearish news, imminent earnings) are never capped, ` +
+          `so these had no code-verifiable reason. Investigate if this recurs — it is the shape that preceded a proposed full liquidation on 2026-09-29.`,
+        ).catch(() => {});
+      }
+    }
+
     // ── Hard cap: max concurrent influencer positions ─────────────────────────
     // The influencer bucket is high-risk by design; limit concentration regardless
     // of what the model decides. Count positions we'd KEEP plus NEW influencer buys.
@@ -1575,107 +1751,6 @@ export async function GET(request: Request) {
     // mistype and over/under-sell. A full exit sells the EXACT held qty (no dust remainder); a trim
     // sells fraction × held. A legacy numeric `quantity` is clamped to what's held. Names we don't
     // actually hold are dropped. Fractional quantities are fine (market + regular_hours sells).
-    // ── SELL VOLUME RAIL ──────────────────────────────────────────────────────
-    // Bounds DISCRETIONARY main-book full exits. Measured 2026-09-29: the model proposed selling
-    // the entire main book in 1 of 4 runs. Sells previously passed one filter (is it held) while
-    // buys passed six. Provable risk exits are never capped, and the automatic stop path
-    // (/api/drop-check, its own cron) does not come through here at all. Fails OPEN.
-    {
-      // Ownership, not the model's tag. The tag is model-emitted and never validated, so an
-      // untagged sleeve exit would route to the MAIN rail and be judged on the 60-day main clock —
-      // while the sleeve's clocks are 10/25 days and the prompt makes that rotation a MUST.
-      const mainHeldForRail = (portfolioCtx?.positions ?? []).filter(p => !influencerHeld.has(p.symbol)).length;
-      const isSleeveOwned = (x: { symbol: string; strategy?: string }) =>
-        x.strategy === "influencer" || influencerHeld.has(x.symbol);
-      const mainSells = decision.sells.filter(x => !isSleeveOwned(x));
-      const sleeveSells = decision.sells.filter(isSleeveOwned);
-      const railCtx = {
-        positionOf: (sym: string) => {
-          const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
-          return p ? { avgCost: parseFloat(p.avgCost), price: p.price, quantity: parseFloat(p.quantity) } : undefined;
-        },
-        stillRanked: (sym: string) => v1ShortlistSet.has(sym) || v1Retained.some(r => r.symbol === sym),
-        hasBearishNews: (sym: string) => newsSignals.get(sym)?.direction === "-",
-        hasDowngrade: (sym: string) => (marketData.analystRatings[sym] ?? []).some(r => r.action === "downgrade" || r.action === "lower_pt"),
-        daysToEarnings: (sym: string) => {
-          const ed = earningsDatesMap[sym];
-          if (!ed) return null;
-          const d = Math.round((new Date(ed).getTime() - new Date(today).getTime()) / 86_400_000);
-          return Number.isFinite(d) ? d : null;
-        },
-        // The prompt MANDATES reducing a ⚠CONCEN name and authorises a full exit when its thesis
-        // has weakened — and such a name is a WINNER that grew past the cap, so no distress test
-        // fires. Without this the rail could block an exit the prompt required.
-        isOverConcentrationCap: (sym: string) => {
-          const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
-          const val = p?.price != null ? p.price * (parseFloat(p.quantity) || 0) : null;
-          // The SAME trigger the ⚠CONCEN flag and applyConcentrationTrim use (maxPos x 1.25), not
-          // bare maxPos — otherwise the rail justifies an exit for a name never shown ⚠CONCEN.
-          return val != null && val > maxPositionDollars(portfolioCtx?.totalValue) * 1.25;
-        },
-        // A post-print DROP can be well under 10% below entry and so invisible to loss discipline,
-        // while the prompt tells the model to reassess or exit on exactly that. Gated on the
-        // direction: "reported at all" would exempt any name in a 7-day window, and through
-        // earnings season that is most of an 11-name book — the rail would quietly become a no-op
-        // in the regime that produces mass restructuring.
-        reportedRecently: (sym: string) =>
-          recentEarnings.has(sym) && ((change1dOfHeld[sym] ?? 0) < -3 || (change5dOfHeld[sym] ?? 0) < -5),
-        isStale: (sym: string) => {
-          const p = (portfolioCtx?.positions ?? []).find(x => x.symbol === sym);
-          const avg = p ? parseFloat(p.avgCost) : NaN;
-          const ret = p?.price != null && avg > 0 ? ((p.price - avg) / avg) * 100 : null;
-          return staleReasonOf(false, p?.heldDays ?? null, ret) != null;
-        },
-      };
-      // Scaled on the rebalance day: the prompt explicitly adds "free a slot for a clearly
-      // higher-conviction NEW name" to the valid-sell list there, and the book holds ~11 against a
-      // 6-name target, so a legitimate consolidation is larger than 3. Off-window that trigger is
-      // withdrawn, so the tighter cap is the right one.
-      const railMax = buysOpen
-        ? Math.max(MAX_DISCRETIONARY_EXITS, Math.ceil((mainHeldForRail - TARGET_MAIN_POSITIONS) / 2))
-        : MAX_DISCRETIONARY_EXITS;
-      // Both news and analyst ratings fail to an EMPTY map on an outage or a missing key, which
-      // would make every bearish-news/downgrade exit unverifiable — the rail tightening exactly
-      // when its evidence is weakest.
-      // A failed feed (status) OR an empty map: "ok" only means a 200 with a list, and a plan change can
-      // return an empty or all-filtered list — with no downgrade data the rail must not bound exits.
-      const evidenceDegraded =
-        marketData.analystFeedStatus !== "ok" || Object.keys(marketData.analystRatings ?? {}).length === 0 || newsSignals.size === 0;
-      // RECORDED, not just logged. Standing down is correct — but it disables a live guard, and a
-      // guard that switches itself off silently is indistinguishable from one that is working. A
-      // persistent provider failure (plan change → 403, expired key) degrades evidence on EVERY
-      // run, so without this the rail would be permanently off with nothing to show for it. Gated
-      // on there actually being exits to bound, so a quiet day does not emit noise.
-      if (evidenceDegraded && mainSells.length > 0) {
-        console.error("SELL_RAIL_STOOD_DOWN", {
-          proposedExits: mainSells.length,
-          analystSymbols: Object.keys(marketData.analystRatings ?? {}).length,
-          newsSignals: newsSignals.size,
-        });
-        // "proposed", not "executed": mainSells is the DECIDED count here. Downstream, an unheld
-        // name is dropped (SELL_SKIPPED_NOT_HELD) and placement can fail, so claiming execution
-        // would assert something this line cannot know — the decision and the claim stay separate.
-        buySizingAdjustments.push(
-          `⚠️ Sell-volume rail STOOD DOWN — evidence degraded (analyst ratings: ` +
-          `${Object.keys(marketData.analystRatings ?? {}).length} symbols, news signals: ${newsSignals.size}). ` +
-          `${mainSells.length} main-book exit(s) proposed, none bounded by the rail. It stands down when it ` +
-          `cannot verify bearish-news/downgrade reasons, so it does not tighten hardest when it sees least — ` +
-          `but if this repeats daily, a provider is down and the guard is effectively off.`,
-        );
-      }
-      const rail = applySellRail(mainSells, railCtx, railMax, { evidenceDegraded });
-      if (rail.dropped.length > 0) {
-        decision.sells = [...rail.sells, ...sleeveSells];
-        buySizingAdjustments.push(...rail.notes);
-        console.error("SELL_RAIL_TRIMMED", { dropped: rail.dropped, kept: rail.sells.length });
-        await sendAlert(
-          `⚠️ Sell-volume rail trimmed ${rail.dropped.length} exit(s) — ${today}`,
-          `The decision proposed more discretionary full exits than the rail allows: ${rail.dropped.join(", ")}. ` +
-          `Provable risk exits (underwater, stale, off-shortlist, downgrade, bearish news, imminent earnings) are never capped, ` +
-          `so these had no code-verifiable reason. Investigate if this recurs — it is the shape that preceded a proposed full liquidation on 2026-09-29.`,
-        ).catch(() => {});
-      }
-    }
 
     const sellsToExecute: Array<{ symbol: string; quantity: string; strategy?: string; reason?: string }> = [];
     for (const s of decision.sells) {

@@ -115,11 +115,15 @@ describe("wiring: the trade run uses the sorted sleeve everywhere", () => {
     expect(route.slice(sortAt).includes("previousRun?.influencerPositions")).toBe(false);
   });
 
-  test("the sort runs before the model prompt, and misfit sells join the sells before the sell rail", () => {
+  test("the sort runs before the model prompt, and misfit sells join the sells before they are executed", () => {
     expect(sortAt).toBeLessThan(route.indexOf("system: buildV1AnalysisPrompt(today, shortlistTable"));
     const misfit = route.indexOf('reason: "owner-misfit"');
     expect(misfit).toBeGreaterThan(sortAt);
-    expect(misfit).toBeLessThan(route.indexOf("applySellRail("));
+    // Since 2026-11-23 the sell rail runs BEFORE the slot caps and judges the MODEL's sells only, so
+    // a misfit (code-decided; it fits neither book, so it is never "still ranked" and the rail always
+    // passed it) joins after the rail. What must hold is that it is a real sell: queued before the
+    // sells are resolved and placed.
+    expect(misfit).toBeLessThan(route.indexOf("const sellsToExecute"));
   });
 });
 

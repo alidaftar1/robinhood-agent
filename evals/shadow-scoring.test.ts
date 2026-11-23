@@ -6,13 +6,21 @@ const PRICES: Record<string, number> = { UP: 110, DOWN: 90, FLAT: 100, DEAD: NaN
 // `mock.module` is GLOBAL and persists across tests in bun, so there is exactly ONE stub here and
 // the call counter is reset by whichever test needs it — re-mocking per test leaks into later ones.
 const quoteCalls = { n: 0 };
-mock.module("../lib/market-data", () => ({
+// The stub SPREADS the real module and replaces only fetchQuoteLite. A stub holding fetchQuoteLite
+// alone replaced lib/market-data for EVERY later file in the same bun process: on the Linux CI
+// runner (2026-11-23, deploy-on-merge) risk-metrics, ledger-prune, sleeve-sector, sharadar-quality
+// and ticker-overrides then died on load ("Export named 'STOCK_SECTOR' not found"). It passed on
+// macOS, where the file order and loading differ — so the gate is the test at the bottom, not luck.
+const realMarketData = await import("../lib/market-data");
+const marketDataStub = {
+  ...realMarketData,
   fetchQuoteLite: async (symbol: string) => {
     quoteCalls.n++;
     const p = PRICES[symbol];
     return p != null && Number.isFinite(p) ? { price: p, change1d: 0 } : null;
   },
-}));
+};
+mock.module("../lib/market-data", () => marketDataStub);
 
 const TODAY_ISO = "2026-09-14";
 const realFetch = globalThis.fetch;
@@ -220,5 +228,14 @@ describe("subset scoring reuses the total's prices (earnings-skip buckets, 2026-
       expect(spyFetches).toBe(0);
       expect(sub.scored[0].forwardReturnPct).toBe(total.scored[1].forwardReturnPct);
     } finally { globalThis.fetch = saved; }
+  });
+});
+
+describe("the market-data stub cannot break other test files", () => {
+  test("the stub carries every real export, replacing only fetchQuoteLite", () => {
+    // mock.module is process-global; an export missing from the stub is a load-time crash in every
+    // later file that imports it, on a runner where this file loads first (2026-11-23 CI).
+    const missing = Object.keys(realMarketData).filter((k) => !(k in marketDataStub));
+    expect(missing).toEqual([]);   // (realMarketData is bun's LIVE namespace, so it is patched too — no identity check)
   });
 });
