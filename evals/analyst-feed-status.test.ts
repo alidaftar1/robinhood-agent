@@ -33,12 +33,40 @@ describe("analyst feed: a failure is named, never silent", () => {
     stub(async () => new Response("[]", { status: 200 }));
     expect(await fetchAnalystRatings()).toEqual({ ratings: {}, status: "ok" });
   });
+  // 2026-11-23: the FMP plan caps the endpoint at 10 items = the last few hours of the whole market.
+  const item = (hoursAgo: number, symbol = "XYZQ") => ({
+    symbol, publishedDate: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(), newsTitle: "PT Raised to $10",
+  });
+  it("a list that does not reach back over the lookback window → truncated, ratings still returned", async () => {
+    process.env.FMP_API_KEY = "k";
+    stub(async () => new Response(JSON.stringify([item(1, "AAPL"), item(5)]), { status: 200 }));
+    const r = await fetchAnalystRatings();
+    expect(r.status).toBe("truncated");
+    expect(r.coverage).toContain("~5h");
+    expect(Object.keys(r.ratings)).toEqual(["AAPL"]);
+  });
+  it("undated items cannot establish coverage → truncated, not ok", async () => {
+    process.env.FMP_API_KEY = "k";
+    stub(async () => new Response(JSON.stringify([{ symbol: "AAPL", newsTitle: "PT Raised" }]), { status: 200 }));
+    expect((await fetchAnalystRatings()).status).toBe("truncated");
+  });
+  it("CONTROL: a list reaching past the cutoff is ok", async () => {
+    process.env.FMP_API_KEY = "k";
+    stub(async () => new Response(JSON.stringify([item(1, "AAPL"), item(24 * 8)]), { status: 200 }));
+    expect((await fetchAnalystRatings()).status).toBe("ok");
+  });
   it("wiring: the trade run records the note on any non-ok status, and the autopilot emails it", () => {
     const trade = readFileSync(`${import.meta.dir}/../app/api/trade/route.ts`, "utf8");
-    expect(trade).toContain('if (marketData.analystFeedStatus !== "ok") {');
+    expect(trade).toContain('} else if (marketData.analystFeedStatus !== "ok") {');
+    expect(trade).toContain("⚠️ Analyst feed truncated (FMP: ${marketData.analystFeedCoverage");
+    // The sell rail's trigger is UNCHANGED by the label: truncated (formerly "ok") must not stand it down.
+    expect(trade).toContain('(marketData.analystFeedStatus !== "ok" && marketData.analystFeedStatus !== "truncated") || Object.keys(marketData.analystRatings');
     expect(trade).toContain("⚠️ Analyst feed unavailable (FMP: ${marketData.analystFeedStatus})");
     const auto = readFileSync(`${import.meta.dir}/../app/api/autopilot/route.ts`, "utf8");
     expect(auto).toContain('n.startsWith("⚠️ Analyst feed unavailable")');
+    // NOT a soft issue: on the capped plan truncation is the steady state, and a NEEDS ATTENTION
+    // banner every morning is desensitisation (the 10-13 lesson). It stays in the run's notes.
+    expect(auto).not.toContain("Analyst feed truncated");
     expect(auto).toContain("if (analystFeedNote) softIssues.push(analystFeedNote);");
   });
 });

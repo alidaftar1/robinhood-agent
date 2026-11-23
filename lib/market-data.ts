@@ -182,6 +182,8 @@ export interface MarketData {
   analystRatings: Record<string, AnalystRating[]>;
   /** Why analystRatings is what it is — an empty map is ambiguous on its own (lib/analyst). */
   analystFeedStatus: AnalystFeedStatus;
+  /** Set when the feed was truncated: what it actually covered, for the run note. */
+  analystFeedCoverage?: string;
   spyContext: { change1d: number; change30d: number; regime: { riskOn: boolean; spy: number; ma: number } | null } | null;
 }
 
@@ -209,6 +211,7 @@ export async function getMarketData(): Promise<MarketData> {
     insiderBuys,
     analystRatings: analystFeed.ratings,
     analystFeedStatus: analystFeed.status,
+    analystFeedCoverage: analystFeed.coverage,
     spyContext: priceResult.spyContext,
   };
 }

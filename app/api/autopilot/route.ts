@@ -597,12 +597,14 @@ export async function GET(request: Request) {
   // predicted, from our own buys. Best-effort; empty until buys accumulate.
   let signalStats: SignalStat[] = [];
   let signalBuysLogged = 0;
+  let suspectSplits: string[] = [];
   // Exits, the mirror of the above: which REASONS for selling actually beat holding.
   let exitTriggers: TriggerStat[] = [];
   let exitsLogged = 0;
   try { const a = await computeExitAttribution(today); exitTriggers = a.triggers; exitsLogged = a.exits.length; }
   catch { /* best-effort, like the other ledgers */ }
-  try { const a = await computeSignalAttribution(today); signalStats = a.signals; signalBuysLogged = a.picks.length; }
+  try { const a = await computeSignalAttribution(today); signalStats = a.signals; signalBuysLogged = a.picks.length;
+    suspectSplits = a.picks.filter((p) => p.suspectSplit).map((p) => `${p.symbol} ${p.date} (${(p.returnPct ?? 0).toFixed(0)}%)`); }
   catch { /* best-effort */ }
 
   // This week's raw influencer signals (buys / avoids / insights) from the 6am cache refresh —
@@ -856,6 +858,7 @@ export async function GET(request: Request) {
   ${signalBuysLogged > 0
     ? `<div style="background:#f0fdf4;border-left:4px solid #10b981;padding:12px 16px;margin-bottom:16px;border-radius:4px">
     <strong>🔬 Signal ledger — which entry signals work:</strong>
+    ${suspectSplits.length ? `<p style="margin:6px 0 0;font-size:13px;color:#b45309">⚠️ Possible unadjusted split — counted, but check and set its factor (scripts/set-split-factor.ts): ${suspectSplits.join(", ")}</p>` : ""}
     ${signalStats.length === 0
       ? `<p style="margin:6px 0 0;font-size:13px;color:#6b7280">Logged ${signalBuysLogged} buy${signalBuysLogged === 1 ? "" : "s"} — forward returns accumulate over the coming days.</p>`
       : `<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">

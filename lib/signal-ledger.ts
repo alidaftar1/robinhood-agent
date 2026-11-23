@@ -31,12 +31,29 @@ export interface SignalPick {
   strategy: string;                // "main" | "influencer"
   priceAtBuy: number;              // baseline for the forward return
   signals: SignalSnapshot;
+  /**
+   * Cumulative FORWARD-split ratio since the buy, set by hand on the stored pick (absent = 1). Quotes
+   * are unadjusted and priceAtBuy is stored once, so a split must be applied at read time — and it
+   * is STORED on the pick, not re-derived, so it outlasts any rolling window. 2026-11-23: SNDK bought
+   * 11-16 at $810.25, 8:1 split 11-20, scored against $87.71 as −89.2%; that one row moved the
+   * all-picks baseline from −9.8% to −11.4% and so every signal's vsBaseline. Deriving splits from
+   * run history was built and REMOVED in review: a stale snapshot or a twice-recorded sell reads as an
+   * exact 2:1 (a phantom +100pp, the fail-open direction), the 150-run list trims the split day away
+   * within ~2 months, and SNDK's real split was sold before any snapshot saw it. Splits are rare;
+   * `suspectSplit` below makes an unadjusted one visible instead. Set via
+   * scripts/set-split-factor.ts (SNDK|2026-11-16 = 8, applied 2026-11-23).
+   */
+  splitFactor?: number;
 }
 
 export interface SignalPickOutcome extends SignalPick {
   currentPrice: number | null;
-  returnPct: number | null;        // (current / priceAtBuy − 1) × 100
+  returnPct: number | null;        // (current × splitFactor / priceAtBuy − 1) × 100
   daysElapsed: number;
+  /** Down ≥50% or up ≥100% with no splitFactor: possibly an unadjusted forward or REVERSE split. Still
+   *  COUNTED (dropping a real move would bias every signal) but named in the email, so it gets
+   *  checked and the factor set (setting splitFactor: 1 clears a checked, genuine move). */
+  suspectSplit?: boolean;
 }
 
 export interface SignalStat {
@@ -132,6 +149,15 @@ export function attributeSignals(picks: Array<{ returnPct: number | null; signal
     .sort((a, b) => b.vsBaselinePct - a.vsBaselinePct);
 }
 
+/** Forward return of one pick, split-adjusted by its stored factor (>1 forward split, <1 reverse,
+ *  e.g. 0.1 for 1:10). A factor that is not a finite positive number is a bad record: unmeasurable,
+ *  never silently treated as 1. */
+export function scorePick(p: Pick<SignalPick, "priceAtBuy" | "splitFactor">, currentPrice: number | null): number | null {
+  const f = p.splitFactor ?? 1;
+  if (!(Number.isFinite(f) && f > 0)) return null;
+  return currentPrice != null && p.priceAtBuy > 0 ? (currentPrice * f / p.priceAtBuy - 1) * 100 : null;
+}
+
 // Read-only: score every logged pick's forward return, then attribute per signal.
 export async function computeSignalAttribution(today: string): Promise<{ picks: SignalPickOutcome[]; signals: SignalStat[]; baselineReturnPct: number }> {
   const ledger = await ledgerGet();
@@ -139,8 +165,9 @@ export async function computeSignalAttribution(today: string): Promise<{ picks: 
   const picks: SignalPickOutcome[] = await Promise.all(
     entries.map(async (p) => {
       const currentPrice = (await fetchQuoteLite(p.symbol))?.price ?? null;
-      const returnPct = currentPrice != null && p.priceAtBuy > 0 ? (currentPrice / p.priceAtBuy - 1) * 100 : null;
-      return { ...p, currentPrice, returnPct, daysElapsed: daysBetween(p.date, today) };
+      const returnPct = scorePick(p, currentPrice);
+      return { ...p, currentPrice, returnPct, daysElapsed: daysBetween(p.date, today),
+        ...(returnPct != null && (returnPct <= -50 || returnPct >= 100) && p.splitFactor == null ? { suspectSplit: true } : {}) };
     }),
   );
   const measurable = picks.filter((p) => p.returnPct != null);

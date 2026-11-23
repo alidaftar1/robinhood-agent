@@ -93,9 +93,19 @@ function parsePrevPT(title: string): number | undefined {
 /** Why the feed returned what it did. Every failure used to collapse to {} — indistinguishable from
  *  "no analyst actions today" — so a dead key or a quota hit looked like a quiet market. 2026-11-17:
  *  the sell rail recorded 0 analyst symbols on 11-03 and 11-16 and nothing said why. */
-export type AnalystFeedStatus = "ok" | "no-key" | `http-${number}` | "bad-shape" | "error";
+export type AnalystFeedStatus = "ok" | "truncated" | "no-key" | `http-${number}` | "bad-shape" | "error";
 
-export async function fetchAnalystRatings(): Promise<{ ratings: Record<string, AnalystRating[]>; status: AnalystFeedStatus }> {
+/**
+ * "truncated": a 200 with a list that does NOT reach back to the lookback cutoff, so the 7-day window
+ * was sampled, not covered. 2026-11-23: the FMP plan caps this endpoint at 10 items (asking for more
+ * returns 402 "limit must be between 0 and 10"), and 10 items is the last ~5 hours of the WHOLE
+ * market, mostly small caps — so S&P names survived the filter only by luck and the feed read "ok"
+ * while delivering ~nothing for months. Decided by COVERAGE, not by the count 10, so it stays right
+ * if the plan or the page size changes. Ratings found are still returned (they are real); consumers
+ * must treat the absence of a downgrade as unestablished. No parseable date at all also counts:
+ * coverage that cannot be established is not coverage.
+ */
+export async function fetchAnalystRatings(): Promise<{ ratings: Record<string, AnalystRating[]>; status: AnalystFeedStatus; coverage?: string }> {
   const fail = (status: AnalystFeedStatus) => {
     console.error("ANALYST_FEED_FAILED", { status });
     return { ratings: {}, status };
@@ -116,6 +126,14 @@ export async function fetchAnalystRatings(): Promise<{ ratings: Record<string, A
     const symbolSet = new Set(SP500_UNIVERSE);
     const cutoff = new Date(Date.now() - ANALYST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
     const result: Record<string, AnalystRating[]> = {};
+    // Same measure as the per-item filter below (the UTC day slice), so "covered" means covered by
+    // items that filter would actually keep.
+    const dated = data.map(d => d.publishedDate ? new Date(d.publishedDate.slice(0, 10)) : null).filter((d): d is Date => d != null && !isNaN(d.getTime()));
+    const oldest = dated.length ? new Date(Math.min(...dated.map(d => d.getTime()))) : null;
+    const truncated = data.length > 0 && (oldest == null || oldest > cutoff);
+    // The REPORTED span uses real timestamps (the day slice would claim hours back to midnight UTC).
+    const stamps = data.map(d => d.publishedDate ? Date.parse(d.publishedDate) : NaN).filter(Number.isFinite);
+    const oldestTs = stamps.length ? Math.min(...stamps) : null;
 
     for (const item of data) {
       if (!item.symbol || !symbolSet.has(item.symbol)) continue;
@@ -147,6 +165,12 @@ export async function fetchAnalystRatings(): Promise<{ ratings: Record<string, A
       (result[item.symbol] ??= []).push(rating);
     }
 
+    if (truncated) {
+      const hrs = oldestTs != null ? Math.max(0, Math.round((Date.now() - oldestTs) / 3_600_000)) : null;
+      const coverage = `${data.length} item(s)${hrs != null ? ` covering the last ~${hrs}h` : ", undated"} of a ${ANALYST_LOOKBACK_DAYS}-day window`;
+      console.error("ANALYST_FEED_TRUNCATED", { items: data.length, oldest: oldest?.toISOString() ?? null });
+      return { ratings: result, status: "truncated", coverage };
+    }
     return { ratings: result, status: "ok" };
   } catch {
     return fail("error");

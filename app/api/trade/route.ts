@@ -273,7 +273,15 @@ export async function GET(request: Request) {
     // An empty analyst map is ambiguous — a quiet day or a dead feed. Recorded on EVERY run where the
     // feed failed, not only when the sell rail has exits to bound (its own note is gated on that), so
     // a bad key or a spent quota shows up in the report the first morning instead of as silence.
-    if (marketData.analystFeedStatus !== "ok") {
+    // The DECISION (sell rail stands down) keys on status !== "ok" below; the CLAIM made here is chosen
+    // separately, because "unavailable" is false for a truncated feed — it returned data, just not
+    // the window. Same separation as lib/valuation's askedSec (CLAUDE.md, widening a predicate).
+    if (marketData.analystFeedStatus === "truncated") {
+      contextWarnings.push(
+        `⚠️ Analyst feed truncated (FMP: ${marketData.analystFeedCoverage ?? "partial"}) — ↑FIRM/↓FIRM tags are a partial sample, and the sell rail still runs on that partial sample (whether a truncated feed should stand it down is an open owner decision). ` +
+        `Analyst upgrades still reach the agent via ⚡NEWS headlines.`,
+      );
+    } else if (marketData.analystFeedStatus !== "ok") {
       contextWarnings.push(
         `⚠️ Analyst feed unavailable (FMP: ${marketData.analystFeedStatus}) — no ↑FIRM/↓FIRM tags this run, and the sell rail cannot verify downgrade exits. ` +
         `If this repeats, check the FMP key, plan and quota.`,
@@ -1368,7 +1376,12 @@ export async function GET(request: Request) {
       // A failed feed (status) OR an empty map: "ok" only means a 200 with a list, and a plan change can
       // return an empty or all-filtered list — with no downgrade data the rail must not bound exits.
       const evidenceDegraded =
-        marketData.analystFeedStatus !== "ok" || Object.keys(marketData.analystRatings ?? {}).length === 0 || newsSignals.size === 0;
+        // "truncated" is EXCLUDED on purpose: it was reported as "ok" before 2026-11-23, and relabelling
+        // it must not silently switch this live guard off on every run (the capped FMP plan truncates
+        // daily). Whether a truncated feed should stand the rail down is the OWNER's call, flagged
+        // 2026-11-23 — a label change is not that decision (CLAUDE.md: keep the decision and the claim
+        // separate). The empty-map test below still catches the usual all-filtered day, as before.
+        (marketData.analystFeedStatus !== "ok" && marketData.analystFeedStatus !== "truncated") || Object.keys(marketData.analystRatings ?? {}).length === 0 || newsSignals.size === 0;
       // RECORDED, not just logged. Standing down is correct — but it disables a live guard, and a
       // guard that switches itself off silently is indistinguishable from one that is working. A
       // persistent provider failure (plan change → 403, expired key) degrades evidence on EVERY
