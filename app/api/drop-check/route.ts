@@ -6,9 +6,8 @@ import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
 import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap, STOCK_SECTOR } from "@/lib/market-data";
 import { saveRun, getRuns, recomputeDayReturn, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
-import { recordStopout, resolveDropCheckExits, classifyExit, buildExitContext, symbolsWithMainOwnership, stopThresholdFor,
-         MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT, MAIN_SECTOR_EXCESS_PCT,
-         sectorPeerMove, heldBySectorRule } from "@/lib/stopouts";
+import { recordStopout, resolveDropCheckExits, classifyExit, buildExitContext, symbolsWithMainOwnership, stopBarFor, judgeSectorStops, type ExitContext,
+         MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT, MAIN_SECTOR_EXCESS_PCT } from "@/lib/stopouts";
 import { sendAlert } from "@/lib/alert";
 import { recordExits, type ExitTrigger } from "@/lib/exit-ledger";
 import { isMarketHoliday } from "@/lib/holidays";
@@ -126,16 +125,20 @@ export async function GET(request: Request) {
       const reason = classifyExit(change1d, ctx);
       // Which bar this name was actually judged against — an influencer name can fall back to the
       // main bar (unusable cost basis, or a merged lot), and the model must not read that -5.4% as
-      // failing to meet a stated -10% sleeve bar.
-      const bar = stopThresholdFor(ctx) === INFLUENCER_DROP_THRESHOLD_PCT ? "influencer" : "main";
+      // failing to meet a stated -10% sleeve bar. Read from stopBarFor, NOT by comparing threshold
+      // numbers: both bars are -10, so a numeric comparison labelled EVERY name "influencer". These
+      // two strings are PROMPT TEXT only — the sector hold routes on ctx (judgeSectorStops / sectorRuleApplies).
+      const bar = stopBarFor(ctx) === "sleeve" ? "influencer" : "main";
       // State the BASIS too: "main bar" alone is ambiguous between a merged lot and an unusable
       // cost basis, and those report different quantities. The sympathy judgment ("is the whole
       // market down today?") is only meaningful against a same-day figure.
       const basis = ctx.measuredFromBuy ? "from buy" : "same-day";
 
-      return { position: p, change1d, isInfluencer, reason, bar, basis };
+      // ctx rides along so the sector pass routes on it (judgeSectorStops), not on bar/basis: 2026-11-20
+      // the gate read the label, the label was wrong, and MU/DELL were sold on a tech-wide fall.
+      return { position: p, change1d, isInfluencer, reason, bar, basis, ctx };
     })
-    .filter((e): e is { position: PositionSnapshot; change1d: number; isInfluencer: boolean; reason: "stop" | "profit"; bar: string; basis: string } => e.reason !== null);
+    .filter((e): e is { position: PositionSnapshot; change1d: number; isInfluencer: boolean; reason: "stop" | "profit"; bar: string; basis: string; ctx: ExitContext } => e.reason !== null);
 
   if (droppedPositions.length === 0) {
     const worst = positionsToCheck
@@ -195,17 +198,17 @@ export async function GET(request: Request) {
     // MCP — safety is the code-controlled prompt + no injection reaching it, not tool removal.)
     // Replaces the prior design where Sonnet held the token and "don't buy" was prompt-only, caught
     // after the fact by a detector that couldn't un-place an order.
-    // SECTOR-RELATIVE CRASH STOP (lib/stopouts heldBySectorRule): a MAIN same-day stop is held in CODE
-    // when the name fell with its sector's other S&P members rather than apart from them. Only the
-    // main bar on the same-day basis — a sleeve name or a name bought today is measured from its buy
-    // price and is not a sector question. Unknown sector move → no hold (the plain bar, as before).
-    const sectorHolds = new Map<string, { change: number; peer: number }>();
-    for (const e of droppedPositions) {
-      if (e.reason !== "stop" || e.bar !== "main" || e.basis !== "same-day") continue;
-      const peer = sectorPeerMove(e.position.symbol, marketData.stocks, (sym) => STOCK_SECTOR[sym]);
-      if (heldBySectorRule(e.change1d, peer)) sectorHolds.set(e.position.symbol, { change: e.change1d, peer: peer! });
-    }
-    if (sectorHolds.size > 0) console.log("DROP_CHECK_SECTOR_HOLD", Object.fromEntries([...sectorHolds].map(([k, v]) => [k, `${v.change.toFixed(1)}% vs sector ${v.peer.toFixed(1)}%`])));
+    // SECTOR-RELATIVE CRASH STOP (lib/stopouts judgeSectorStops): a MAIN same-day stop is held in CODE
+    // when the name fell with its sector's other S&P members rather than apart from them. Only an
+    // established main-book holding (sectorRuleApplies) — any sleeve row, mixed lots included, and a
+    // name bought today are not a sector question. Unknown sector move → no hold (the plain bar).
+    const sectorJudged = judgeSectorStops(
+      droppedPositions.map((e) => ({ symbol: e.position.symbol, reason: e.reason, change1d: e.change1d, ctx: e.ctx })),
+      marketData.stocks, (sym) => STOCK_SECTOR[sym]);
+    const sectorHolds = new Map(sectorJudged.filter((j) => j.held).map((j) => [j.symbol, { change: j.change, peer: j.peer! }]));
+    // Every judged stop is logged, held or not: 11-05..11-20 the rule never ran and nothing said so.
+    if (sectorJudged.length > 0) console.log("DROP_CHECK_SECTOR_JUDGED", Object.fromEntries(sectorJudged.map((j) => [j.symbol,
+      `${j.change.toFixed(1)}% vs sector ${j.peer == null ? "unknown" : `${j.peer.toFixed(1)}%`} → ${j.held ? "HELD" : "not held"}`])));
     // The LLM sympathy check sees only the stops the sector rule did NOT already hold.
     const stopEntries = droppedPositions.filter((e) => e.reason === "stop" && !sectorHolds.has(e.position.symbol));
     const sympathyHolds = new Set<string>(sectorHolds.keys());
@@ -556,7 +559,15 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     const sectorNote = sectorHolds.size > 0
       ? `\n\nHELD by the sector-relative stop (fell with its sector, not ${Math.abs(MAIN_SECTOR_EXCESS_PCT)}+ points worse): ${[...sectorHolds].map(([sym, v]) => `${sym} ${v.change.toFixed(1)}% vs sector ${v.peer.toFixed(1)}%`).join(", ")}.`
       : "";
-    const sympathyNote = (modelHeld.length > 0 ? `\n\nHELD on sympathy (stop-loss judged broad-market): ${modelHeld.join(", ")}.` : "") + sectorNote;
+    // The main-book stops the sector rule judged and did NOT hold, with the figures, so a sale on a
+    // sector-wide fall is visible in the run (and to the reviewer) rather than reading as a plain stop.
+    const notHeld = sectorJudged.filter((j) => !j.held);
+    const sectorSoldNote = notHeld.length > 0
+      ? `\n\nNOT held by the sector-relative stop (passed on to the sympathy check — see above for any it held): ${notHeld.map((j) => j.peer == null
+          ? `${j.symbol} ${j.change.toFixed(1)}% (sector move unknown)`
+          : `${j.symbol} ${j.change.toFixed(1)}% vs sector ${j.peer.toFixed(1)}% (${Math.abs(j.change - j.peer).toFixed(1)} points worse; the bar is ${Math.abs(MAIN_SECTOR_EXCESS_PCT)})`).join(", ")}.`
+      : "";
+    const sympathyNote = (modelHeld.length > 0 ? `\n\nHELD on sympathy (stop-loss judged broad-market): ${modelHeld.join(", ")}.` : "") + sectorNote + sectorSoldNote;
     const staleNote = staleNotes.length > 0
       ? `\n\nSNAPSHOT WAS STALE — the live book had already changed, so these exits were adjusted or skipped: ${staleNotes.join(", ")}. Almost always the owner trading by hand during the session.`
       : "";

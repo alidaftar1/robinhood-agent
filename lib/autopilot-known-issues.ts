@@ -402,6 +402,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Before warning that a holding is near an automatic exit, apply the rule for its book: main-book distance from COST is never a stop trigger (do not compute one); only an intraday crash that also beats its sector by 10+ points is. A sleeve holding near -10% from its buy price IS near its stop. Do not raise a main-book 'near the stop' concern from cost basis at any severity.",
   },
+  {
+    date: "2026-11-20",
+    title: "Sector-relative crash stop never ran: main-book names sold on a sector-wide fall",
+    lesson:
+      "The drop-check sold MU (-12.9% same-day) and DELL (-10.1%) at 1pm on a tech-wide fall (equal-weight tech peers -4.4%: 8.5 and 6.2 points worse, short of the 10-point bar), plus SNDK (-14.5%, 10.4 points worse — a correct sale). The sector hold had been dead since it shipped 2026-11-05: the route labelled each name's bar by comparing threshold NUMBERS, both are -10, so every name read 'influencer bar' and the main-only hold was skipped. No run ever showed a 'HELD by the sector-relative stop' line, and the reviewer did not flag that a main-book stop was described as 'influencer bar'. Fixed: the hold now gates on sectorRuleApplies(ctx) (established main-book holdings only).",
+    check:
+      "A [RISK-EXIT] run lists each established main-book stop the sector rule judged, under 'HELD by the sector-relative stop' or 'NOT held by the sector-relative stop' ('N points worse; the bar is 10'). Flag MEDIUM a 'NOT held' entry with fewer than 10 points worse — it should have been held. A 'NOT held' name may still have been held on sympathy; it is a sale only if it is in the run's trades. Flag MEDIUM a sold name that was in the PREVIOUS run's positions, is NOT in its influencerPositions, and was not bought today, yet appears on neither line — the rule did not run for it. Do not apply this to sleeve names or same-day buys: they are measured from their buy price and never judged. A 'sector move unknown' entry is LOW.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

@@ -226,6 +226,10 @@ export interface ExitContext {
    *  per-symbol, so without this the whole merged lot — main-book capital included — would inherit
    *  the sleeve's looser leash, and the sell is for the full held quantity. */
   mixedWithMain: boolean;
+  /** An ESTABLISHED main-book holding: not influencer-tagged (mixed lots included) and not bought
+   *  today. The only stops the sector-relative rule may hold (sectorRuleApplies). Optional so a
+   *  hand-built context reads as NOT established — the fail-closed direction (the plain bar). */
+  established?: boolean;
 }
 
 /** Build the exit context for a held position.
@@ -249,6 +253,7 @@ export function buildExitContext(args: {
     isInfluencer: args.isInfluencer,
     measuredFromBuy: wantFromBuy && args.canMeasureFromBuy,
     mixedWithMain,
+    established: !args.isInfluencer && !args.boughtToday,
   };
 }
 
@@ -309,10 +314,49 @@ export function sectorPeerMove(
   return n >= MIN_SECTOR_PEERS ? sum / n : null;
 }
 
+/** Which stops the sector-relative rule may hold: an ESTABLISHED MAIN-book holding on its same-day
+ *  move — the case the rule was backtested on. Decided from the ExitContext, never from the prompt's
+ *  bar/basis display strings: deriving it from a label is how the rule went dead (2026-11-20, every
+ *  name labelled "influencer" because both thresholds are -10). Excluded, deliberately:
+ *    · any influencer row, mixed lots included — a hold keeps the WHOLE lot, sleeve shares too,
+ *      past the sleeve's own from-buy rule;
+ *    · a name bought today — its stop is a from-buy question, even when the basis is unreadable
+ *      and it fell back to the same-day figure (a hold on a degraded input is the fail-open way). */
+export function sectorRuleApplies(ctx: ExitContext): boolean {
+  return ctx.established === true;
+}
+
 /** true = HOLD this main same-day stop: the name fell with its sector, not apart from it. An unknown
  *  sector move (null) never holds — the plain -10% bar applies, as before this rule existed. */
 export function heldBySectorRule(change1d: number, peerMove: number | null): boolean {
   return peerMove != null && change1d - peerMove > MAIN_SECTOR_EXCESS_PCT;
+}
+
+/** One stop the sector rule judged: its own (trigger) move and its sector's peer move. */
+export interface SectorJudgement { symbol: string; change: number; peer: number | null; held: boolean }
+
+/**
+ * The sector-relative pass over the drop-check's stops, pure so the routing is tested end to end
+ * (2026-11-20: string-level wiring tests passed while the hold never ran). Only stops whose context
+ * is sectorRuleApplies are judged; every judged stop is returned — held, sold, or with an unknown
+ * sector move — so the run can SAY what the rule decided instead of going silent. The name's own
+ * move is the TRIGGER figure, the one that breached the bar: the snapshot's row for the name is not
+ * used, because market-data writes change1d 0 for a missing prev close (a crash would read as flat
+ * and be held), and a figure that has since recovered could be sold on a bar it no longer breaches.
+ * The cost is a few seconds between the name's quote and its peers'.
+ */
+export function judgeSectorStops(
+  entries: ReadonlyArray<{ symbol: string; reason: "stop" | "profit"; change1d: number; ctx: ExitContext }>,
+  stocks: ReadonlyArray<{ symbol: string; change1d: number }>,
+  sectorOf: (sym: string) => string | undefined,
+): SectorJudgement[] {
+  const out: SectorJudgement[] = [];
+  for (const e of entries) {
+    if (e.reason !== "stop" || !sectorRuleApplies(e.ctx)) continue;
+    const peer = sectorPeerMove(e.symbol, stocks, sectorOf);
+    out.push({ symbol: e.symbol, change: e.change1d, peer, held: heldBySectorRule(e.change1d, peer) });
+  }
+  return out;
 }
 
 export function classifyExit(change1d: number, ctx: ExitContext): "stop" | "profit" | null {
