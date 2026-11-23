@@ -21,13 +21,17 @@ mkdir -p "$DIR"
 cd "$DIR"
 
 have() { [ -s "$1" ]; }
+# Downloads land in <file>.part and are renamed only after curl succeeds. Writing straight to the
+# final name meant a dropped connection left a truncated file that have() then served as "cached"
+# on every later run (2026-11-22: fundamentals reset at 561MB of ~631MB).
 
 fetch_csv() {  # fetch_csv <table> <outfile> <extra-query>
   local table="$1" out="$2" extra="${3:-}"
   if have "$out"; then echo "  ✓ $out (cached)"; return; fi
   echo "  → $out"
   curl -sS -f -L -H "x-api-key: ${SHARADAR_API_KEY}" \
-    "${API}/${table}?format=csv${extra}" -o "$out"
+    "${API}/${table}?format=csv${extra}" -o "$out.part"
+  mv "$out.part" "$out"
 }
 
 fetch_bulk_zip() {  # fetch_bulk_zip <table> <outzip>
@@ -35,7 +39,8 @@ fetch_bulk_zip() {  # fetch_bulk_zip <table> <outzip>
   if have "$out"; then echo "  ✓ $out (cached)"; return; fi
   echo "  → $out (bulk, large)"
   curl -sS -f -L -H "x-api-key: ${SHARADAR_API_KEY}" \
-    "${API}/${table}?years=full" -o "$out"
+    --retry 3 --retry-all-errors "${API}/${table}?years=full" -o "$out.part"
+  mv "$out.part" "$out"
 }
 
 echo "[1/5] S&P 500 membership history"
@@ -65,7 +70,8 @@ if ! have sp500_prices.csv; then
     NR==FNR { T[$1]=1; next }
     FNR==1  { print; next }
     ($1 in T) { print }
-  ' sp500_tickers.txt - > sp500_prices.csv
+  ' sp500_tickers.txt - > sp500_prices.csv.part
+  mv sp500_prices.csv.part sp500_prices.csv
   rm -f stocks.csv.zip
 fi
 echo "  sp500_prices.csv: $(wc -l < sp500_prices.csv) rows"
@@ -80,7 +86,8 @@ if ! have sp500_fund_all.csv; then
     NR==FNR { T[$1]=1; next }
     FNR==1  { print; next }
     { if (($2=="ARY" || $2=="ART") && ($1 in T)) print }
-  ' sp500_tickers.txt - > sp500_fund_all.csv
+  ' sp500_tickers.txt - > sp500_fund_all.csv.part
+  mv sp500_fund_all.csv.part sp500_fund_all.csv
   rm -f fundamentals.csv.zip
 fi
 echo "  sp500_fund_all.csv: $(wc -l < sp500_fund_all.csv) rows"
