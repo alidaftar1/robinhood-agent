@@ -418,6 +418,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "If a position's share count jumped by an integer ratio with avgCost falling by the same ratio and no trade, treat it as a split (benign); but if cost basis changed, or the ratio is not an integer, that is an unrecorded fill — flag it.",
   },
+  {
+    date: "2026-11-23",
+    title: "Owner's between-run buys inflated a SLEEVE return (gain counted, cost left out of the base)",
+    lesson:
+      "The owner bought DELL ($285.90) and SNDK ($243.57) on the evening of 11-20; the 11-23 run recorded them (actor human). Together they earned ~$100 of the main book's $105.67 gain, but computeSleeveReturns divided by Friday's main POSITIONS only ($863.17), so mainDailyReturn stored +12.24% while the true figure was +7.59% and the whole-account return was a correct +5.42%. The reviewer did not flag it: registry 2026-10-06's sleeve-vs-account comparison EXEMPTS days with a large position change, and owner fills are exactly that. Fixed (c19dd6d): owner/DRIP buy cost now enters the sleeve base; all sells stay end-weighted so the base never shrinks. 17 history days restated; the influencer sleeve had been flattered ~3.4 points since 10-06.",
+    check:
+      "On a run whose trades include actor 'human' or 'dividend' BUYS, recompute the main book by hand: gain = (today's main position value) - (previous run's main position value) - (today's main buy cost) + (today's main sell proceeds); expected return = gain / (previous main position value + the human/dividend buy cost). Flag MEDIUM if mainDailyReturn differs from that by more than 0.5 points, and do NOT excuse it as a 'large position change' — the 2026-10-06 exemption does not apply to owner fills. Same for influencerDailyReturn with the influencer names. A sleeve return HIGHER than the hand figure is the dangerous direction; say which way it is off.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

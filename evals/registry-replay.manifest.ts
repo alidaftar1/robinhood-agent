@@ -304,6 +304,16 @@ export const REPLAY_CASES: ReplayCase[] = [
     expect: "the carve-out the prompt names is unreachable because the data is never fetched",
   },
 
+  {
+    id: "2026-11-23/owner-buys-outside-sleeve-base",
+    incident: "Owner's between-run buys inflated a SLEEVE return (gain counted, cost left out of the base)",
+    replayable: true,
+    file: "lib/run-store.ts",
+    find: "    const base = value(yst) + added;",
+    replace: "    const base = value(yst);",
+    expect: "2026-11-23's main book reads +12.24% again; the fail-closed owner-buy case and the fixture go red",
+  },
+
   // ── NOT REPLAYABLE as a deterministic code change ──────────────────────────
   { id: "2026-08-19/earnings-exit-no-cron", replayable: false,
     incident: "/api/earnings-exit documented as a 12pm mechanical sell had no cron entry",
