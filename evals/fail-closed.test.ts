@@ -320,3 +320,46 @@ describe("sleeve buy universe fails closed", () => {
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SLEEVE BASE: the owner's between-run flows may only ever UNDERSTATE a sleeve day.
+// 2026-11-23 stored main +12.24% (true +7.59%) because the owner's buys earned gain with no base;
+// the first fix then start-weighted owner SELLS, which shrank the base and inflated (review).
+// Mutation-checked: dropping the buy cost from the base, or subtracting sell proceeds, fails these.
+// ─────────────────────────────────────────────────────────────────────────────
+import { computeSleeveReturns, type PositionSnapshot as PS, type TradeSnapshot as TS } from "@/lib/run-store";
+describe("sleeve base never shrinks or omits owner capital", () => {
+  const p = (symbol: string, quantity: string, price: string): PS => ({ symbol, quantity, price, avgCost: price });
+  const t = (side: string, symbol: string, quantity: string, avgPrice: string, actor?: TS["actor"]): TS =>
+    ({ symbol, side, quantity, avgPrice, state: "filled", strategy: "main", ...(actor ? { actor } : {}) });
+  const main = (today: PS[], tr: TS[], yst: PS[]) => computeSleeveReturns(today, tr, [], [], yst).mainDailyReturn;
+
+  test("owner sells a winner late in the window: not divided by the shrunken remainder", () => {
+    // A $800 + B $200; A rises 5% and the owner sells it for $840; B flat. True ≈ +4%, fail-open read +25%.
+    const r = main([p("B", "1", "200")], [t("sell", "A", "1", "840", "human")], [p("A", "1", "800"), p("B", "1", "200")]);
+    expect(r!).toBeLessThanOrEqual(0.04 + 1e-9);
+  });
+
+  test("owner buys between runs: their gain is not counted against a base that excludes their cost", () => {
+    // $1000 book flat; owner buys $1000 of C that rises 10%. True ≈ +5%, fail-open read +10%.
+    const r = main([p("A", "1", "1000"), p("C", "1", "1100")], [t("buy", "C", "1", "1000", "human")], [p("A", "1", "1000")]);
+    expect(r!).toBeLessThanOrEqual(0.05 + 1e-9);
+  });
+
+  test("owner buy with no price and no position to mark it from: withheld, not a $0 cost", () => {
+    expect(main([p("A", "1", "1000")], [t("buy", "C", "1", "", "human")], [p("A", "1", "1000")])).toBeNull();
+  });
+
+  test("control: an undegraded agent-only day still publishes", () => {
+    expect(main([p("A", "1", "1010")], [], [p("A", "1", "1000")])).toBeCloseTo(0.01, 6);
+  });
+});
+
+describe("owner buy with an unreadable quantity is withheld, not a $0 cost", () => {
+  const p = (symbol: string, quantity: string, price: string): PS => ({ symbol, quantity, price, avgCost: price });
+  test("quantity \"\" on a captured owner buy", () => {
+    const r = computeSleeveReturns([p("A", "1", "1000"), p("C", "1", "1100")],
+      [{ symbol: "C", side: "buy", quantity: "", avgPrice: "1000", state: "filled", strategy: "main", actor: "human" }], [], [], [p("A", "1", "1000")]);
+    expect(r.mainDailyReturn).toBeNull();
+  });
+});

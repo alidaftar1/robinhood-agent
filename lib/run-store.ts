@@ -834,8 +834,12 @@ export function computeSleeveReturns(
   // relative-only test could still amplify) can't occur here: the smallest real position
   // is one whole/fractional share worth ~$28. Do NOT add an absolute floor without solving
   // the small-sleeve case first.
-  const materialBase = (today: PositionSnapshot[], yst: PositionSnapshot[]) =>
-    value(yst) >= 0.10 * value(today);
+  //
+  // `base` is yesterday's book PLUS the owner's between-run buy cost (see ownerBuyCost below): that
+  // capital has a base, so it does not count as a rebuild. Only the agent's own run-time deployment
+  // from cash can trip this — a tiny sleeve plus a large owner buy is computable, and is.
+  const materialBase = (today: PositionSnapshot[], base: number) =>
+    base >= 0.10 * value(today);
 
   // AN EXIT DAY IS A REAL DAY. Requiring positions TODAY used to be part of this test, which
   // silently deleted every day a sleeve was fully closed out — and a sleeve empties precisely when
@@ -852,10 +856,63 @@ export function computeSleeveReturns(
   // book today is just `pnl = proceeds - yesterdayValue`. Only the YESTERDAY side must be non-empty
   // (a zero denominator), which is the guard that remains. If the sells are missing from the record
   // the result is ~-100%, and clampSleeveReturn still nulls it rather than publishing a phantom.
-  const sleeveReturn = (today: PositionSnapshot[], yst: PositionSnapshot[], tr: TradeSnapshot[]) =>
-    yst.length > 0 && materialBase(today, yst)
-      ? computeDailyReturn(value(today), value(yst), today, yst, tr)
-      : null;
+  //
+  // CAPITAL THE OWNER ADDS BETWEEN RUNS BELONGS IN THE BASE. A sleeve's base is yesterday's
+  // POSITIONS only (its cash is not in the sleeve), so a buy is new capital arriving from outside
+  // it. The agent's /api/trade buys fill minutes before the snapshot that marks them, so they earn
+  // ~nothing and need no base. The owner's buys (actor "human") and Robinhood's dividend
+  // reinvestments land BETWEEN runs and earn the whole gap to the next snapshot — counting that gain
+  // while leaving its cost out of the denominator overstates the day. 2026-11-23: the owner's
+  // Friday-evening DELL + SNDK buys ($529.47) earned ~$100 of the main book's $105.67, against a
+  // base of only the $863.17 held at Friday's snapshot → +12.24% stored; with their cost in the base
+  // it is +7.59% (the whole-account +5.42% was right throughout — its base includes the cash).
+  //
+  // BUYS ONLY, and both weightings are chosen so every error UNDERSTATES. We keep the fill DATE, not
+  // a time, so a flow's position in the window is unknown:
+  //   - owner BUY weighted as if at the START of the window (cost fully in the base): a buy late in
+  //     the window has a too-large base → understated.
+  //   - every SELL (owner's or agent's, incl. drop-check / earnings-exit intraday exits, which are
+  //     actor "agent" but fill BETWEEN runs) weighted as if at the END (base unchanged): the sold
+  //     position's gain up to the sale is divided by a base that still holds it → understated.
+  //     Start-weighting owner sells was tried in review and is the fail-OPEN branch: proceeds leave
+  //     the base but the sold name's pre-sale gain stays in pnl, so $40 on a $160 remainder read +25%
+  //     for a ~+4% day. Since no flow shrinks the base, the base can never be smaller than value(yst).
+  // Accepted, both UNDERSTATE: a fill the broker marks agent-placed but a lost save left for capture
+  // to record as "human" (it filled at run time, so it gets a base it did not need); and an owner
+  // fill AFTER the snapshot that capture attaches to the run (PRE-EXISTING: its cost already lowers
+  // pnl with no position behind it; the base addition only dampens that).
+  // Actor-less legacy trades stay weight 0; trades stamped since ~2026-10-06 DO restate on the next
+  // ?recomputeSleeves (owner-approved 2026-11-23, diff shown). See notAgentPlaced.
+  const ownerBuyCost = (tr: TradeSnapshot[], today: PositionSnapshot[]): number | null => {
+    let s = 0;
+    for (const t of tr) {
+      if (!notAgentPlaced(t) || t.side !== "buy") continue;
+      // Same price fallback as computeDailyReturn (today's mark of the still-held name), never `|| 0`:
+      // a $0 cost is exactly the original defect for that trade. No price at all → unknowable base.
+      // Quantity likewise: an unparseable one would add $0 here while the position still counts in
+      // today's value — the original defect reached through the other field. Withhold.
+      const qty = parseFloat(t.quantity);
+      if (!(qty > 0)) return null;
+      let px = parseFloat(t.avgPrice);
+      if (!(px > 0)) {
+        const p = today.find(x => x.symbol === t.symbol);
+        px = p ? priceOf(p) : NaN;
+      }
+      if (!(px > 0)) return null;
+      s += qty * px;
+    }
+    return s;
+  };
+  const sleeveReturn = (today: PositionSnapshot[], yst: PositionSnapshot[], tr: TradeSnapshot[]) => {
+    if (yst.length === 0) return null;
+    const added = ownerBuyCost(tr, today);
+    if (added == null) return null;
+    const base = value(yst) + added;
+    // The rebuild guard asks whether TODAY's book grew from capital with no base. The owner's buys
+    // now HAVE a base, so they count toward it; only the agent's run-time deployment from cash trips it.
+    if (!materialBase(today, base)) return null;
+    return computeDailyReturn(value(today), base, today, yst, tr);
+  };
 
   const influencer = sleeveReturn(influToday, influYesterday, trades.filter(t => isInfluencer(t.symbol)));
   const main = sleeveReturn(mainToday, mainYesterday, trades.filter(t => !isInfluencer(t.symbol)));
