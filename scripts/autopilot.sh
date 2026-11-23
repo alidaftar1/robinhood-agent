@@ -17,7 +17,7 @@ cd "$PROJECT_DIR"
 # Load project env vars (gives Claude access to API keys, secrets, and account IDs)
 set -a; source .env.local 2>/dev/null || true; set +a
 
-export PATH="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$HOME/.local/bin:$HOME/.local/node/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 
 # Pass live credentials in the prompt so Claude doesn't have to guess placeholder values.
 # CLAUDE.md has the full protocol — this prompt just surfaces the runtime context.

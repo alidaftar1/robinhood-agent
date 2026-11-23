@@ -9,7 +9,7 @@ Runtime values are passed via the prompt from `scripts/autopilot.sh`. Use `$APP_
 - **Daily trade cron**: 7:30am PT weekdays (Vercel)
 - **Vercel autopilot**: 8am PT weekdays (runs before this job, handles mechanical fixes)
 - **This job**: 8:30am PT weekdays — deep verification + anything the Vercel cron couldn't auto-fix
-- **Deploy**: `/Users/ali/.bun/bin/vercel deploy --prod` (from project root). A PreToolUse gate (`.claude/settings.json`) BLOCKS prod deploys: first run `/code-review` on the working diff and fix findings, THEN deploy prefixed with the bypass sentinel: `REVIEWED=1 /Users/ali/.bun/bin/vercel deploy --prod`. This applies to self-heal deploys too — review before shipping to a live trading account.
+- **Deploy**: `bun ~/.bun/bin/vercel deploy --prod` (from project root). A PreToolUse gate (`.claude/settings.json`) BLOCKS prod deploys: first run `/code-review` on the working diff and fix findings, THEN deploy prefixed with the bypass sentinel: `REVIEWED=1 bun ~/.bun/bin/vercel deploy --prod`. This applies to self-heal deploys too — review before shipping to a live trading account.
 - **Evals**: `bun --env-file=.env.local test evals/eval.test.ts`
 
 ## Accounts (critical — never mix these up)
@@ -145,12 +145,12 @@ past-misses registry (`lib/autopilot-known-issues.ts`). Its concerns appear in t
 
 If the run summary mentions errors or the trade count is wrong:
 
-1. Check recent Vercel logs: `/Users/ali/.bun/bin/vercel logs --since 4h 2>&1 | head -200`
+1. Check recent Vercel logs: `bun ~/.bun/bin/vercel logs --since 4h 2>&1 | head -200`
 2. Identify root cause from logs
 3. Fix the code
 4. Run evals if `lib/strategy.ts` changed: `bun --env-file=.env.local test evals/eval.test.ts`
 5. **Secret/PII scan: `bun run check:secrets`** (must exit 0 — see "Secret/PII gate" below)
-6. Deploy (gated): run `/code-review` first, fix findings, then `REVIEWED=1 /Users/ali/.bun/bin/vercel deploy --prod`
+6. Deploy (gated): run `/code-review` first, fix findings, then `REVIEWED=1 bun ~/.bun/bin/vercel deploy --prod`
 
 ### Secret/PII gate (repo is shared/collaborative)
 

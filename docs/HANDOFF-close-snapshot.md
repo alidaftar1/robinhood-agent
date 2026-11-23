@@ -19,7 +19,7 @@ No dashboard change is needed, and none was made.
 ## Status: code complete and verified locally. NOT reviewed, NOT deployed, NOT pushed.
 
 Resume by running the deploy gate: `/code-review`, fix findings, `bun run check:secrets`,
-then `REVIEWED=1 /Users/ali/.bun/bin/vercel deploy --prod`. Push is a separate approval.
+then `REVIEWED=1 bun ~/.bun/bin/vercel deploy --prod`. Push is a separate approval.
 
 ## Why this was built
 
