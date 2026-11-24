@@ -435,8 +435,10 @@ const QTY_EPSILON = 1e-4;
  * share count is an EXACT whole multiple r >= 2 of the old one, and the average cost fell by that
  * same ratio (so qty x avgCost, the cost basis, is conserved). Fails CLOSED: any unreadable/zero
  * input, a non-whole multiple, or a cost basis that moved by > 2% returns false, so the gap is still
- * WITHHELD as before. NOT handled: fractional splits (3:2), a split on a day the symbol also traded,
- * and reverse splits — a reverse split surfaces as a shortfall and is inferred as a SELL.
+ * WITHHELD as before. NOT handled: fractional splits (3:2), a split on a day the symbol also traded
+ * (built and REMOVED 2026-11-23: on a full exit no cost basis remains, and price alone accepts a
+ * duplicate sell after a ~50% fall, or a wrong multiple — repair by hand), and
+ * reverse splits — a reverse split surfaces as a shortfall and is inferred as a SELL.
  */
 export function isForwardSplit(
   held: PositionSnapshot[], now: PositionSnapshot[], symbol: string,
@@ -453,6 +455,32 @@ export function isForwardSplit(
   const ratio = Math.round(nq / hq);
   if (ratio < 2 || Math.abs(nq - ratio * hq) > QTY_EPSILON) return false;
   return Math.abs((nq * nc) / (hq * hc) - 1) <= 0.02;
+}
+
+/**
+ * Pure: dates in [from, today] whose ACCOUNT return is missing. The compounded record skips such a
+ * day (both sleeves inherit the null, see sleeveReturnsForStorage) while SPY's line does not, so one
+ * withheld loss flatters every headline (2026-11-20: -7.58% skipped, the +5.42% rebound counted).
+ * A sleeve-only null is NOT judged: it is correct on an empty or rebuilt sleeve, and the cards'
+ * "days priced" badge shows it.
+ * Takes RAW runs and merges them itself: thin intraday rows are null by design. Today counts only
+ * once LOCKED (withheld); before that it is legitimately blank until the 8am repair. A full read may
+ * start mid-date (the store is trimmed by record), so its oldest date is not judged.
+ */
+export function daysMissingReturn(raw: TradeRun[], from: string, today: string): string[] {
+  const merged = mergeRunsByDate(raw);
+  const oldest = raw.length >= MAX_RUNS ? merged[merged.length - 1]?.date : undefined;
+  const todayLocked = raw.some(r => r.date === today && r.returnLocked);
+  return merged
+    .filter(r => r.date >= from && (r.date < today || (r.date === today && todayLocked)) && r.date !== oldest)
+    .filter(r => r.agenticDailyReturn == null)
+    .map(r => r.date).sort();
+}
+
+/** The missing dates among a locked today and the three run dates before it — what the email mentions. */
+export function recentDaysMissingReturn(raw: TradeRun[], from: string, today: string): string[] {
+  const recent = new Set([...new Set(raw.map(r => r.date))].filter(d => d < today).sort().slice(-3));
+  return daysMissingReturn(raw, from, today).filter(d => d === today || recent.has(d));
 }
 
 /**

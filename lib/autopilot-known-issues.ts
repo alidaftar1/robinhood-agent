@@ -426,6 +426,14 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "On a run whose trades include actor 'human' or 'dividend' BUYS, recompute the main book by hand: gain = (today's main position value) - (previous run's main position value) - (today's main buy cost) + (today's main sell proceeds); expected return = gain / (previous main position value + the human/dividend buy cost). Flag MEDIUM if mainDailyReturn differs from that by more than 0.5 points, and do NOT excuse it as a 'large position change' — the 2026-10-06 exemption does not apply to owner fills. Same for influencerDailyReturn with the influencer names. A sleeve return HIGHER than the hand figure is the dangerous direction; say which way it is off.",
   },
+  {
+    date: "2026-11-23",
+    title: "A withheld day left blank, and the dashboard compounded straight over it",
+    lesson:
+      "SNDK split 8:1 and was sold the same day (11-20), so the share check withheld the day. Nothing looked again: the -7.58% day was skipped while 11-23's +5.42% rebound counted, and SPY's line had both. Main-book return since July read -7.4% against a true -15.2%. Stored by hand 11-23.",
+    check:
+      "Code reports days with no stored return; do not infer one from a null row (intraday rows are null by design). If the run's summary quotes a multi-day return for the book, does it say which days it covers? If not, LOW. On a split day a share count that is a whole multiple of the old one, with sells on record, needs a hand check; do not call it an owner fill.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */

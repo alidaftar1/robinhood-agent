@@ -2,7 +2,7 @@ import React from "react";
 import { vsSpyLabel } from "@/lib/dashboard-labels";
 import { StrategyNotes } from "./strategy-notes";
 import { TARGET_MAIN_POSITIONS } from "@/lib/position-target";
-import { getRuns, mergeRunsByDate, type TradeRun, MAX_RUNS } from "@/lib/run-store";
+import { getRuns, mergeRunsByDate, daysMissingReturn, type TradeRun, MAX_RUNS } from "@/lib/run-store";
 import { computeCashPct, computeSectorBreakdown, computeBetaBreakdown, betaDescription, computeT1Settling, computeMaxDrawdown, computeConcentration, computeBeatRate, computeBenchmarkVerdict, computeSharpe, computeSpySharpe, computeBookBeta, probBeatsSpy, SMALL_SAMPLE_DAYS, V1_TRACK_START } from "@/lib/risk-metrics";
 
 // ─── Plain-language tooltip ─────────────────────────────────────────────────────
@@ -382,6 +382,8 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
   const latestInfluencer = returnSeries[returnSeries.length - 1]?.influencer;
   const inflPriced = daysPricedIn(runsChronological, "influencerDailyReturn");
   const mainPriced = daysPricedIn(runsChronological, "mainDailyReturn");
+  const missingDays = daysMissingReturn(
+    allRuns, V1_TRACK_START, new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }));
 
   const influencerCumReturn = latestInfluencer != null ? latestInfluencer - 100 : null;
   // Influencer alpha must use SPY over the INFLUENCER window, not the AI-window spyReturn —
@@ -509,6 +511,12 @@ export async function DashboardView({ isPublic = false }: { isPublic?: boolean }
       </div>
 
       <StrategyNotes />
+
+      {missingDays.length > 0 && (
+        <div style={{ ...s.subtitle, color: "#e0b050" }}>
+          ⚠ No account return stored for {missingDays.join(", ")} (days since {V1_TRACK_START} are checked). The cumulative returns skip a day with no return, while the S&amp;P 500 line does not.
+        </div>
+      )}
 
       {runs.length >= 2 && (
         <div style={s.perfCard}>

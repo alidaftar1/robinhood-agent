@@ -4,7 +4,8 @@ import { requireCronEtWindow } from "@/lib/cron-clock";
 import { parseTradeDecision, isFullExit } from "@/lib/trade-decision";
 import { dashboardPublicUrl, dashboardLoginUrl, mintLoginToken, EMAIL_LOGIN_TOKEN_TTL_SECONDS } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
-import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, formatSummaryForEmail, escapeHtml, buildInferredSells } from "@/lib/run-store";
+import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, formatSummaryForEmail, escapeHtml, buildInferredSells, recentDaysMissingReturn, MAX_RUNS } from "@/lib/run-store";
+import { V1_TRACK_START } from "@/lib/risk-metrics";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
@@ -313,13 +314,30 @@ export async function GET(request: Request) {
       if (prevRun2?.portfolioAfter) {
         const result = await callDebug(`patchDate=${today}`);
         const msg = msgOf(result, "patchDate");
-        if (msg && !msg.startsWith("error") && !msg.includes("not found")) {
+        if (msg && /return = -?\d/.test(msg)) { // "skipped — locked" and "return = null" are not repairs
           autoFixed.push(`Computed missing return: ${msg}`);
           runs = await getRuns(30);
           todayRun = runs.find(r => r.date === today) ?? todayRun;
         }
       }
     }
+  }
+
+  // A null return is repaired only on its own day (Fix 2); once that passes nothing looked again, and
+  // 2026-11-20 sat blank while the dashboard compounded over a -7.58% day. SOFT and 3 dates only: it
+  // must not dispatch the cloud fixer, and it prescribes no repair, because an older null may have
+  // been withheld on purpose. The dashboard's warning stays. Guarded: an old malformed record must
+  // never stop the daily report.
+  try {
+    const all = await getRuns(MAX_RUNS); // swallows a store error into []
+    if (all.length === 0) softIssues.push("Could not check for days with no stored return (run history read came back empty).");
+    const missing = recentDaysMissingReturn(all, V1_TRACK_START, today);
+    if (missing.length > 0) {
+      softIssues.push(`No return stored for ${missing.join(", ")}: the dashboard skips it while SPY's line does not. `
+        + `It may be withheld on purpose; the owner should decide whether the day can be established.`);
+    }
+  } catch (e) {
+    softIssues.push(`Could not check for days with no stored return: ${String(e).slice(0, 120)}`);
   }
 
   // Fix 3: Bogus 0% return on the oldest run (first-ever run had same-day baseline).
