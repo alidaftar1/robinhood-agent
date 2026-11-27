@@ -418,3 +418,33 @@ describe("a second-source previous close is checked before it can fire a stop", 
     expect(_rh([row({ symbol: "MU" })], ["SNDK"], "2026-11-25", () => 83).size).toBe(0);
   });
 });
+
+// ─── patchDate refuses a book that does not add up, unless the owner unlocks ───────────────
+import { dayReturnFromMerged as _dr } from "@/lib/run-store";
+describe("a recompute of a withheld day does not publish from an unreconciled book", () => {
+  const run = (date: string, positions: any[], trades: any[] = [], total = "1000") => ({ date, timestamp: `${date}T15:30:00.000Z`,
+    summary: "", positions, trades, influencerPositions: [], personal: null, portfolioAfter: { totalValue: total, cash: "0", equity: total } }) as any;
+  const p = (symbol: string, quantity: string, price: string) => ({ symbol, quantity, price, avgCost: price });
+  const prev = run("2026-11-24", [p("A", "10", "100")]);
+  const ghost = run("2026-11-25", [p("A", "12", "100")], [], "1200");   // 2 shares appeared, no record
+  test("required: refuses", () => expect(_dr([ghost, prev], "2026-11-25", true).ok).toBe(false));
+  test("not required (unlock): computes", () => expect(_dr([ghost, prev], "2026-11-25", false).ok).toBe(true));
+  test("control: a book that adds up is computed even when required", () => {
+    const fine = run("2026-11-25", [p("A", "12", "100")], [{ symbol: "A", side: "buy", quantity: "2", avgPrice: "100", state: "filled" }], "1200");
+    expect(_dr([fine, prev], "2026-11-25", true).ok).toBe(true);
+  });
+  test("a day patchTrades already repaired (inferred sell on record) is computed", () => {
+    const sold = run("2026-11-25", [p("A", "6", "100")], [{ symbol: "A", side: "sell", quantity: "4.000000", avgPrice: "100.00", state: "inferred" }], "1000");
+    expect(_dr([sold, prev], "2026-11-25", true).ok).toBe(true);
+    const short = run("2026-11-25", [p("A", "6", "100")], [], "1000"); // same day before the repair
+    expect(_dr([short, prev], "2026-11-25", true).ok).toBe(false);
+  });
+  test("wired: patchDate's bypass is its own switch, not unlock; the 8am job raises a refusal", () => {
+    const d = readFileSync(new URL("../app/api/debug/route.ts", import.meta.url), "utf8");
+    expect(d).toContain("recomputeDayReturn(date, { unlock, writeIfNone: true, requireReconciled: !unreconciled })");
+    expect(d).not.toContain("requireReconciled: !unlock");
+    const a = readFileSync(new URL("../app/api/autopilot/route.ts", import.meta.url), "utf8");
+    expect(a.indexOf("result?.patchDateRefused === true")).toBeGreaterThan(-1);
+    expect(a.slice(a.indexOf("result?.patchDateRefused === true"), a.indexOf("result?.patchDateRefused === true") + 200)).toContain("issues.push(");
+  });
+});

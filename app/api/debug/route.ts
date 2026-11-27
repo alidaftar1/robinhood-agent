@@ -271,13 +271,23 @@ export async function GET(request: Request) {
     // lock is fixed (e.g. the 07-27 re-recorded-sell phantom, fixed by findReRecordedSells). It
     // clears the lock and recomputes from the DEDUPED trades so the phantom can't re-inflate it.
     const unlock = url.searchParams.get("unlock") === "1";
+    // A SEPARATE switch from unlock: unlocking a fixed day must still check its book. Owner only.
+    const unreconciled = url.searchParams.get("unreconciled") === "1";
     try {
       // From the MERGED day — its latest snapshot and ALL its trades — written onto every run of
       // the date (lib/run-store recomputeDayReturn). Reading only the newest raw run, as this did,
       // got a day with an intraday exit wrong: that run carries the exit's trades and none of the
       // 07:30 run's. Re-recorded sells are dropped inside mergeRunsByDate, as before.
-      const out = await recomputeDayReturn(date, { unlock, writeIfNone: true });
-      results.patchDate = out.detail;
+      // REFUSES a book that does not add up unless &unlock=1. The trade run withholds such a day
+      // UNLOCKED so the 8am capture can repair it; when that repair call fails, the 8am job (and a
+      // headless run following CLAUDE.md step 4) went straight on to this and published a return
+      // from the book just declared wrong. &unreconciled=1 is the OWNER's "I checked it against
+      // Robinhood"; automated callers must never pass it.
+      const out = await recomputeDayReturn(date, { unlock, writeIfNone: true, requireReconciled: !unreconciled });
+      if (!out.ok && /does not reconcile/.test(out.detail)) results.patchDateRefused = true;
+      results.patchDate = out.ok || !/does not reconcile/.test(out.detail)
+        ? out.detail
+        : `${out.detail}. OWNER ONLY: check the book against Robinhood, then /api/debug?patchDate=${date}&unreconciled=1.`;
     } catch (e) {
       results.patchDate = `error: ${e}`;
     }

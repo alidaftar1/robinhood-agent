@@ -314,7 +314,10 @@ export async function GET(request: Request) {
       if (prevRun2?.portfolioAfter) {
         const result = await callDebug(`patchDate=${today}`);
         const msg = msgOf(result, "patchDate");
-        if (msg && /return = -?\d/.test(msg)) { // "skipped — locked" and "return = null" are not repairs
+        if (result?.patchDateRefused === true) {
+          // A REFUSAL IS NOT A FIX: the holdings do not add up, so no return is published from them.
+          issues.push(`Today's return is still WITHHELD: ${msg} Do not retry with unreconciled=1; that is the owner's call.`);
+        } else if (msg && /return = -?\d/.test(msg)) { // "skipped — locked" and "return = null" are not repairs
           autoFixed.push(`Computed missing return: ${msg}`);
           runs = await getRuns(30);
           todayRun = runs.find(r => r.date === today) ?? todayRun;

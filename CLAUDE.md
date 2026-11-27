@@ -56,6 +56,7 @@ Response should say `patched N sell(s)`. If it says `no missing sells detected`,
 ```bash
 curl -s "$APP_URL/api/debug?patchDate=YYYY-MM-DD" -H "Authorization: Bearer $CRON_SECRET"
 ```
+If it answers "does not reconcile", the holdings don't add up: never retry with `&unreconciled=1` (owner only) — note the date in the email.
 
 **Bogus 0% return on oldest run** (first-ever run had same-day baseline):
 ```bash
@@ -115,7 +116,7 @@ curl -s "$APP_URL/api/runs?limit=30" -H "Authorization: Bearer $CRON_SECRET"
 ```
 
 For each run in the response:
-- `agenticDailyReturn == null` AND `portfolioAfter` exists AND there's a prior run → call patchDate
+- `agenticDailyReturn == null` AND `portfolioAfter` exists AND there's a prior run → call patchDate. If it answers "does not reconcile", the holdings don't add up: never retry with `&unreconciled=1` (owner only) — note the date in the email
 - `agenticDailyReturn == 0` AND it's the oldest run (no prior) → call clearReturnForDate
 - `agenticDailyReturn > 0.30` or `< -0.30` → suspicious, investigate before emailing
 

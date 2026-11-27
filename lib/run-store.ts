@@ -1115,7 +1115,11 @@ export function dayReturnFromMerged(merged: TradeRun[], date: string, requireRec
   const prev = merged.find(r => r.date < date); // merged is newest-first
   if (!run?.portfolioAfter || !prev?.portfolioAfter) return { ok: false, reason: `run or prev not found for ${date}` };
   if (requireReconciled) {
-    const plan = buildInferredSells(prev, { positions: run.positions, trades: run.trades ?? [] });
+    // Sells patchTrades already INFERRED count as on record here: computeDailyReturn books them as
+    // proceeds, so the day's arithmetic is closed by them. buildInferredSells skips state "inferred"
+    // (to stay idempotent for patchTrades), which on its own would refuse every day it repaired.
+    const recorded = (run.trades ?? []).map(t => t.state === "inferred" ? { ...t, state: "inferred-recorded" } : t);
+    const plan = buildInferredSells(prev, { positions: run.positions, trades: recorded });
     if (plan.sells.length > 0 || plan.unreconstructable.length > 0) {
       return { ok: false, reason: `${date}: book does not reconcile (${[...plan.sells.map(t => t.symbol), ...plan.unreconstructable.map(u => `${u.symbol} ${u.reason}`)].join(", ")}) — left as stored` };
     }

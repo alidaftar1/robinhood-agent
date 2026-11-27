@@ -59,7 +59,10 @@ describe("an analyst action must pass the NEWS SELL TEST", () => {
     expect(legend).toContain("needs the NEWS SELL TEST");
     expect(bare(on)).toEqual([]);
     expect(bare(off)).toEqual([]);
-    expect(on).toContain("is itself a non-binding opinion and passes only when the thesis names the MATERIAL company development");
+    expect(on).toContain("is itself a non-binding opinion. It passes only when the headline or tag ITSELF reports a material event at the COMPANY");
+    // 2026-11-27 Sonnet A/B on the 11-25 MU case (N=8): "however large" alone still sold 5/8 on the
+    // SIZE of the cut; naming size/downside/prominence as non-events sold 0/8; guidance-cut control 8/8.
+    expect(on).toContain("The size of the cut, the implied downside, the firm's prominence");
   });
   test("control: the old wording is caught", () => {
     expect(bare("Sell if a ↓FIRM downgrade lands, or a holding fell off the shortlist.").length).toBe(1);

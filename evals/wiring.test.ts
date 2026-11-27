@@ -300,7 +300,7 @@ describe("wiring: ORDER of operations between components", () => {
     // path back (recomputeSleeves has no caller).
     // Since 2026-11-06 patchDate delegates to lib/run-store recomputeDayReturn (merged day, so an
     // intraday exit's trades are included), which computes through dayReturnFromMerged.
-    expect(src("app/api/debug/route.ts")).toContain("await recomputeDayReturn(date, { unlock, writeIfNone: true })");
+    expect(src("app/api/debug/route.ts")).toContain("await recomputeDayReturn(date, { unlock, writeIfNone: true, requireReconciled: !unreconciled })");
     const s = src("lib/run-store.ts");
     const fn = s.slice(at(s, "export function dayReturnFromMerged("), at(s, "export async function recomputeDayReturn("));
     expect(fn).toContain("const sleeves = sleeveReturnsForStorage(agentic, computeSleeveReturns(");
