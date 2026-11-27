@@ -18,16 +18,16 @@ const off = buildV1AnalysisPrompt("2026-11-13", "(t)", ctx, "INFLUENCER SIGNALS"
 
 describe("a ⚡NEWS↓ tag is a reason to consider a sale, not a sell signal", () => {
   it("states the NEWS SELL TEST once, for both books, with the hold default", () => {
-    expect(on.match(/- NEWS SELL TEST \(applies to every sell for news, main book AND influencer sleeve\)/g)?.length).toBe(1);
+    expect(on.match(/- NEWS SELL TEST \(applies to every sell for news, main book AND influencer sleeve, and to every MAIN-book sell for an analyst action/g)?.length).toBe(1);
     expect(on).toMatch(/never a sell signal by itself/);
     expect(on).toMatch(/If you cannot say that, HOLD/);
     expect(on).toMatch(/Do not reason past your own judgment because the tag exists/);
   });
   it("every news sell path points at it — main rule, sleeve exception, closed-day risk sells", () => {
-    expect(on).toContain("a bearish ⚡NEWS↓ event that passes the NEWS SELL TEST below");
+    expect(on).toContain("a bearish ⚡NEWS↓ event or a ↓FIRM downgrade that passes the NEWS SELL TEST below");
     expect(on).toContain("(2) NEWS — a bearish ⚡NEWS↓ that passes the NEWS SELL TEST above");
-    expect(off).toContain("Sell if a bearish ⚡NEWS↓ event that passes the NEWS SELL TEST");
-    expect(off).toContain("a ⚡NEWS↓ that passes the NEWS SELL TEST / ↓FIRM");
+    expect(off).toContain("Sell if a bearish ⚡NEWS↓ event or a ↓FIRM\n    downgrade passes the NEWS SELL TEST");
+    expect(off).toContain("a ⚡NEWS↓ or ↓FIRM that passes the NEWS SELL TEST / fell off the shortlist");
   });
   it("no wording left that makes the tag itself an exit reason", () => {
     for (const p of [on, off]) {

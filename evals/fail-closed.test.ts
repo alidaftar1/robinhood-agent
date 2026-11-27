@@ -363,3 +363,58 @@ describe("owner buy with an unreadable quantity is withheld, not a $0 cost", () 
     expect(r.mainDailyReturn).toBeNull();
   });
 });
+
+// ─── An unmeasured daily move is neither a stop nor a calm day (2026-11-24 SNDK) ──────────────
+// After SNDK's 8:1 split Yahoo blanked its closes; the prior-close fallback took the last non-null
+// (pre-split) close and the drop-check sold on "-17.7%" a day that was really -11.6%.
+import { resolvePrevClose as _rpc } from "@/lib/market-data";
+import { screenMeanReversionCandidates as _mr } from "@/lib/mean-reversion";
+describe("an unmeasured previous close is withheld, never guessed or zeroed", () => {
+  const ts = (d: string) => Date.parse(`${d}T14:30:00Z`) / 1000;
+  const at = { regularMarketTime: Date.parse("2026-11-24T18:00:00Z") / 1000 };
+  test("blank prior bar → null, not the older close", () => {
+    expect(_rpc(at, [ts("2026-11-19"), ts("2026-11-23"), ts("2026-11-24")], [94.39, null, 77.55])).toBeNull();
+    expect(_rpc(at, [ts("2026-11-19"), ts("2026-11-24")], [94.39, 77.55])).toBeNull();
+  });
+  test("a blank duplicate row for the session does not hide a valid one", () => {
+    expect(_rpc(at, [ts("2026-11-23"), Date.parse("2026-11-23T21:00:00Z") / 1000, ts("2026-11-24")], [87.71, null, 77.55])).toBe(87.71);
+  });
+  test("misaligned arrays → null", () => {
+    expect(_rpc(at, [ts("2026-11-23"), ts("2026-11-24")], [87.71])).toBeNull();
+  });
+  test("control: the real prior close is used", () => {
+    expect(_rpc(at, [ts("2026-11-23"), ts("2026-11-24")], [87.71, 77.55])).toBe(87.71);
+  });
+  const row = (o: Record<string, unknown>) => ({ symbol: "X", price: 100, change1d: 0, change5d: -12, change14d: 0, change30d: 0,
+    distFrom52wHigh: -30, volatility30d: 30, sharpe5d: 0, sharpe14d: 0, sharpe30d: 0, mom12_1: 10, beta: 1, earningsDate: null,
+    relStrength1d: 0, relStrength5d: 0, relStrength14d: 0, ...o }) as any;
+  test("mean-reversion does not read an unmeasured day as 'stabilizing'", () => {
+    const run = (s: any) => _mr([s], new Set(["X"]), () => 0.8, () => false).length;
+    expect(run(row({ change1dUnknown: true }))).toBe(0);
+    expect(run(row({}))).toBe(1); // control
+  });
+});
+
+// ─── Robinhood's previous close: trusted only when dated, positive, and matched ────────────
+import { robinhoodPrevCloses as _rh } from "@/lib/robinhood-balance";
+describe("a second-source previous close is checked before it can fire a stop", () => {
+  const row = (o: Record<string, unknown> = {}) => ({ symbol: "SNDK", adjustedPreviousClose: "73.610000", previousCloseDate: "2026-11-25",
+    lastTradePrice: "83.358200", state: "active", ...o });
+  const run = (rows: any[], price: number | null = 83.29) => _rh(rows, ["SNDK"], "2026-11-25", () => price).get("SNDK");
+  test("control: the real 2026-11-27 SNDK row is used", () => expect(run([row()])).toBe(73.61));
+  test("wrong date, zero, junk, halted → not used", () => {
+    expect(run([row({ previousCloseDate: "2026-11-24" })])).toBeUndefined();
+    expect(run([row({ adjustedPreviousClose: "0" })])).toBeUndefined();
+    expect(run([row({ adjustedPreviousClose: "n/a" })])).toBeUndefined();
+    expect(run([row({ state: "halted" })])).toBeUndefined();
+  });
+  test("a row whose last trade is not this symbol's price (a mis-copied row) → not used", () => {
+    expect(run([row({ lastTradePrice: "640.01" })])).toBeUndefined();
+    expect(run([row({ lastTradePrice: "75.5" })])).toBe(73.61); // a crash moving during the call is still this row
+    expect(run([row({ lastTradePrice: "" })])).toBeUndefined();
+  });
+  test("conflicting duplicate rows → not used; an unwanted symbol is ignored", () => {
+    expect(run([row(), row({ adjustedPreviousClose: "94.39" })])).toBeUndefined();
+    expect(_rh([row({ symbol: "MU" })], ["SNDK"], "2026-11-25", () => 83).size).toBe(0);
+  });
+});

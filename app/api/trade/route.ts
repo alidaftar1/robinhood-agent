@@ -667,9 +667,12 @@ export async function GET(request: Request) {
     // fetch, then FALL BACK to influencer momentum so non-S&P sleeve holds (PLTR/SPCX/COIN — absent
     // from the S&P universe) still show the 1d magnitude the flag exists to surface.
     const change1dOfHeld: Record<string, number> = Object.fromEntries(
-      marketData.stocks.filter(s => typeof s.change1d === "number").map(s => [s.symbol, s.change1d]),
+      marketData.stocks.filter(s => typeof s.change1d === "number" && !s.change1dUnknown).map(s => [s.symbol, s.change1d]),
     );
-    for (const [sym, m] of influencerMomentum) if (!(sym in change1dOfHeld)) change1dOfHeld[sym] = m.change1d;
+    // Not for a name the universe fetch marked unmeasured, and never a null: either would put back the
+    // undated figure the filter above just left out.
+    const unmeasured1d = new Set(marketData.stocks.filter(s => s.change1dUnknown).map(s => s.symbol));
+    for (const [sym, m] of influencerMomentum) if (!(sym in change1dOfHeld) && !unmeasured1d.has(sym) && m.change1d != null) change1dOfHeld[sym] = m.change1d;
     // ALSO the 5-day move — a few days after a print, change1d is just today's tick, so the pop the
     // 📊REPORTED flag exists to surface lives in the 5d window. Showing both (e.g. "1d -1%, 5d +26%")
     // makes a fading post-earnings gap legible to the HOLD/take-profit decision (PLTR bought AT the
@@ -1413,7 +1416,7 @@ export async function GET(request: Request) {
         await sendAlert(
           `⚠️ Sell-volume rail trimmed ${rail.dropped.length} exit(s) — ${today}`,
           `The decision proposed more discretionary full exits than the rail allows: ${rail.dropped.join(", ")}. ` +
-          `Provable risk exits (underwater, stale, off-shortlist, downgrade, bearish news, imminent earnings) are never capped, ` +
+          `Exits with a code-checkable reason (underwater, stale, off-shortlist, a downgrade on record, bearish news, imminent earnings) are never capped — the code checks that the reason exists, not that it passed the NEWS SELL TEST — ` +
           `so these had no code-verifiable reason. Investigate if this recurs — it is the shape that preceded a proposed full liquidation on 2026-09-29.`,
         ).catch(() => {});
       }

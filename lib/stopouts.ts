@@ -301,14 +301,14 @@ export const MIN_SECTOR_PEERS = 3;
  *  and says little about memory). null when the sector is unknown or too few peers are priced. */
 export function sectorPeerMove(
   symbol: string,
-  stocks: ReadonlyArray<{ symbol: string; change1d: number }>,
+  stocks: ReadonlyArray<{ symbol: string; change1d: number; change1dUnknown?: true }>,
   sectorOf: (sym: string) => string | undefined,
 ): number | null {
   const sec = sectorOf(symbol);
   if (!sec) return null;
   let sum = 0, n = 0;
   for (const s of stocks) {
-    if (s.symbol === symbol || sectorOf(s.symbol) !== sec || !Number.isFinite(s.change1d)) continue;
+    if (s.symbol === symbol || sectorOf(s.symbol) !== sec || !Number.isFinite(s.change1d) || s.change1dUnknown) continue; // a placeholder 0 would pull the peer move toward flat
     sum += s.change1d; n++;
   }
   return n >= MIN_SECTOR_PEERS ? sum / n : null;
@@ -347,7 +347,7 @@ export interface SectorJudgement { symbol: string; change: number; peer: number 
  */
 export function judgeSectorStops(
   entries: ReadonlyArray<{ symbol: string; reason: "stop" | "profit"; change1d: number; ctx: ExitContext }>,
-  stocks: ReadonlyArray<{ symbol: string; change1d: number }>,
+  stocks: ReadonlyArray<{ symbol: string; change1d: number; change1dUnknown?: true }>,
   sectorOf: (sym: string) => string | undefined,
 ): SectorJudgement[] {
   const out: SectorJudgement[] = [];

@@ -179,3 +179,80 @@ export function ownerBuysFromOrders(
   }
   return out;
 }
+
+/**
+ * Robinhood's own previous-session close, for holdings whose Yahoo history cannot establish one
+ * (2026-11-24: Yahoo blanked SNDK's bars after its split; the stale fallback sold it on a "-17.7%"
+ * that was really -11.6%). Used ONLY to keep the drop-check's crash stop working for those names.
+ *
+ * Read-only: restricted to get_equity_quotes, no untrusted input in the prompt. The model only
+ * TRANSCRIBES, and a transcription can be wrong in either direction, so robinhoodPrevCloses checks
+ * every row in code: the close must be dated the session we need, and positive. null/absent on any
+ * failure — the caller then leaves the name NOT JUDGED, as before.
+ */
+export async function fetchRobinhoodPrevCloses(
+  anthropic: Anthropic,
+  accessToken: string,
+  symbols: string[],
+): Promise<RobinhoodCloseRow[] | null> {
+  if (symbols.length === 0) return [];
+  const controller = new AbortController();
+  const killTimer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const res = await (anthropic.beta.messages as any).create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 128 + 80 * symbols.length, // ~50 tokens per row; a cut-off line fails to parse
+      temperature: 0,
+      system: `Call get_equity_quotes with symbols ${JSON.stringify(symbols)}. Output exactly one line:
+RH_PREV_CLOSE:[{"symbol":"XX","adjustedPreviousClose":"<quote.adjusted_previous_close>","previousCloseDate":"<quote.previous_close_date>","lastTradePrice":"<quote.last_trade_price>","state":"<quote.state>"}]
+Copy every value exactly as returned, as strings; empty string if absent. One object per symbol. Output nothing else.`,
+      messages: [{ role: "user", content: `Fetch quotes for ${symbols.join(", ")}.` }],
+      mcp_servers: [{
+        type: "url", url: MCP_URL, name: "robinhood", authorization_token: accessToken,
+        tool_configuration: { enabled: true, allowed_tools: ["get_equity_quotes"] },
+      }],
+      betas: ["mcp-client-2025-04-04"],
+    }, { signal: controller.signal });
+    const text = res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+    const match = text.match(/^RH_PREV_CLOSE:(.+)$/m);
+    if (!match) return null;
+    const rows = JSON.parse(match[1]);
+    return Array.isArray(rows) ? rows : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(killTimer);
+  }
+}
+
+export type RobinhoodCloseRow = { symbol?: unknown; adjustedPreviousClose?: unknown; previousCloseDate?: unknown; lastTradePrice?: unknown; state?: unknown };
+
+/**
+ * Pure: the previous closes that can be TRUSTED, by symbol. A row counts only if it is for a wanted
+ * symbol, dated exactly `wantDate` (the session before today), positive, active, and — when we have
+ * our own current price — its last trade is within 10% of it, which shows the model copied THIS
+ * symbol's row (wide enough for a crashing name moving during the ~20s round trip; distinct
+ * symbols are rarely within 10%). Duplicate rows for a symbol that disagree drop the symbol.
+ */
+export function robinhoodPrevCloses(
+  rows: RobinhoodCloseRow[], symbols: string[], wantDate: string, ourPrice: (sym: string) => number | null,
+): Map<string, number> {
+  const wanted = new Set(symbols);
+  const out = new Map<string, number>();
+  const bad = new Set<string>();
+  for (const r of rows) {
+    const sym = String(r.symbol ?? "").toUpperCase();
+    if (!wanted.has(sym)) continue;
+    const close = parseFloat(String(r.adjustedPreviousClose ?? ""));
+    const last = parseFloat(String(r.lastTradePrice ?? ""));
+    const mine = ourPrice(sym);
+    const ok = String(r.previousCloseDate ?? "") === wantDate && Number.isFinite(close) && close > 0
+      && String(r.state ?? "").toLowerCase() === "active"
+      && (mine == null || (Number.isFinite(last) && last > 0 && Math.abs(last / mine - 1) <= 0.10));
+    if (!ok) { bad.add(sym); continue; }
+    if (out.has(sym) && out.get(sym) !== close) bad.add(sym);
+    out.set(sym, close);
+  }
+  for (const s of bad) out.delete(s);
+  return out;
+}

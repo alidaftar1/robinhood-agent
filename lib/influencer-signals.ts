@@ -860,7 +860,7 @@ export function sleeveBuyQualifies(net: number, channels: number): boolean {
 export const MOMENTUM_FLOOR_PCT = -8;
 export const DIST_FROM_HIGH_FLOOR = -15;
 
-export interface MomentumSignal { change1d: number; change5d: number; distFromHigh: number; aboveShortMA: boolean }
+export interface MomentumSignal { change1d: number | null; change5d: number; distFromHigh: number; aboveShortMA: boolean }
 /** The ONE mapping from a fetchMomentum reading to the signal the screens read. It was copied inline
  *  at every fetch site; a field added to MomentumSignal (as aboveShortMA once was) and missed in one
  *  copy would hand the screens a partial reading. */
@@ -940,7 +940,7 @@ export function formatInfluencerSignals(cache: InfluencerCache | null, priceMap?
     // supplied momentum at all" (display-only callers), so this cannot invent a warning.
     const screenAttempted = momentum != null;
     const momStr = mom != null
-      ? ` 1d:${mom.change1d >= 0 ? "+" : ""}${mom.change1d.toFixed(0)}% 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${tag}`
+      ? ` 1d:${mom.change1d == null ? "n/a" : `${mom.change1d >= 0 ? "+" : ""}${mom.change1d.toFixed(0)}%`} 5d:${mom.change5d >= 0 ? "+" : ""}${mom.change5d.toFixed(0)}% hi:${mom.distFromHigh.toFixed(0)}%${tag}`
       : screenAttempted ? " ⚠NO MOMENTUM READING — NOT BUYABLE" : "";
     // Backward-looking earnings flag: a pick that JUST reported (esp. with a big 1d/5d move) is a
     // post-earnings entry — a fresh pop is a late/risky momentum chase, not durable trend.

@@ -50,7 +50,7 @@ export function screenMeanReversionCandidates(
       eligible.has(s.symbol) &&                          // quality gate — oversold QUALITY, not oversold junk
       s.distFrom52wHigh <= MEANREV_MAX_DIST_FROM_HIGH &&  // well off its highs (a real pullback)
       s.change5d <= MEANREV_MAX_CHANGE5D &&               // recent sharp drop — the short-term-reversal setup
-      s.change1d >= MEANREV_MIN_CHANGE1D &&               // stabilizing — not still cratering today (anti-falling-knife)
+      !s.change1dUnknown && s.change1d >= MEANREV_MIN_CHANGE1D && // stabilizing (an unmeasured placeholder 0 is not) — not still cratering today (anti-falling-knife)
       !isBroken(s.symbol))                                // the drop isn't a broken thesis
     .map(s => {
       const quality = qualityOf(s.symbol);

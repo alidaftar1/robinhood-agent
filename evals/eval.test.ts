@@ -305,24 +305,37 @@ Do NOT do a full portfolio rebalance. Only exit the damaged positions.
 
 // ─── prevClose fallback: the drop-check's price baseline (Fix 2026-07-27) ─────
 
-describe("prevClose fallback: null regularMarketPreviousClose does not fall to a stale ref", () => {
-  // TER 2026-07-27: Yahoo returned regularMarketPreviousClose=null; the drop-check's
-  // fetchQuoteLite lacked the validCloses fallback and used chartPreviousClose (a far-off
-  // ref), skewing change1d. resolvePrevClose (now shared with getPriceData) must prefer the
-  // second-to-last real daily close (yesterday), never the stale chartPreviousClose.
-  it("prefers yesterday's real close (validCloses[-2]) over chartPreviousClose when the field is null", () => {
-    const validCloses = [374.04, 369.46, 373.75, 327.01]; // ...07-23 close, then today's forming close
-    const prev = resolvePrevClose(null, validCloses, 349.92 /* stale chartPreviousClose */, 329.81);
-    expect(prev).toBe(373.75); // yesterday's close, NOT 349.92
-  });
+describe("prevClose: the previous SESSION's close, established by date, or null", () => {
+  // Bars are stamped at the 9:30 ET open (14:30Z in winter, 13:30Z in summer).
+  const ts = (d: string, z = "14:30") => Date.parse(`${d}T${z}:00Z`) / 1000;
+  const at = (d: string) => ({ regularMarketTime: ts(d, "18:00") });
 
+  it("TER 2026-07-27: a null field falls to the prior trading day's real close, never chartPreviousClose", () => {
+    const days = ["2026-07-22", "2026-07-23", "2026-07-24", "2026-07-27"];
+    expect(resolvePrevClose({ regularMarketPreviousClose: null, regularMarketTime: ts("2026-07-27", "17:00") },
+      days.map(d => ts(d, "13:30")), [374.04, 369.46, 373.75, 327.01])).toBe(373.75);
+  });
   it("uses regularMarketPreviousClose when Yahoo provides it", () => {
-    expect(resolvePrevClose(371.5, [369.46, 373.75, 327.01], 349.92, 329.81)).toBe(371.5);
+    expect(resolvePrevClose({ regularMarketPreviousClose: 371.5, ...at("2026-11-24") }, [], [])).toBe(371.5);
   });
-
-  it("falls back to chartPreviousClose only when there is no second real close, then to price", () => {
-    expect(resolvePrevClose(null, [327.01], 349.92, 329.81)).toBe(349.92); // single close → no [-2]
-    expect(resolvePrevClose(null, [], null, 329.81)).toBe(329.81);         // nothing → price (change1d=0)
+  it("SNDK 2026-11-24: the prior day's bar is blank, so the older pre-split close is NOT used", () => {
+    const days = ["2026-11-18", "2026-11-19", "2026-11-20", "2026-11-23", "2026-11-24"];
+    expect(resolvePrevClose(at("2026-11-24"), days.map(d => ts(d)), [97.03, 94.39, null, null, 77.55])).toBeNull();
+  });
+  it("SNDK 2026-11-27: Yahoo returns only today's bar (chartPreviousClose would be pre-split) → null", () => {
+    expect(resolvePrevClose(at("2026-11-27"), [ts("2026-11-27")], [82.95])).toBeNull();
+  });
+  it("control: the session before is found across a weekend and a holiday (Thanksgiving 11-26)", () => {
+    expect(resolvePrevClose(at("2026-11-27"), [ts("2026-11-24"), ts("2026-11-25"), ts("2026-11-27")], [77.95, 73.61, 82.95])).toBe(73.61);
+    expect(resolvePrevClose(at("2026-11-23"), [ts("2026-11-20"), ts("2026-11-23")], [79.24, 87.71])).toBe(79.24);
+  });
+  it("a MISSING prior-day bar does not fall back to an older one", () => {
+    expect(resolvePrevClose(at("2026-11-24"), [ts("2026-11-19"), ts("2026-11-24")], [94.39, 77.55])).toBeNull();
+  });
+  it("no quote time, a zero or junk close → null (not measured, never 0%)", () => {
+    expect(resolvePrevClose({}, [ts("2026-11-20"), ts("2026-11-23")], [79.24, 87.71])).toBeNull();
+    expect(resolvePrevClose(at("2026-11-24"), [ts("2026-11-23")], [0])).toBeNull();
+    expect(resolvePrevClose({ regularMarketPreviousClose: NaN, ...at("2026-11-24") }, [ts("2026-11-23")], [87.71])).toBe(87.71);
   });
 });
 

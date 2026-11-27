@@ -7,6 +7,7 @@ import { getInsiderBuys, type InsiderBuy } from "./insider";
 import { fetchAnalystRatings, type AnalystRating, type AnalystFeedStatus } from "./analyst";
 import { fetchUpcomingEarnings, formatPostEarnings, formatEarningsRecord, IMMINENT_EARNINGS_DAYS } from "./earnings";
 import { INFLUENCER_BUY_FLOOR } from "./influencer-signals";
+import { isMarketHoliday } from "./holidays";
 
 export type { InsiderBuy, AnalystRating };
 
@@ -155,7 +156,9 @@ export function formatMarketContext(
 export interface StockData {
   symbol: string;
   price: number;
-  change1d: number;        // % 1-day change
+  change1d: number;        // % 1-day change (0 when change1dUnknown)
+  /** No established previous-session close (see resolvePrevClose): change1d is a placeholder 0. */
+  change1dUnknown?: true;
   change5d: number;        // % 5-trading-day (~1 week) change
   change14d: number;       // % 14-calendar-day (~10 trading day) change
   change30d: number;       // % 30-day change
@@ -184,7 +187,7 @@ export interface MarketData {
   analystFeedStatus: AnalystFeedStatus;
   /** Set when the feed was truncated: what it actually covered, for the run note. */
   analystFeedCoverage?: string;
-  spyContext: { change1d: number; change30d: number; regime: { riskOn: boolean; spy: number; ma: number } | null } | null;
+  spyContext: { change1d: number; change1dUnknown?: true; change30d: number; regime: { riskOn: boolean; spy: number; ma: number } | null } | null;
 }
 
 export async function getMarketData(): Promise<MarketData> {
@@ -471,7 +474,7 @@ export function formatV1Shortlist(
     // Backward-looking: a name that JUST reported (with its 1d/5d reaction) — a fresh pop is a
     // late/risky momentum entry, distinct from the ⚠EARN (upcoming) flag above.
     const re = recentEarnings.get(s.symbol);
-    const reportedFlag = re ? formatPostEarnings(re, s.change1d, s.change5d) : "";
+    const reportedFlag = re ? formatPostEarnings(re, s.change1dUnknown ? null : s.change1d, s.change5d) : "";
     // Same reason as the influencer rows: the 📊REPORTED buy rule carves out "a serial beater with a
     // strong 📈EARN-RECORD", so a just-reported CANDIDATE needs its record shown to make that
     // reachable. Only on 📊REPORTED names — the record is noise on a name with no fresh print.
@@ -485,7 +488,7 @@ export function formatV1Shortlist(
     const heldFlag = held.has(s.symbol) ? " ◆HELD" : "";
     return `${s.symbol.padEnd(6)} $${s.price.toFixed(0).padStart(5)} | 12-1mom: ${(s.mom12_1 ?? 0).toFixed(0).padStart(5)}% | quality: ${q != null ? q.toFixed(2) : "—"} | β${(s.beta != null ? s.beta.toFixed(2) : "—").padStart(5)} | ${SECTOR_ETFS[STOCK_SECTOR[s.symbol]] ?? STOCK_SECTOR[s.symbol] ?? "?"}${earn}${heldFlag}${insFlag(s.symbol)}${analystFlag(s.symbol)}${newsFlag(s.symbol)}${reportedFlag}${beatFlag}${inflFlag(s.symbol)}`;
   });
-  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ◆HELD = a current holding retained by the hysteresis band (still positive momentum — do NOT rotate it out just for ranking below newer names). A ◆HELD row is shown so you do not churn-sell it; it is NOT on the buy-allowlist, so do NOT try to ADD to it — a buy of a ◆HELD name is rejected before execution by the within-rails guard and simply wastes the budget you could have deployed elsewhere · ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name or trim) · ⚠EARN = earnings ≤30d · ⚡NEWS↑/↓ = a MATERIAL corporate event (M&A/litigation/guidance/product/regulatory) with the event quoted — a bullish event raises conviction; a bearish one is a reason to avoid a new buy, and on a holding a reason to CONSIDER selling under the NEWS SELL TEST (not a sell signal by itself); cite it in your thesis when it drives a decision · 🎬INFL = the influencer YouTubers' read (an independent, momentum-oriented crowd) on a name your screen likes; net = weighted-buy − avoid, "(N avoid)" shows dissent: ✓ (net ≥ the sleeve's buy bar) = they're RECOMMENDING it → a secondary CONFIRMING signal that STRENGTHENS the thesis (it's creator CONVICTION, not price-timing — still apply your own momentum/entry screen; a name the sleeve's own falling-knife rails reject can still show ✓); ⚠ (net < 0, avoids OUTWEIGH buys) = they're NET-BEARISH → an independent avoid signal → WARRANTS CAUTION (size down, prefer an equally-strong un-warned name, or your thesis must say why the caution is wrong); ~ (net-flat with dissent) = CONTESTED, creators split → weigh the avoid, don't read it as corroboration. None of these change eligibility or override the shortlist/caps]\n${rows.join("\n")}`;
+  return `sym     price  | 12-mo momentum | quality(0-1) |  β   | sector   [context flags — weigh among the list, they do NOT override the shortlist/caps: ◆HELD = a current holding retained by the hysteresis band (still positive momentum — do NOT rotate it out just for ranking below newer names). A ◆HELD row is shown so you do not churn-sell it; it is NOT on the buy-allowlist, so do NOT try to ADD to it — a buy of a ◆HELD name is rejected before execution by the within-rails guard and simply wastes the budget you could have deployed elsewhere · ★INS = recent insider buying (conviction) · ⚡↑/↑FIRM = analyst upgrade/PT-raise, ⚡ = impactful catalyst (≥15% upside) · ↓FIRM = downgrade/PT-cut (a risk headwind even on strong momentum — prefer another name when buying; selling or trimming a holding on it needs the NEWS SELL TEST) · ⚠EARN = earnings ≤30d · ⚡NEWS↑/↓ = a MATERIAL corporate event (M&A/litigation/guidance/product/regulatory) with the event quoted — a bullish event raises conviction; a bearish one is a reason to avoid a new buy, and on a holding a reason to CONSIDER selling under the NEWS SELL TEST (not a sell signal by itself); cite it in your thesis when it drives a decision · 🎬INFL = the influencer YouTubers' read (an independent, momentum-oriented crowd) on a name your screen likes; net = weighted-buy − avoid, "(N avoid)" shows dissent: ✓ (net ≥ the sleeve's buy bar) = they're RECOMMENDING it → a secondary CONFIRMING signal that STRENGTHENS the thesis (it's creator CONVICTION, not price-timing — still apply your own momentum/entry screen; a name the sleeve's own falling-knife rails reject can still show ✓); ⚠ (net < 0, avoids OUTWEIGH buys) = they're NET-BEARISH → an independent avoid signal → WARRANTS CAUTION (size down, prefer an equally-strong un-warned name, or your thesis must say why the caution is wrong); ~ (net-flat with dissent) = CONTESTED, creators split → weigh the avoid, don't read it as corroboration. None of these change eligibility or override the shortlist/caps]\n${rows.join("\n")}`;
 }
 
 async function fetchQuote(symbol: string): Promise<(StockData & { _series: DatedCloses }) | null> {
@@ -505,6 +508,7 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _series: Dated
           meta?: {
             regularMarketPrice?: number;
             regularMarketPreviousClose?: number;
+            regularMarketTime?: number;
             chartPreviousClose?: number;
             fiftyTwoWeekHigh?: number;
             earningsTimestamp?: number;
@@ -527,7 +531,7 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _series: Dated
 
     const price = meta.regularMarketPrice ?? 0;
     // Previous SESSION close — see resolvePrevClose for the null-field rationale.
-    const prevClose = resolvePrevClose(meta.regularMarketPreviousClose, validCloses, meta.chartPreviousClose, price);
+    const prevClose = resolvePrevClose(meta, timestamps, closes);
     // Anchor 30d off ~21 trading days back (NOT validCloses[0], which is now ~1yr ago after widening
     // the fetch to 1y for the 12-1 momentum signal).
     const monthAgoClose = validCloses[Math.max(0, validCloses.length - 22)] ?? price;
@@ -564,7 +568,9 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _series: Dated
     return {
       symbol,
       price,
-      change1d: prevClose ? ((price - prevClose) / prevClose) * 100 : 0,
+      // 0 keeps every arithmetic consumer finite; change1dUnknown is what says it was not measured.
+      change1d: prevClose && price > 0 ? ((price - prevClose) / prevClose) * 100 : 0,
+      ...(prevClose == null || !(price > 0) ? { change1dUnknown: true as const } : {}), // no price: a -100% peer would drag the sector mean
       change5d,
       change14d,
       change30d,
@@ -590,7 +596,7 @@ async function fetchQuote(symbol: string): Promise<(StockData & { _series: Dated
 async function getPriceData(): Promise<{
   stocks: StockData[];
   sectors: SectorData[];
-  spyContext: { change1d: number; change30d: number; regime: { riskOn: boolean; spy: number; ma: number } | null } | null;
+  spyContext: { change1d: number; change1dUnknown?: true; change30d: number; regime: { riskOn: boolean; spy: number; ma: number } | null } | null;
 }> {
   const sectorTickers = Object.keys(SECTOR_ETFS);
 
@@ -604,7 +610,9 @@ async function getPriceData(): Promise<{
   const sectorResults = rest.slice(SP500_UNIVERSE.length);
 
   const spy = spyResult.status === "fulfilled" ? spyResult.value : null;
+  // An unmeasured SPY move is a placeholder 0 for the arithmetic below; the prompt says n/a.
   const spyChange1d = spy?.change1d ?? 0;
+  const spyChange1dUnknown = !spy || spy.change1dUnknown === true;
   const spyChange5d = spy?.change5d ?? 0;
   const spyChange14d = spy?.change14d ?? 0;
   const spyChange30d = spy?.change30d ?? 0;
@@ -617,7 +625,7 @@ async function getPriceData(): Promise<{
       return {
         ...s,
         beta: computeStockBeta(_series, spySeries), // full ~2y window (short 22d windows gave noisy/wrong betas)
-        relStrength1d: s.change1d - spyChange1d,
+        relStrength1d: s.change1dUnknown || spyChange1dUnknown ? 0 : s.change1d - spyChange1d,
         relStrength5d: s.change5d - spyChange5d,
         relStrength14d: s.change14d - spyChange14d,
         relStrength30d: s.change30d - spyChange30d,
@@ -657,7 +665,7 @@ async function getPriceData(): Promise<{
   return {
     stocks,
     sectors,
-    spyContext: spy ? { change1d: spyChange1d, change30d: spyChange30d, regime } : null,
+    spyContext: spy ? { change1d: spyChange1d, ...(spyChange1dUnknown ? { change1dUnknown: true as const } : {}), change30d: spyChange30d, regime } : null,
   };
 }
 
@@ -722,22 +730,46 @@ export async function enrichPriceMap(
   return unresolved;
 }
 
-// Previous-SESSION close for a 1-day % change. Yahoo's regularMarketPreviousClose is the
-// right value but is intermittently null (it was null for SPY 2026-07-24, which sent
-// change1d/change30d to a ~2-YEAR return — a bogus "SPY +36.9% on the 1d" that corrupted the
-// drop-check sympathy judgment and every name's α vs SPY). When it's null, fall back to the
-// second-to-last actual daily close (yesterday) — NOT chartPreviousClose, which is the close
-// at the START of the fetch window (up to ~2y ago) and can be a stale/far-off reference.
-// Shared by getPriceData and fetchQuoteLite so the two paths cannot diverge again — they did:
-// fetchQuoteLite (the drop-check's price source) lacked the validCloses fallback and false-stopped
-// on null-prev-close days until 2026-07-27.
+// Previous-SESSION close for a 1-day % change, or null when it cannot be ESTABLISHED.
+//
+// Yahoo's regularMarketPreviousClose is the right value but is intermittently null (SPY 2026-07-24:
+// a bogus "+36.9% on the 1d"). The fallback must then be the close of the trading day BEFORE the
+// quote's session, found BY DATE. Taking "the second-to-last non-null close" was wrong whenever Yahoo
+// blanks bars: after SNDK's 2026-11-20 8:1 split every close from 11-20 on came back null, the
+// squeezed list ended at 11-19's pre-split $94, and the drop-check sold SNDK on 11-24 at "-17.7%"
+// against its sector on a true -11.6% day, which the sector rule would have held (9.5 points worse,
+// bar 10). chartPreviousClose is the close before the FETCH WINDOW, of no particular date, so it is
+// never used. null means "not measured": callers must not read it as flat or act on it.
+// Shared by getPriceData and fetchQuoteLite so the two paths cannot diverge again (2026-07-27).
+const etDate = (epochSec: number) =>
+  new Date(epochSec * 1000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+
+export function previousTradingDay(date: string): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  for (let i = 0; i < 10; i++) {
+    d.setUTCDate(d.getUTCDate() - 1);
+    const s = d.toISOString().slice(0, 10);
+    if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6 && !isMarketHoliday(s)) return s;
+  }
+  return "";
+}
+
 export function resolvePrevClose(
-  regularMarketPreviousClose: number | null | undefined,
-  validCloses: number[],
-  chartPreviousClose: number | null | undefined,
-  price: number,
-): number {
-  return regularMarketPreviousClose ?? validCloses[validCloses.length - 2] ?? chartPreviousClose ?? price;
+  meta: { regularMarketPreviousClose?: number | null; regularMarketTime?: number | null },
+  timestamps: ReadonlyArray<number>,
+  closes: ReadonlyArray<number | null | undefined>,
+): number | null {
+  if (timestamps.length !== closes.length) return null; // misaligned arrays: a date could pair with the wrong close
+  const rm = meta.regularMarketPreviousClose;
+  if (rm != null && Number.isFinite(rm) && rm > 0) return rm;
+  if (!(meta.regularMarketTime != null && meta.regularMarketTime > 0)) return null;
+  const want = previousTradingDay(etDate(meta.regularMarketTime));
+  for (let i = timestamps.length - 1; i >= 0; i--) { // a session can carry two rows; take the last usable one
+    if (etDate(timestamps[i]) !== want) continue;
+    const c = closes[i];
+    if (c != null && Number.isFinite(c) && c > 0) return c;
+  }
+  return null;
 }
 
 // Lightweight single-symbol quote (price + 1-day % change). Lets the stop-check
@@ -836,7 +868,8 @@ export async function fetchDailyBars(symbol: string, range: "1mo" | "6mo" = "1mo
   }
 }
 
-export async function fetchQuoteLite(symbol: string): Promise<{ price: number; change1d: number } | null> {
+/** change1d is null when the previous session's close cannot be established (resolvePrevClose). */
+export async function fetchQuoteLite(symbol: string): Promise<{ price: number; change1d: number | null } | null> {
   try {
     // range=5d (not 1d) so a real prior daily close exists to fall back to when Yahoo
     // returns a null regularMarketPreviousClose. Otherwise the ?? chain lands on
@@ -850,7 +883,8 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
     if (!res.ok) return null;
     const data = await res.json() as {
       chart?: { result?: Array<{
-        meta?: { regularMarketPrice?: number; regularMarketPreviousClose?: number; chartPreviousClose?: number };
+        meta?: { regularMarketPrice?: number; regularMarketPreviousClose?: number; regularMarketTime?: number; chartPreviousClose?: number };
+        timestamp?: number[];
         indicators?: { quote?: Array<{ close?: (number | null)[] }> };
       }> };
     };
@@ -858,9 +892,8 @@ export async function fetchQuoteLite(symbol: string): Promise<{ price: number; c
     const meta = result?.meta;
     if (!meta?.regularMarketPrice) return null;
     const price = meta.regularMarketPrice;
-    const validCloses = (result?.indicators?.quote?.[0]?.close ?? []).filter((c): c is number => c != null);
-    const prevClose = resolvePrevClose(meta.regularMarketPreviousClose, validCloses, meta.chartPreviousClose, price);
-    const change1d = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+    const prevClose = resolvePrevClose(meta, result?.timestamp ?? [], result?.indicators?.quote?.[0]?.close ?? []);
+    const change1d = prevClose ? ((price - prevClose) / prevClose) * 100 : null;
     return { price, change1d };
   } catch {
     return null;
@@ -905,13 +938,13 @@ export function isSleeveEligibleInstrument(instrumentType: string | undefined | 
   return !!instrumentType && SLEEVE_ALLOWED_INSTRUMENTS.has(instrumentType);
 }
 
-export async function fetchMomentum(symbol: string): Promise<{ price: number; change1d: number; change5d: number; distFromHigh: number; aboveShortMA: boolean } | null> {
+export async function fetchMomentum(symbol: string): Promise<{ price: number; change1d: number | null; change5d: number; distFromHigh: number; aboveShortMA: boolean } | null> {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${upstreamSymbol(symbol)}?range=1mo&interval=1d`;
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const data = await res.json() as {
-      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number; instrumentType?: string }; indicators?: { quote?: Array<{ close?: (number | null)[] }> } }> };
+      chart?: { result?: Array<{ meta?: { regularMarketPrice?: number; regularMarketPreviousClose?: number; regularMarketTime?: number; instrumentType?: string }; timestamp?: number[]; indicators?: { quote?: Array<{ close?: (number | null)[] }> } }> };
     };
     const r = data?.chart?.result?.[0];
     const price = r?.meta?.regularMarketPrice;
@@ -945,10 +978,11 @@ export async function fetchMomentum(symbol: string): Promise<{ price: number; ch
     const closes = (r?.indicators?.quote?.[0]?.close ?? []).filter((c): c is number => c != null);
     const fiveAgo = closes.length >= 6 ? closes[closes.length - 6] : closes[0];
     const change5d = fiveAgo ? ((price - fiveAgo) / fiveAgo) * 100 : 0;
-    // 1-day move (captures a post-earnings gap when we look the day of/after the print). Same anchor
-    // convention as change5d (closes end ~"today"; 1 session ago = second-to-last close).
-    const oneAgo = closes.length >= 2 ? closes[closes.length - 2] : closes[closes.length - 1];
-    const change1d = oneAgo ? ((price - oneAgo) / oneAgo) * 100 : 0;
+    // 1-day move (captures a post-earnings gap when we look the day of/after the print), from the
+    // DATED previous-session close (resolvePrevClose) — the squeezed list's second-to-last close is
+    // the pre-split close after a split blanks bars. null = not measured.
+    const oneAgo = resolvePrevClose(r?.meta ?? {}, r?.timestamp ?? [], r?.indicators?.quote?.[0]?.close ?? []);
+    const change1d = oneAgo ? ((price - oneAgo) / oneAgo) * 100 : null;
     const recentHigh = Math.max(price, ...closes.slice(-10));
     const distFromHigh = recentHigh > 0 ? ((price - recentHigh) / recentHigh) * 100 : 0;
     // Confirmed-recovery signal: price above its 5-day moving average = the short-term
@@ -977,7 +1011,7 @@ export function formatMarketDataForPrompt(data: MarketData): string {
   const bottom10 = bySharpe.slice(-10);
 
   const spyLine = data.spyContext
-    ? `SPY (market baseline): 1d ${data.spyContext.change1d >= 0 ? "+" : ""}${data.spyContext.change1d.toFixed(1)}% | 30d ${data.spyContext.change30d >= 0 ? "+" : ""}${data.spyContext.change30d.toFixed(1)}%`
+    ? `SPY (market baseline): 1d ${data.spyContext.change1dUnknown ? "n/a" : `${data.spyContext.change1d >= 0 ? "+" : ""}${data.spyContext.change1d.toFixed(1)}%`} | 30d ${data.spyContext.change30d >= 0 ? "+" : ""}${data.spyContext.change30d.toFixed(1)}%`
     : "SPY: unavailable";
 
   const hasInsider = (s: StockData) => (data.insiderBuys[s.symbol]?.length ?? 0) > 0;
@@ -1014,7 +1048,7 @@ export function formatMarketDataForPrompt(data: MarketData): string {
 
   const momentumTable = tableStocks
     .map((s) => {
-      const d1 = (s.change1d >= 0 ? "+" : "") + s.change1d.toFixed(1) + "%";
+      const d1 = s.change1dUnknown ? "n/a" : (s.change1d >= 0 ? "+" : "") + s.change1d.toFixed(1) + "%";
       const d5 = (s.change5d >= 0 ? "+" : "") + s.change5d.toFixed(1) + "%";
       const alpha5 = (s.relStrength5d >= 0 ? "+" : "") + s.relStrength5d.toFixed(1) + "%";
       const sharpe5 = s.sharpe5d.toFixed(2);

@@ -4,14 +4,15 @@ import { dashboardPublicUrl } from "@/lib/dashboard-auth";
 import { createAnthropic } from "@/lib/anthropic";
 import { getValidAccessToken } from "@/lib/robinhood-auth";
 import { buildSystemPrompt } from "@/lib/strategy";
-import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap, STOCK_SECTOR } from "@/lib/market-data";
+import { getMarketData, formatMarketDataForPrompt, fetchCurrentPrice, fetchQuoteLite, enrichPriceMap, STOCK_SECTOR, previousTradingDay } from "@/lib/market-data";
 import { saveRun, getRuns, recomputeDayReturn, type PositionSnapshot, type TradeSnapshot, MAX_RUNS } from "@/lib/run-store";
 import { recordStopout, resolveDropCheckExits, classifyExit, buildExitContext, symbolsWithMainOwnership, stopBarFor, judgeSectorStops, type ExitContext,
          MAIN_DROP_THRESHOLD_PCT, INFLUENCER_DROP_THRESHOLD_PCT, MAIN_SECTOR_EXCESS_PCT } from "@/lib/stopouts";
 import { sendAlert } from "@/lib/alert";
+import { redisCommand } from "@/lib/run-store";
 import { recordExits, type ExitTrigger } from "@/lib/exit-ledger";
 import { isMarketHoliday } from "@/lib/holidays";
-import { fetchAgenticBalance } from "@/lib/robinhood-balance";
+import { fetchAgenticBalance, fetchRobinhoodPrevCloses, robinhoodPrevCloses } from "@/lib/robinhood-balance";
 
 export const maxDuration = 300;
 
@@ -100,8 +101,38 @@ export async function GET(request: Request) {
   );
   const liteMap = new Map(liteQuotes.map((r) => [r.symbol, r.q]));
 
+  // SECOND SOURCE for a move Yahoo cannot measure (no dated previous close). Robinhood's own
+  // split-adjusted previous close, dated and checked in code (robinhoodPrevCloses). Only names we
+  // HAVE a current price for: Robinhood supplies the baseline, never the price it is measured on.
+  // Any failure leaves the name NOT JUDGED below — this can only add a measurement, never invent one.
+  // Same-day names only: sleeve names and today's buys are measured from their buy price instead.
+  const needBaseline = liteQuotes
+    .filter((r) => r.q != null && r.q.change1d == null && !influencerSymbols.has(r.symbol) && !boughtTodaySymbols.has(r.symbol))
+    .map((r) => r.symbol);
+  const rhFilled: string[] = [];
+  if (needBaseline.length > 0) {
+    try {
+      const rows = await fetchRobinhoodPrevCloses(createAnthropic(), await getValidAccessToken(), needBaseline);
+      if (rows == null) console.warn("DROP_CHECK_RH_BASELINE_FAILED", "no parseable RH_PREV_CLOSE line", { needBaseline });
+      const closes = robinhoodPrevCloses(rows ?? [], needBaseline,
+        previousTradingDay(new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" })), (s) => liteMap.get(s)?.price ?? null);
+      for (const [sym, close] of closes) {
+        const q = liteMap.get(sym)!;
+        liteMap.set(sym, { price: q.price, change1d: ((q.price - close) / close) * 100 });
+        rhFilled.push(sym);
+      }
+      if (rhFilled.length > 0) console.log("DROP_CHECK_RH_BASELINE", { rhFilled, closes: Object.fromEntries(closes) });
+    } catch (e) {
+      console.warn("DROP_CHECK_RH_BASELINE_FAILED", String(e).slice(0, 200));
+    }
+  }
+
   // Find positions to exit: a severe drop (stop-loss) OR an influencer winner up
   // ≥ TAKE_PROFIT_PCT from buy (take-profit — lock the gain before it round-trips).
+  // Names whose same-day move could not be measured (no established previous close, or no quote).
+  // Not judged — neither stopped on a guess nor called flat — and SAID so, in the log and the result.
+  const unjudged: string[] = [];          // no established previous close (Yahoo's history)
+  const unquoted: string[] = [];          // the quote itself failed — a fact about OUR fetch
   const droppedPositions = positionsToCheck
     .map((p) => {
       const q = liteMap.get(p.symbol);
@@ -119,10 +150,15 @@ export async function GET(request: Request) {
         // to the intraday move, and the sleeve's from-cost bar is not applied to it.
         canMeasureFromBuy: currentPrice > 0 && parseFloat(p.avgCost) > 0,
       });
-      const change1d = ctx.measuredFromBuy
+      const measured = ctx.measuredFromBuy
         ? ((currentPrice - parseFloat(p.avgCost)) / parseFloat(p.avgCost)) * 100
-        : (q?.change1d ?? 0);
-      const reason = classifyExit(change1d, ctx);
+        : (q?.change1d ?? null);
+      // 2026-11-24: SNDK was measured from a pre-split close and sold at "-17.7%" on a true -11.6%
+      // day the sector rule would have held. An unmeasured move is not a move (lib/market-data
+      // resolvePrevClose).
+      if (measured == null) (q == null ? unquoted : unjudged).push(p.symbol);
+      const change1d = measured ?? 0;
+      const reason = measured == null ? null : classifyExit(change1d, ctx);
       // Which bar this name was actually judged against — an influencer name can fall back to the
       // main bar (unusable cost basis, or a merged lot), and the model must not read that -5.4% as
       // failing to meet a stated -10% sleeve bar. Read from stopBarFor, NOT by comparing threshold
@@ -140,12 +176,30 @@ export async function GET(request: Request) {
     })
     .filter((e): e is { position: PositionSnapshot; change1d: number; isInfluencer: boolean; reason: "stop" | "profit"; bar: string; basis: string; ctx: ExitContext } => e.reason !== null);
 
+  if (unjudged.length > 0 || unquoted.length > 0) console.error("DROP_CHECK_UNJUDGED", { unjudged, unquoted });
+  const unjudgedNote =
+    (rhFilled.length > 0 ? `\n\nMEASURED FROM ROBINHOOD'S PREVIOUS CLOSE (Yahoo had none): ${rhFilled.join(", ")}.` : "") +
+    (unjudged.length > 0 ? `\n\nNOT JUDGED (the previous session's close could not be established, so today's move is unknown and no crash stop can fire): ${unjudged.join(", ")}.` : "")
+    + (unquoted.length > 0 ? `\n\nNOT JUDGED (our quote fetch failed this run): ${unquoted.join(", ")}.` : "");
+
+  // A name nobody can stop must not be silent on the many runs where nothing sells. One alert per
+  // date and name set (SET NX), so an hourly check does not repeat it.
+  if ((unjudged.length > 0 || unquoted.length > 0) && new URL(request.url).searchParams.get("dryRun") !== "1") {
+    const names = [...unjudged, ...unquoted].sort().join(",");
+    const first = await redisCommand("set", `dropcheck:unjudged-alert:${today}:${names}`, "1", "NX", "EX", 36 * 3600)
+      .then(r => r === "OK").catch(() => true); // a Redis failure errs toward telling the owner
+    if (first) {
+      await sendAlert(`⚠️ Drop-check could not judge ${names} — ${today}`,
+        `No crash stop can fire for these holdings until their daily move can be measured.${unjudgedNote}`).catch(() => {});
+    }
+  }
+
   if (droppedPositions.length === 0) {
     const worst = positionsToCheck
-      .map((p) => `${p.symbol}(${(liteMap.get(p.symbol)?.change1d ?? 0).toFixed(1)}%)`)
+      .map((p) => { const c = liteMap.get(p.symbol)?.change1d; return `${p.symbol}(${c == null ? "n/a" : `${c.toFixed(1)}%`})`; })
       .join(", ");
     console.log("DROP_CHECK_SKIP — no exits", { scope: scope ?? "all", held: worst });
-    return Response.json({ skipped: true, reason: "no exits triggered", scope: scope ?? "all", held: worst });
+    return Response.json({ skipped: true, reason: "no exits triggered", scope: scope ?? "all", held: worst, unjudged, unquoted });
   }
 
   const droppedNames = droppedPositions
@@ -279,6 +333,7 @@ List only the names to HOLD on sympathy; every stop-loss not listed will be SOLD
         dryRun: true, today, scope: scope ?? "all",
         triggered: droppedPositions.map((e) => ({ symbol: e.position.symbol, reason: e.reason, change1d: Number(e.change1d.toFixed(2)) })),
         heldOnSympathy,
+        unjudged, unquoted,
         wouldSell: sellsToExecute,
         decision: decisionText.slice(0, 200),
       });
@@ -581,7 +636,7 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
     const saved = await saveRun({
       timestamp: runTimestamp,
       date: today,
-      summary: `[RISK-EXIT] Sold: ${soldList}.${sympathyNote}${staleNote}`,
+      summary: `[RISK-EXIT] Sold: ${soldList}.${sympathyNote}${staleNote}${unjudgedNote}`,
       portfolioAfter,
       positions,
       trades,
@@ -627,8 +682,8 @@ Include only SELL orders placed today that are filled or pending (not cancelled/
         ? `${hasProfit && !hasStop ? "🟢 Take-Profit" : "🔴 Risk-Exit"} Triggered — ${today}`
         : `🚨 Risk-Exit EXECUTED but NOT RECORDED — ${today}`,
       saved
-        ? `Sold: ${soldList}.${sympathyNote}${staleNote}\n\nCheck the dashboard:\n${dashboardUrl}`
-        : `Sold: ${soldList}.${sympathyNote}${staleNote}\n\n`
+        ? `Sold: ${soldList}.${sympathyNote}${staleNote}${unjudgedNote}\n\nCheck the dashboard:\n${dashboardUrl}`
+        : `Sold: ${soldList}.${sympathyNote}${staleNote}${unjudgedNote}\n\n`
           + `THE ORDERS WENT THROUGH — the run could not be written to the store, so the trade is `
           + `missing from the ledger every return and attribution figure is computed from. It will `
           + `show up as an "uncaptured order" in /api/verify; the next autopilot run should capture `

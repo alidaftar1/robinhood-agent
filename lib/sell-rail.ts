@@ -78,6 +78,8 @@ export function justifiedReason(symbol: string, ctx: SellRailContext): string | 
   }
   if (ctx.isStale(symbol)) return "⏳STALE (time-stop)";
   if (!ctx.stillRanked(symbol)) return "fell off the shortlist";
+  // Presence only: whether the downgrade passed the NEWS SELL TEST (owner, 2026-11-27) is a prompt
+  // rule the reviewer checks (registry 2026-11-25), not something this rail can verify.
   if (ctx.hasDowngrade(symbol)) return "analyst downgrade";
   if (ctx.hasBearishNews(symbol)) return "bearish material news";
   const d = ctx.daysToEarnings(symbol);

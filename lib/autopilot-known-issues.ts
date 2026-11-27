@@ -434,6 +434,22 @@ export const KNOWN_ISSUES: KnownIssue[] = [
     check:
       "Code reports days with no stored return; do not infer one from a null row (intraday rows are null by design). If the run's summary quotes a multi-day return for the book, does it say which days it covers? If not, LOW. On a split day a share count that is a whole multiple of the old one, with sells on record, needs a hand check; do not call it an owner fill.",
   },
+  {
+    date: "2026-11-24",
+    title: "Drop-check measured a same-day move from a stale close (Yahoo blanked bars after a split)",
+    lesson:
+      "After SNDK's 8:1 split on 11-20 Yahoo returned null daily closes, and the prior-close fallback took the last NON-NULL close (11-19, pre-split ~$94). The 11-24 drop-check read SNDK at -17.7%, 15.6 points worse than its sector, and sold it; against the real 11-23 close ($87.71) it was -11.6%, 9.5 points worse — held under the 10-point sector rule, like DELL that afternoon. The prior close must now be dated the trading day before the quote's session, or the name is NOT JUDGED.",
+    check:
+      "On a [RISK-EXIT] run, is any sold main-book name's same-day figure inconsistent with the previous run's price for it (e.g. the stated % implies a previous close far from yesterday's recorded price)? If so, flag MEDIUM: the stop may have fired on a stale baseline. A 'NOT JUDGED' line means the move could not be measured — name it at LOW, it is not a sale.",
+  },
+  {
+    date: "2026-11-25",
+    title: "An analyst price-target cut was treated as a sell trigger on its own",
+    lesson:
+      "MU (owner-bought 11-23 at $703.75) was sold at $564.05 on the 11-25 morning run, reason firm-down, on the headline 'BNP Paribas slashes Micron price target 54%'. The model labelled the headline a ↓FIRM itself and called the size of the cut material. The NEWS SELL TEST excludes non-binding opinions, but ↓FIRM was a separate sell trigger with no such test. Owner decision 11-27: a ↓FIRM must pass the NEWS SELL TEST like any headline.",
+    check:
+      "For each sell with reason firm-down (or a thesis citing a downgrade or price-target cut), does the thesis name a MATERIAL company development behind the analyst's action (guidance cut, failed trial, regulator's rejection, executive exit, collapsed deal, large penalty)? The size of the cut or the firm's prominence is not one. If not, flag MEDIUM.",
+  },
 ];
 
 /** Renders the registry as a compact numbered block for the reviewer prompt. */
