@@ -121,7 +121,7 @@ export async function GET(request: Request) {
     // Analysis only: no MCP, no orders, no saveRun. Lets us validate that influencer
     // signals flow into Sonnet's decision (and the influencer cap) without real trades.
     if (dryRun) {
-      const anthropic = createAnthropic();
+      const anthropic = createAnthropic("trade");
       const [marketData, previousRun, influencerCache] = await Promise.all([
         getMarketData(),
         getLatestRun(),
@@ -257,7 +257,7 @@ export async function GET(request: Request) {
     // (the Claude MCP client token only works for the MCP endpoint, not direct REST API)
     const accessToken = await getValidAccessToken();
     console.log("TOKEN_OK");
-    const anthropic = createAnthropic();
+    const anthropic = createAnthropic("trade");
     const [marketData, spyPrice, previousRun, previousDayRun, agenticBalance, livePositions, influencerCache, recentStopouts, recentSells] = await Promise.all([
       getMarketData(),
       fetchCurrentPrice("SPY"),

@@ -627,7 +627,7 @@ If nothing actionable and no clear take: SIGNAL:{"buy":[],"confidence":"low","av
 // ─── Main refresh ──────────────────────────────────────────────────────────────
 
 export async function refreshInfluencerSignals(): Promise<InfluencerCache> {
-  const anthropic = createAnthropic();
+  const anthropic = createAnthropic("influencer-signals");
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // last 7 days — these channels post picks weekly, not daily
 
   // Fetch recent videos from all channels in parallel

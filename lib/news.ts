@@ -237,7 +237,7 @@ export async function isPriceRecap(anthropic: Anthropic, symbol: string, company
 export async function fetchNewsSignals(symbols: string[]): Promise<Map<string, NewsSignal>> {
   const out = new Map<string, NewsSignal>();
   if (symbols.length === 0 || !process.env.FINNHUB_API_KEY) return out;
-  const anthropic = createAnthropic();
+  const anthropic = createAnthropic("news-reader");
   const uniq = [...new Set(symbols)];
   const BATCH = 5;
   let fetched = 0;

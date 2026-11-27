@@ -59,7 +59,7 @@ export async function GET(request: Request) {
     return Response.json({ error: "Failed to get Robinhood access token" }, { status: 503 });
   }
 
-  const anthropic = createAnthropic();
+  const anthropic = createAnthropic("verify");
 
   // Three read-only Haiku+MCP calls in parallel
   const [balanceText, positionsText, ordersText] = await Promise.all([

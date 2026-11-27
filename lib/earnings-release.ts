@@ -145,7 +145,7 @@ export async function analyzeEarningsRelease(
 ): Promise<EarningsReleaseAnalysis | null> {
   if (!content || content.length < 500) return null;   // nothing substantive to read
   try {
-    const anthropic = createAnthropic();
+    const anthropic = createAnthropic("earnings-release");
     const resp = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 900,

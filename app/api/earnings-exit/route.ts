@@ -67,7 +67,7 @@ export async function GET(request: Request) {
 
   try {
     const accessToken = await getValidAccessToken();
-    const anthropic = createAnthropic();
+    const anthropic = createAnthropic("earnings-exit");
     const dryRun = new URL(request.url).searchParams.get("dryRun") === "1";
     const runTimestamp = new Date().toISOString();
 

@@ -6,6 +6,7 @@ import { dashboardPublicUrl, dashboardLoginUrl, mintLoginToken, EMAIL_LOGIN_TOKE
 import { createAnthropic } from "@/lib/anthropic";
 import { getRuns, hasAutopilotSentToday, markAutopilotSent, storeAutopilotConcerns, getStoredAutopilotConcerns, formatSummaryForEmail, escapeHtml, buildInferredSells, recentDaysMissingReturn, MAX_RUNS } from "@/lib/run-store";
 import { V1_TRACK_START } from "@/lib/risk-metrics";
+import { getUsage, usageDatesSince, type UsageRow } from "@/lib/llm-usage";
 import { isMarketHoliday } from "@/lib/holidays";
 import { reviewRun, type ReviewConcern } from "@/lib/autopilot-review";
 import { reconcileDashboard, type ReconcileFinding } from "@/lib/dashboard-reconcile";
@@ -562,7 +563,7 @@ export async function GET(request: Request) {
 
   let reviewConcerns: ReviewConcern[] = [];
   if (todayRun) {
-    const anthropic = createAnthropic();
+    const anthropic = createAnthropic("autopilot");
     // Hand the reviewer verify's reconciliation so it doesn't re-flag (or hallucinate)
     // cash/position/composition mismatches the deterministic layer already confirmed.
     const verifyContext = verifyResult
@@ -617,6 +618,21 @@ export async function GET(request: Request) {
   // Signal-attribution ledger: which entry signals (★INS, ⚡NEWS, ↓FIRM, earnings record, …) have
   // predicted, from our own buys. Best-effort; empty until buys accumulate.
   let signalStats: SignalStat[] = [];
+  // Model spend since the previous report (lib/llm-usage): yesterday, or Friday-Sunday on a Monday.
+  // Informational only: never an issue, never blocks (getUsage is time-bounded).
+  let usageLine = "";
+  try {
+    const dates = usageDatesSince(today);
+    const rows: UsageRow[] = (await Promise.all(dates.map(getUsage))).flat();
+    if (rows.length > 0) {
+      const total = rows.reduce((s, r) => s + (r.costUsd ?? 0), 0);
+      const byJob = new Map<string, number>();
+      for (const r of rows) byJob.set(r.label, (byJob.get(r.label) ?? 0) + (r.costUsd ?? 0));
+      const top = [...byJob].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([l, c]) => `${l} $${c.toFixed(2)}`).join(" · ");
+      usageLine = `Model spend ${dates.length > 1 ? `${dates[0]} to ${dates[dates.length - 1]}` : dates[0]}: ~$${total.toFixed(2)} across ${rows.reduce((s, r) => s + r.calls, 0)} calls (${top})`
+        + `${rows.some(r => r.costUsd == null) ? "; some models unpriced" : ""}. A floor: excludes the eval suite, the cloud autopilot, and aborted or streamed calls.`;
+    }
+  } catch { /* metering is optional */ }
   let signalBuysLogged = 0;
   let suspectSplits: string[] = [];
   // Exits, the mirror of the above: which REASONS for selling actually beat holding.
@@ -875,6 +891,8 @@ export async function GET(request: Request) {
     })()}<br/><br/><strong>vs sector</strong> = the same, against the pick's OWN sector ETF — these picks are mostly AI/semis, so vs-SPY leaves a large common factor in, which is both why the noise is high and why the picks are correlated. Channels are RANKED by it. <strong>vs peers</strong> = against the average pick whose window overlaps, which differences out the regime entirely. Small, correlated samples — a ranking hint, not a verdict; "thin" = very few picks.</p>`}
   </div>`
     : ""}
+
+  ${usageLine ? `<p style="margin:0 0 16px;font-size:12px;color:#6b7280">💲 ${escapeHtml(usageLine)}</p>` : ""}
 
   ${signalBuysLogged > 0
     ? `<div style="background:#f0fdf4;border-left:4px solid #10b981;padding:12px 16px;margin-bottom:16px;border-radius:4px">

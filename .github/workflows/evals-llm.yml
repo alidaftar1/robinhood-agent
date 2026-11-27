@@ -16,17 +16,25 @@ name: Eval health (LLM suite + registry replay)
 # after the trade run. That is harmless because nothing here touches the live account (see below),
 # but do not rely on the stated hour for anything that would matter.
 #
-# So they run HERE, on a schedule, rather than in front of a deploy. A gate that flickers gets
-# ignored, and then nothing gates. The trade-off is explicit: a real regression in model BEHAVIOUR
-# is caught within a day instead of within a minute. Everything deterministic is still caught in
-# seconds, and model behaviour is the slower-moving half.
+# So they run HERE rather than in front of a deploy. A gate that flickers gets ignored, and then
+# nothing gates. Everything deterministic is still caught in seconds by the fast gate.
+#
+# WHEN (owner decision 2026-11-27): ON CHANGE + WEEKLY, not nightly. A nightly run of unchanged code
+# mostly re-measured the suite's own noise (models are pinned), while a prompt change was only
+# tested on the NEXT night — after it shipped. Now the LLM job runs when a push to main or a PR
+# touches what the model sees (LLM_PATHS below), plus a Monday backstop. The registry replay makes
+# no model calls and runs on every push. A direct push to main still deploys in parallel with this,
+# so for a PROMPT change, run the affected evals (or an A/B) locally before deploying.
 #
 # Nothing here touches the live account: these evals exercise prompts and judge their output. No
 # order placement, no broker calls, no Upstash writes.
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   schedule:
-    - cron: "0 11 * * 1-5"      # asks for 04:00 PT weekdays; actually fires ~7h late (see above)
+    - cron: "0 11 * * 1"        # Monday backstop; GitHub runs scheduled jobs hours late (see above)
   workflow_dispatch:
     inputs:
       max_calls:
@@ -35,11 +43,36 @@ on:
         default: "120"
 
 concurrency:
-  group: evals-llm
-  cancel-in-progress: false
+  group: evals-llm-${{ github.ref }}
+  cancel-in-progress: true       # a newer push supersedes an older run of the same branch
 
 jobs:
+  changes:
+    # Does this push/PR change anything the model is shown or graded on? Schedule and manual runs
+    # always say yes. An unknown base (new branch, force-push) says yes: running is the safe side.
+    runs-on: ubuntu-latest
+    outputs:
+      llm: ${{ steps.diff.outputs.llm }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          LLM_PATHS='^(lib/(strategy|market-data|news|news-tag|analyst-tag|autopilot-review|autopilot-known-issues|trade-decision|influencer-signals|earnings|stopouts)\.ts|app/api/(trade|drop-check|autopilot)/route\.ts|evals/(eval|reviewer-recall|news-reader|agent|llm-judge|scorers|llm-budget)\.(test\.)?ts|evals/fixtures/|\.github/workflows/evals-llm\.yml)'
+          if [ "$EVENT" = "schedule" ] || [ "$EVENT" = "workflow_dispatch" ]; then echo "llm=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          FROM="${BASE:-$BEFORE}"
+          if [ -z "$FROM" ] || ! git cat-file -e "$FROM" 2>/dev/null; then echo "llm=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          CHANGED=$(git diff --name-only "$FROM" "$GITHUB_SHA")
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -qE "$LLM_PATHS"; then echo "llm=true" >> "$GITHUB_OUTPUT"; else echo "llm=false" >> "$GITHUB_OUTPUT"; fi
+
   llm-evals:
+    needs: changes
+    if: needs.changes.outputs.llm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90          # measured 11-15 min; headroom without hanging a runner all day
     steps:
@@ -95,9 +128,8 @@ jobs:
 
   registry-replay:
     # Benchmarks the TEST SUITE against bugs we have already had: re-introduce each documented
-    # incident, ask whether anything goes red, report caught/replayable. ~75 seconds, so it could
-    # run per-push — it runs weekly instead because the number only moves when someone works on the
-    # suite, and a score nobody reads is worse than one that arrives with a reason to look.
+    # incident, ask whether anything goes red, report caught/replayable. ~75 seconds and no model
+    # calls, so it runs on every push and PR (since 2026-11-27) as well as the Monday backstop.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

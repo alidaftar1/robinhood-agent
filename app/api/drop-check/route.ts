@@ -112,7 +112,7 @@ export async function GET(request: Request) {
   const rhFilled: string[] = [];
   if (needBaseline.length > 0) {
     try {
-      const rows = await fetchRobinhoodPrevCloses(createAnthropic(), await getValidAccessToken(), needBaseline);
+      const rows = await fetchRobinhoodPrevCloses(createAnthropic("drop-check"), await getValidAccessToken(), needBaseline);
       if (rows == null) console.warn("DROP_CHECK_RH_BASELINE_FAILED", "no parseable RH_PREV_CLOSE line", { needBaseline });
       const closes = robinhoodPrevCloses(rows ?? [], needBaseline,
         previousTradingDay(new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" })), (s) => liteMap.get(s)?.price ?? null);
@@ -210,7 +210,7 @@ export async function GET(request: Request) {
 
   try {
     const accessToken = await getValidAccessToken();
-    const anthropic = createAnthropic();
+    const anthropic = createAnthropic("drop-check");
 
     // A drop was detected — NOW load full market data to price surviving positions + give the
     // sell decision market context (this run is sell-only; it does not redeploy into new names).

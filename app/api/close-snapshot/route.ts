@@ -68,7 +68,7 @@ export async function GET(request: Request) {
   }
 
   const accessToken = await getValidAccessToken();
-  const anthropic = createAnthropic();
+  const anthropic = createAnthropic("close-snapshot");
   const [spyClose, balance, livePositions] = await Promise.all([
     fetchCurrentPrice("SPY"),
     fetchAgenticBalance(anthropic, accessToken),
