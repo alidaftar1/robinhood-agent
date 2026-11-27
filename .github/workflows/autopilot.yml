@@ -82,4 +82,17 @@ jobs:
         #   "review → CLEAN → stop" run. The 08-10 run did all of that, opened PR #10, then exited 1 on the
         #   50-turn cap right after journaling — a successful run showing red. The dispatch is also gated to
         #   anomaly-days only (see /api/autopilot).
-        run: claude -p "$(cat .github/autopilot-prompt.md)" --model sonnet --max-turns 90 --dangerously-skip-permissions --output-format text
+        # --output-format json (2026-11-27): the same final text, plus what the session COST. Until
+        #   then nothing recorded it, though this job was called "by far the largest line on the
+        #   Anthropic bill". The text still goes to the log; turns/cost go to the run summary.
+        run: |
+          status=0   # bash -e would exit before the summary; capture the code and re-raise it last
+          claude -p "$(cat .github/autopilot-prompt.md)" --model sonnet --max-turns 90 --dangerously-skip-permissions --output-format json > /tmp/autopilot.json || status=$?
+          jq -r '.result // "(no result text)"' /tmp/autopilot.json 2>/dev/null || cat /tmp/autopilot.json
+          {
+            echo "## Cloud autopilot — what this session cost"
+            echo ""
+            jq -r '"- cost: $\(.total_cost_usd // "unknown")\n- turns: \(.num_turns // "unknown")\n- duration: \((.duration_ms // 0) / 60000 | floor) min\n- stop: \(.subtype // "unknown")"' /tmp/autopilot.json 2>/dev/null || echo "(cost not reported — see the log)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "AUTOPILOT_COST_USD=$(jq -r '.total_cost_usd // "unknown"' /tmp/autopilot.json 2>/dev/null)"
+          exit $status
