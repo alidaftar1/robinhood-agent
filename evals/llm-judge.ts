@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { meterAnthropic } from "@/lib/llm-usage";
 import { reserveLlmCall, recordLlmUsage, JUDGE_MODEL, JUDGE_MAX_TOKENS } from "./llm-budget";
 
 // LLM-as-judge: a single-prompt binary evaluator (the pattern the industry standardized on).
@@ -8,7 +9,7 @@ import { reserveLlmCall, recordLlmUsage, JUDGE_MODEL, JUDGE_MAX_TOKENS } from ".
 // which is how you tell a judge is reliable enough to use on the subjective modes.
 export async function llmJudge(question: string, context: string): Promise<boolean | null> {
   if (!reserveLlmCall()) return null;
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 2 });
+  const anthropic = meterAnthropic(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 2 }), "eval:judge");
   const resp = await anthropic.messages.create({
     model: JUDGE_MODEL,
     max_tokens: JUDGE_MAX_TOKENS,

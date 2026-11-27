@@ -4,6 +4,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { meterAnthropic } from "@/lib/llm-usage";
 import type { InsiderBuy } from "@/lib/market-data";
 import type { ToolCall } from "./agent";
 
@@ -61,7 +62,7 @@ export async function scoreInsiderAwareness(
     } else { boughtInsider = []; }
   }
 
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = meterAnthropic(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }), "eval:scorer");
 
   const prompt = `You are evaluating an AI trading agent's ability to use a specific market signal.
 

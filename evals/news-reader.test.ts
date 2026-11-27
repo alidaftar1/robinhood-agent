@@ -37,6 +37,7 @@ import { describe, it, expect } from "bun:test";
 import Anthropic from "@anthropic-ai/sdk";
 import { extractMaterialNews, isAboutOtherCompany, isPriceRecap, FAILED } from "@/lib/news";
 import { LLM_EVALS_ENABLED } from "./llm-budget";
+import { meterAnthropic } from "@/lib/llm-usage";
 import CASES from "./news-reader-cases.json";
 
 type Headline = { headline: string; date: string; summary?: string };
@@ -108,7 +109,7 @@ describe("news-reader grading (deterministic)", () => {
 });
 
 describe.skipIf(!LLM_EVALS_ENABLED)("news-reader (LLM): frozen real headlines", () => {
-  const { client, calls } = countingClient(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 }));
+  const { client, calls } = countingClient(meterAnthropic(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 }), "eval:news-reader"));
 
   it("extracts events per the labels: zero false-bearish flags, accuracy >= MIN_ACCURACY", async () => {
     const rows: Array<{ c: ExtractionCase; v: Verdict; pass: boolean; falseBearish: boolean }> = [];

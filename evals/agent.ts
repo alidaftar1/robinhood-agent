@@ -9,6 +9,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { meterAnthropic } from "@/lib/llm-usage";
 import type { Scenario } from "./fixtures";
 import { SP500_UNIVERSE } from "@/lib/strategy";
 
@@ -36,7 +37,7 @@ export async function runAnalysisAgent(
   systemPrompt: string,
   model: string = PRODUCTION_ANALYSIS_MODEL,
 ): Promise<AnalysisResult> {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 });
+  const anthropic = meterAnthropic(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 3 }), "eval:analysis-agent");
   const resp = await (anthropic.messages as any).create({
     model,
     max_tokens: 4500, // = ANALYSIS_MAX_TOKENS in app/api/trade/route.ts (pinned by evals/analysis-token-cap.test.ts)
@@ -228,7 +229,7 @@ export async function runMockAgent(
   scenario: Scenario,
   options: { maxTurns?: number } = {}
 ): Promise<AgentRunResult> {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 5 });
+  const anthropic = meterAnthropic(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 5 }), "eval:mock-executor");
   const maxTurns = options.maxTurns ?? 20;
 
   const toolCalls: ToolCall[] = [];

@@ -44,7 +44,30 @@ async function record(label: string, model: string, usage: Usage | undefined): P
   finally { clearTimeout(t); }
 }
 
+// EVAL RUNS tally in memory instead: an eval run must never write into the production meter (a
+// local `test:llm` carries .env.local's Upstash credentials, and lib/news etc. use createAnthropic),
+// and CI has no Redis at all. evals/usage-report.preload.ts prints it once per run ("EVAL TOKEN USAGE").
+const memoryMode = () => process.env.EVAL_LLM === "1" || process.env.LLM_USAGE_SINK === "memory";
+const tally: Record<string, number> = {};
+
+/** The in-memory tally as rows (eval runs). */
+export function memoryTally(): UsageRow[] { return summarizeUsage(tally); }
+
+/** Pure: the report printed at the end of an eval run. */
+export function formatTally(rows: UsageRow[]): string {
+  if (rows.length === 0) return "EVAL TOKEN USAGE: no metered model calls.";
+  const total = rows.reduce((s, r) => s + (r.costUsd ?? 0), 0);
+  const lines = rows.map(r => `EVAL TOKEN USAGE   ${r.label.padEnd(28)} ${r.model.padEnd(28)} ${String(r.calls).padStart(4)} calls `
+    + `${String(r.in).padStart(9)} in ${String(r.out).padStart(8)} out  ${r.costUsd == null ? "unpriced" : `$${r.costUsd.toFixed(3)}`}`);
+  return [...lines, `EVAL TOKEN USAGE   TOTAL ~$${total.toFixed(2)} across ${rows.reduce((s, r) => s + r.calls, 0)} calls`
+    + `${rows.some(r => r.costUsd == null) ? " (some models unpriced)" : ""} — a floor: errored or aborted calls are not counted`].join("\n");
+}
+
 function schedule(label: string, model: string, usage: Usage | undefined): void {
+  if (memoryMode()) {
+    for (const [f, v] of usageFields(label, model, usage)) tally[f] = (tally[f] ?? 0) + v;
+    return;
+  }
   const job = () => record(label, model, usage).catch(() => {});
   try { after(job); } catch { void job(); } // after() throws outside a request scope
 }

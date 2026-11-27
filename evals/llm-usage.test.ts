@@ -5,7 +5,7 @@ import { join } from "path";
 // Never write test rows into the production meter, whatever env this runs with.
 delete process.env.UPSTASH_REDIS_REST_URL;
 delete process.env.UPSTASH_REDIS_REST_TOKEN;
-const { meterAnthropic, summarizeUsage, usageFields, daysBefore, usageDatesSince } = await import("@/lib/llm-usage");
+const { meterAnthropic, summarizeUsage, usageFields, daysBefore, usageDatesSince, memoryTally, formatTally } = await import("@/lib/llm-usage");
 
 describe("token meter", () => {
   test("one response → counted fields; junk usage counts zero, never NaN", () => {
@@ -51,6 +51,28 @@ describe("token meter", () => {
     expect(daysBefore("2026-11-02", 2)).toBe("2026-10-31");
     expect(usageDatesSince("2026-11-30")).toEqual(["2026-11-27", "2026-11-28", "2026-11-29"]); // Monday
     expect(usageDatesSince("2026-11-27")).toEqual(["2026-11-26"]);                             // Friday
+  });
+
+  test("eval mode tallies in memory (never Redis) and prints a cost line", async () => {
+    process.env.LLM_USAGE_SINK = "memory";
+    try {
+      const resp = { model: "claude-sonnet-4-6", usage: { input_tokens: 1_000_000, output_tokens: 0 } };
+      await meterAnthropic({ messages: { create: () => Promise.resolve(resp) } }, "eval:x").messages.create();
+      await new Promise(r => setTimeout(r, 0));
+      const row = memoryTally().find(r => r.label === "eval:x")!;
+      expect(row.calls).toBe(1);
+      expect(row.costUsd).toBeCloseTo(3, 6);
+      expect(formatTally([row])).toContain("EVAL TOKEN USAGE   TOTAL ~$3.00 across 1 calls");
+    } finally { delete process.env.LLM_USAGE_SINK; }
+  });
+
+  test("every eval that builds its own client meters it", () => {
+    for (const f of ["evals/agent.ts", "evals/llm-judge.ts", "evals/scorers.ts", "evals/eval.test.ts", "evals/reviewer-recall.test.ts", "evals/news-reader.test.ts"]) {
+      const s = readFileSync(join(import.meta.dir, "..", f), "utf8");
+      const raw = (s.match(/new Anthropic\(/g) ?? []).length;
+      const metered = (s.match(/meterAnthropic\(new Anthropic\(/g) ?? []).length;
+      expect(`${f}: ${metered}/${raw}`).toBe(`${f}: ${raw}/${raw}`);
+    }
   });
 
   test("no production code creates an unlabelled client", () => {

@@ -101,7 +101,7 @@ jobs:
           EVAL_LLM_MAX_CALLS: ${{ github.event.inputs.max_calls || '120' }}
         run: |
           set -o pipefail
-          bun test evals/eval.test.ts evals/reviewer-recall.test.ts evals/news-reader.test.ts --timeout 180000 2>&1 | tee /tmp/llm-evals.log
+          bun test --preload ./evals/usage-report.preload.ts evals/eval.test.ts evals/reviewer-recall.test.ts evals/news-reader.test.ts --timeout 180000 2>&1 | tee /tmp/llm-evals.log
 
       # The summary is the point of running this unattended: the owner should be able to read the
       # outcome without opening the runner. Written even on failure.
@@ -115,6 +115,11 @@ jobs:
             echo ""
             echo '```'
             grep -E "^\(fail\)|^ *[0-9]+ (pass|fail)|^Ran |^  [✓✗] [0-9]+ attempt|^sampled assertions" /tmp/llm-evals.log | tail -60 || echo "(no summary lines — see the log)"
+            echo '```'
+            echo ""
+            echo "### What this run cost (lib/llm-usage, in-memory tally)"
+            echo '```'
+            grep -E "^EVAL TOKEN USAGE" /tmp/llm-evals.log || echo "(no tally printed — the run may have died before exit)"
             echo '```'
             echo ""
             echo "This suite is LLM-stochastic. Since 2026-10-21 each execution scenario is sampled"

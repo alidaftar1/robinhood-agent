@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import Anthropic from "@anthropic-ai/sdk";
+import { meterAnthropic } from "@/lib/llm-usage";
 import { FIXTURES, runReviewerRecall, scoreReviewer, renderReviewerScoreboard } from "./reviewer-recall";
 import { LLM_EVALS_ENABLED, llmBudgetSummary, resetLlmBudget } from "./llm-budget";
 
@@ -27,7 +28,7 @@ describe("reviewer-recall: live reviewer evaluation (token-gated)", () => {
       console.log("\n" + llmBudgetSummary() + "\n");
       return; // opt-in only — nothing to assert without the reviewer calls
     }
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 2 });
+    const anthropic = meterAnthropic(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, maxRetries: 2 }), "eval:reviewer");
     const results = await runReviewerRecall(anthropic);
     console.log("\nREVIEWER RECALL (live Sonnet skeptical-reviewer vs real labeled runs):\n" + renderReviewerScoreboard(results) + "\n" + llmBudgetSummary() + "\n");
 
